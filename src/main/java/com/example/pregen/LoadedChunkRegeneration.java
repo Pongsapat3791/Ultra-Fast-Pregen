@@ -52,8 +52,19 @@ final class LoadedChunkRegeneration {
      * replaced (a player may have just loaded it); only part-way generated ones are replaced.
      */
     static void apply(ServerLevel level, InMemoryChunkGrid grid, LongSet keep, boolean keepFull) {
+        apply(level, Arrays.stream(grid.getCorePositions()).filter(pos -> !keep.contains(pos)).toArray(), grid, keepFull);
+    }
+
+    /**
+     * Exactly the chunks lighting chose to replace (see InMemoryChunkGrid#setLightOwnership): their
+     * light was computed from the generated blocks, so each still held gets those blocks.
+     */
+    static void applyLit(ServerLevel level, InMemoryChunkGrid grid, LongSet replaced) {
+        apply(level, replaced.toLongArray(), grid, false);
+    }
+
+    private static void apply(ServerLevel level, long[] positions, InMemoryChunkGrid grid, boolean keepFull) {
         MinecraftServer server = level.getServer();
-        long[] positions = Arrays.stream(grid.getCorePositions()).filter(pos -> !keep.contains(pos)).toArray();
 
         // Let save chains the server already started for these chunks finish first.
         CompletableFuture<Void> saves = await(server.submit(() -> {

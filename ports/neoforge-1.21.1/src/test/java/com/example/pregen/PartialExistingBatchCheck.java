@@ -126,6 +126,8 @@ public final class PartialExistingBatchCheck {
             if (only.contains("existing")) checkExistingNeighbors(server, level, io, tasks);
             if (only.contains("dimensions")) checkOtherDimensions(server, tasks);
             if (only.contains("anyGenerator")) checkAnyGenerator(level, io, tasks);
+            if (only.contains("light")) checkLightParity(level, io, tasks);
+            if (only.contains("spawn")) checkSpawnEdge(server, level, tasks);
             return;
         }
         ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(10_000, 10_000, 2, 2);
@@ -212,6 +214,127 @@ public final class PartialExistingBatchCheck {
         checkResumeEdges(level, io, tasks);
         checkExistingNeighbors(server, level, io, tasks);
         checkOtherDimensions(server, tasks);
+        checkLightParity(level, io, tasks);
+    }
+
+    /**
+     * Light of generated chunks against Minecraft's light engine lighting the same blocks, as the
+     * server does for a chunk loaded without light: an 8x8 tile is generated and saved, and every
+     * block of its inner 4x4 chunks (whose light depends only on blocks of the tile) must have the
+     * same sky and block light. The stored light is read the way the server loads it.
+     */
+    private static void checkLightParity(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(-20_000, 20_000, 8, 8);
+        List<ChunkPos> area = new ArrayList<>();
+        for (int x = tile.minChunkX(); x < tile.minChunkX() + tile.chunksX(); x++) {
+            for (int z = tile.minChunkZ(); z < tile.minChunkZ() + tile.chunksZ(); z++) area.add(new ChunkPos(x, z));
+        }
+        for (ChunkPos pos : area) {
+            require(io.loadAsync(pos).get(10, TimeUnit.SECONDS).isEmpty(), "Light parity coordinates must be absent: " + pos);
+        }
+        DynamicBatchPreGen task = newTask(level, tile, tasks);
+        invoke(task, "processBatch", new Class<?>[]{int.class, int.class, ChunkBatchPlan.Tile.class}, 1, 1, tile);
+        invoke(task, "awaitPendingWrites", new Class<?>[0]);
+
+        int minSection = level.getMinSection();
+        int sectionCount = level.getSectionsCount();
+        var biomes = level.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.BIOME);
+        Map<Long, net.minecraft.world.level.chunk.ProtoChunk> chunks = new java.util.HashMap<>();
+        Map<Long, CompoundTag> stored = new java.util.HashMap<>();
+        for (ChunkPos pos : area) {
+            CompoundTag tag = io.loadAsync(pos).get(10, TimeUnit.SECONDS).orElseThrow();
+            require(tag.getBoolean("isLightOn"), "A generated chunk must be stored lit: " + pos);
+            SeamWrites.Final blocks = SeamWrites.finalFromStored(tag, minSection, sectionCount);
+            require(blocks != null, "A generated chunk must be stored fully generated: " + pos);
+            var chunk = new net.minecraft.world.level.chunk.ProtoChunk(pos, net.minecraft.world.level.chunk.UpgradeData.EMPTY,
+                    level, biomes, null);
+            for (int i = 0; i < sectionCount; i++) {
+                chunk.getSections()[i] = new net.minecraft.world.level.chunk.LevelChunkSection(blocks.states()[i],
+                        chunk.getSections()[i].getBiomes());
+            }
+            chunk.initializeLightSources();
+            chunks.put(pos.toLong(), chunk);
+            stored.put(pos.toLong(), tag);
+        }
+        net.minecraft.world.level.chunk.LightChunkGetter blocksOnly = new net.minecraft.world.level.chunk.LightChunkGetter() {
+            @Override
+            public net.minecraft.world.level.chunk.LightChunk getChunkForLighting(int x, int z) {
+                return chunks.get(ChunkPos.asLong(x, z));
+            }
+
+            @Override
+            public net.minecraft.world.level.BlockGetter getLevel() {
+                return level;
+            }
+        };
+        boolean sky = level.dimensionType().hasSkyLight();
+        // Minecraft lighting the stored blocks: initializeLight, then lightChunk, for every chunk.
+        var vanilla = new net.minecraft.world.level.lighting.LevelLightEngine(blocksOnly, true, sky);
+        // The stored light, loaded as ChunkSerializer and initializeLight of a lit chunk load it.
+        var saved = new net.minecraft.world.level.lighting.LevelLightEngine(blocksOnly, true, sky);
+        for (var chunk : chunks.values()) {
+            ChunkPos pos = chunk.getPos();
+            for (int i = 0; i < sectionCount; i++) {
+                if (chunk.getSections()[i].hasOnlyAir()) continue;
+                vanilla.updateSectionStatus(net.minecraft.core.SectionPos.of(pos, minSection + i), false);
+                saved.updateSectionStatus(net.minecraft.core.SectionPos.of(pos, minSection + i), false);
+            }
+            vanilla.setLightEnabled(pos, false);
+            vanilla.retainData(pos, false);
+            var sections = stored.get(pos.toLong()).getList("sections", net.minecraft.nbt.Tag.TAG_COMPOUND);
+            boolean retained = false;
+            for (int i = 0; i < sections.size(); i++) {
+                CompoundTag section = sections.getCompound(i);
+                var sectionPos = net.minecraft.core.SectionPos.of(pos, section.getByte("Y"));
+                boolean blockLight = section.contains("BlockLight", net.minecraft.nbt.Tag.TAG_BYTE_ARRAY);
+                boolean skyLight = sky && section.contains("SkyLight", net.minecraft.nbt.Tag.TAG_BYTE_ARRAY);
+                if ((blockLight || skyLight) && !retained) {
+                    saved.retainData(pos, true);
+                    retained = true;
+                }
+                if (blockLight) saved.queueSectionData(net.minecraft.world.level.LightLayer.BLOCK, sectionPos,
+                        new net.minecraft.world.level.chunk.DataLayer(section.getByteArray("BlockLight")));
+                if (skyLight) saved.queueSectionData(net.minecraft.world.level.LightLayer.SKY, sectionPos,
+                        new net.minecraft.world.level.chunk.DataLayer(section.getByteArray("SkyLight")));
+            }
+            saved.setLightEnabled(pos, true);
+            saved.retainData(pos, false);
+        }
+        for (var chunk : chunks.values()) vanilla.propagateLightSources(chunk.getPos());
+        while (vanilla.hasLightWork()) vanilla.runLightUpdates();
+        while (saved.hasLightWork()) saved.runLightUpdates();
+
+        long compared = 0;
+        long[] differing = new long[2];
+        List<String> examples = new ArrayList<>();
+        var layers = new net.minecraft.world.level.LightLayer[]{net.minecraft.world.level.LightLayer.SKY,
+                net.minecraft.world.level.LightLayer.BLOCK};
+        BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
+        for (int cx = tile.minChunkX() + 2; cx < tile.minChunkX() + 6; cx++) {
+            for (int cz = tile.minChunkZ() + 2; cz < tile.minChunkZ() + 6; cz++) {
+                for (int y = level.getMinBuildHeight(); y < level.getMaxBuildHeight(); y++) {
+                    for (int x = 0; x < 16; x++) {
+                        for (int z = 0; z < 16; z++) {
+                            at.set(cx * 16 + x, y, cz * 16 + z);
+                            compared++;
+                            for (int layer = 0; layer < 2; layer++) {
+                                int expected = vanilla.getLayerListener(layers[layer]).getLightValue(at);
+                                int actual = saved.getLayerListener(layers[layer]).getLightValue(at);
+                                if (expected == actual) continue;
+                                differing[layer]++;
+                                if (examples.size() < 6) {
+                                    examples.add(layers[layer] + "@" + at.toShortString() + "=" + actual + " (Minecraft " + expected + ")");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        System.out.printf("LIGHT_PARITY sky_differing=%d block_differing=%d of %d blocks %s%n",
+                differing[0], differing[1], compared, examples);
+        require(differing[0] == 0 && differing[1] == 0, "Generated light must equal Minecraft's lighting of the same blocks");
+        System.out.println("LIGHT_PARITY_CHECK PASS blocks=" + compared);
     }
 
     /**
@@ -1018,6 +1141,27 @@ public final class PartialExistingBatchCheck {
             }
             return null;
         }).get(60, TimeUnit.SECONDS);
+        // A replaced chunk must keep light: the open sky above its surface is lit 15 (one that lost
+        // its light shows dark in game).
+        List<String> dark = server.submit(() -> {
+            List<String> unlit = new ArrayList<>();
+            for (int x = tile.minChunkX(); x < tile.minChunkX() + tile.chunksX(); x++) {
+                for (int z = tile.minChunkZ(); z < tile.minChunkZ() + tile.chunksZ(); z++) {
+                    for (int[] column : new int[][]{{2, 2}, {13, 2}, {8, 8}, {2, 13}, {13, 13}}) {
+                        int bx = x * 16 + column[0];
+                        int bz = z * 16 + column[1];
+                        int top = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, bx, bz);
+                        if (level.getBrightness(net.minecraft.world.level.LightLayer.SKY, new BlockPos(bx, top, bz)) < 15) {
+                            unlit.add(x + "," + z);
+                            break;
+                        }
+                    }
+                }
+            }
+            return unlit;
+        }).get(60, TimeUnit.SECONDS);
+        require(dark.isEmpty(), dark.size() + " replaced chunks are dark under open sky: "
+                + dark.subList(0, Math.min(10, dark.size())));
         System.out.printf(java.util.Locale.ROOT,
                 "SPAWN_EDGE_REGENERATION_CHECK PASS full_held=%d partial_held=%d worst_server_latency=%.3fs reload_full=%.1fs%n",
                 held[0], held[1], worstSeconds, (System.nanoTime() - started) / 1e9);

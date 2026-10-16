@@ -95,8 +95,6 @@ public final class DynamicBatchPreGenProgressCheck {
         try {
             Object oldStage = newStage("CHECK: old stage", 8192);
             Object currentStage = newStage("CHECK: concurrent stage", 8192);
-            // Keep this world-independent test from enqueueing server action bars.
-            ((AtomicLong) get(currentStage, "lastActionBarAt")).set(Long.MAX_VALUE);
             set(task, "activeStage", currentStage);
             Method onDone = DynamicBatchPreGen.class.getDeclaredMethod("onChunkDoneInStage", currentStage.getClass());
             onDone.setAccessible(true);

@@ -1,11 +1,11 @@
 # Ultra Fast Pregen สำหรับ NeoForge 1.21.1
 
-พอร์ตของ Ultra Fast Pregen 1.20.1-12 (Fabric) ไปเป็น NeoForge 1.21.1 เครื่องมือสร้างโลกแบบ batch ใน RAM ตัวเดียวกัน
-มีคำสั่ง ไฟล์ตั้งค่า ไฟล์ save และการแก้ทุกอย่างของรุ่น 1.20.1-12 อ่านรายละเอียดได้ใน [README หลัก](../../README.md)
-(เร็วขึ้นบนเครื่อง core เยอะ, ชังก์เดิมต่อกับชังก์ใหม่ได้เนียน, หยุดแล้วรันต่อได้ผลเหมือนรันรวดเดียว, ลด batch เองเมื่อ RAM ไม่พอ ฯลฯ)
+พอร์ตของ Ultra Fast Pregen 1.20.1-13 (Fabric) ไปเป็น NeoForge 1.21.1 เครื่องมือสร้างโลกแบบ batch ใน RAM ตัวเดียวกัน
+มีคำสั่ง (รวม `/pregen set` และ bossbar) ไฟล์ตั้งค่า ไฟล์ save และการแก้ทุกอย่างของรุ่น 1.20.1-13 อ่านรายละเอียดได้ใน [README หลัก](../../README.md)
+(แสงในถ้ำถูกต้องและไม่มีชังก์มืดรอบผู้เล่น, เร็วขึ้นบนเครื่อง core เยอะ, ชังก์เดิมต่อกับชังก์ใหม่ได้เนียน, หยุดแล้วรันต่อได้ผลเหมือนรันรวดเดียว, ลด batch เองเมื่อ RAM ไม่พอ ฯลฯ)
 
 - **ต้องการ:** NeoForge 21.1.1 ขึ้นไป (ทดสอบกับ 21.1.259) และ Java 21
-- **ไฟล์:** `build/libs/ultrafastpregen-neoforge-1.21.1-12.jar` ใส่ในโฟลเดอร์ `mods/` ของ server โดย `12` คือรอบอัปเดตเดียวกับ Fabric
+- **ไฟล์:** `build/libs/ultrafastpregen-neoforge-1.21.1-13.jar` ใส่ในโฟลเดอร์ `mods/` ของ server โดย `13` คือรอบอัปเดตเดียวกับ Fabric
 - **ติดตั้ง:** ลงที่ server อย่างเดียวก็พอ ผู้เล่นไม่ต้องลง เพราะ mod ไม่มี packet ของตัวเอง
 - **คำสั่ง:** `/pregen start|resume|reset|stop|status|world|center` ต้องเป็น op ระดับ 2
 - **ไฟล์ตั้งค่า:** `config/ultrafastpregen.conf` ใช้ key เดียวกัน (`skip_existing_chunks=true` เป็นค่าเริ่มต้น)
@@ -62,12 +62,14 @@ Minecraft 1.21 เปลี่ยนวิธีสร้างชังก์ (
   - mod ที่ทำงานเฉพาะกับชังก์ใหม่ผ่าน event เหล่านี้ (เช่น retrogen) จะไม่เห็นชังก์ที่ Ultra Fast Pregen สร้าง
 - **data attachment:** ถ้า mod ใส่ attachment ให้ชังก์ระหว่าง worldgen ข้อมูลจะถูกบันทึกไปด้วย เพราะใช้ `ChunkSerializer` ของ NeoForge
 
-## ความถูกต้อง (1.21.1-12 ทดสอบบน NeoForge 21.1.259)
+## ความถูกต้อง (1.21.1-13 ทดสอบบน NeoForge 21.1.259)
 
 - **Terrain checksum:**
   - `runTerrainBenchmark` เทียบ vanilla กับทางลัดใน JVM เดียวกัน
   - checksum ของบล็อก, biome, heightmap และ fluid ตรงกันทั้ง 3 seed
   - preset อื่นของ vanilla (large biomes, amplified, nether, end, caves, floating islands) ตรงกับ Minecraft 1.21.1 ทุกบล็อก
+- **แสง:** sky light และ block light ทุกบล็อกตรงกับที่ light engine ของ Minecraft 1.21.1 คำนวณจากบล็อกชุดเดียวกัน (1,572,864 บล็อก ต่าง 0)
+  ชังก์ที่ server ถือค้างแล้วถูกเขียนทับไม่มืด (ก่อน 1.21.1-13 มืด 184 จาก 256 ชังก์ในเทสต์ขอบ spawn)
   - ทางลัดเร็วกว่า vanilla ราว 1.7 เท่า (วัดในรุ่น 9: 397.9 เทียบ 234.2 ชังก์/วินาที, 8 thread, 3 seed × 256 ชังก์)
 - **เทสต์บน server จริง `runPartialBatchCheck`:** ผ่านครบทุกข้อ
   - ผลเหมือนเดิมรอบหมู่บ้าน ทั้งแบบข้ามการคำนวณทีละบล็อกและแบบคำนวณทุกบล็อก

@@ -2,6 +2,7 @@ package com.example.pregen;
 
 import com.mojang.datafixers.util.Either;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.level.block.EntityBlock;
@@ -89,6 +90,25 @@ public class InMemoryChunkGrid {
         return null;
     }
 
+    /**
+     * For the server's light engine (ServerChunkCache#getChunkForLighting): a grid chunk while its
+     * grid lights, or null for the server's answer. The light engine reads blocks only through
+     * that lookup, which knows only chunks the server holds, so without this it lights the grid
+     * as empty (caves at sky light 15, no light from lava). A position the server holds keeps the
+     * server's chunk unless this batch replaces that chunk (see setLightOwnership).
+     */
+    public static net.minecraft.world.level.chunk.LightChunk chunkForLighting(net.minecraft.world.level.Level level,
+                                                                          int chunkX, int chunkZ,
+                                                                          net.minecraft.world.level.chunk.LightChunk held) {
+        for (InMemoryChunkGrid grid : activeGrids) {
+            if (!grid.lighting || grid.level != level || !grid.isTerrain(chunkX, chunkZ)) continue;
+            long pos = ChunkPos.asLong(chunkX, chunkZ);
+            if (held != null ? !grid.lightReplaced.contains(pos) : grid.lightHeld.contains(pos)) return null;
+            return grid.getChunk(chunkX, chunkZ);
+        }
+        return null;
+    }
+
     /** A thread of this mod's worker pool (see chunkForWorker). */
     public static final class WorkerThread extends Thread {
         private final net.minecraft.world.phys.shapes.VoxelShape[] fullShapeKeys = new net.minecraft.world.phys.shapes.VoxelShape[1024];
@@ -152,6 +172,11 @@ public class InMemoryChunkGrid {
     private final int gridChunksZ;
 
     private ProtoChunk[][] chunks;
+    /** While lighting runs (see chunkForLighting). */
+    private volatile boolean lighting;
+    /** Terrain positions the server held when lighting started, and those of them this batch replaces. */
+    private volatile LongSet lightHeld = LongSets.EMPTY_SET;
+    private volatile LongSet lightReplaced = LongSets.EMPTY_SET;
     private final Map<Long, ProtoChunk> fallbackChunks = new ConcurrentHashMap<>();
     private final LongAdder skippedBlendingScans = new LongAdder();
     private final LongAdder terrainSetupNanos = new LongAdder();
@@ -710,19 +735,8 @@ public class InMemoryChunkGrid {
         int maxZ = coreMinChunkZ + coreChunksZ - 1;
 
         if (layer == ChunkLayer.LIGHTING) {
-            // First step of lighting: initialize light in parallel for core chunks
-            List<CompletableFuture<?>> initFutures = new ArrayList<>();
-            for (int cz = minZ; cz <= maxZ; cz++) {
-                for (int cx = minX; cx <= maxX; cx++) {
-                    ProtoChunk chunk = getChunk(cx, cz);
-                    if (chunk != null) {
-                        initFutures.add(ChunkStatus.INITIALIZE_LIGHT.generate(
-                            workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
-                        ));
-                    }
-                }
-            }
-            CompletableFuture.allOf(initFutures.toArray(new CompletableFuture[0])).join();
+            executeLighting(workerPool, onChunkDone);
+            return;
         }
 
         int spacing = layer == ChunkLayer.FEATURES ? 3 : 2;
@@ -751,17 +765,67 @@ public class InMemoryChunkGrid {
                         CompletableFuture<?> f = generateOnPool(ChunkStatus.FEATURES, workerPool, cache, parallelFeatures);
                         if (onChunkDone != null) f = f.thenRun(onChunkDone);
                         phaseFutures.add(f);
-                    } else if (layer == ChunkLayer.LIGHTING) {
-                        CompletableFuture<?> f = ChunkStatus.LIGHT.generate(
-                            workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache
-                        );
-                        if (onChunkDone != null) f = f.thenRun(onChunkDone);
-                        phaseFutures.add(f);
                     }
                 }
             }
 
             CompletableFuture.allOf(phaseFutures.toArray(new CompletableFuture[0])).join();
+        }
+    }
+
+    /**
+     * Which server-held chunks inside the grid stay the server's while it lights (it lights those
+     * itself) and which this batch replaces with its own (lit from the grid, so their light fits
+     * the blocks they get; see LoadedChunkRegeneration).
+     */
+    public void setLightOwnership(LongSet heldByServer, LongSet replaced) {
+        lightHeld = heldByServer;
+        lightReplaced = replaced;
+    }
+
+    private boolean isTerrain(int chunkX, int chunkZ) {
+        return chunkX >= terrainMinX() && chunkX <= terrainMaxX() && chunkZ >= terrainMinZ() && chunkZ <= terrainMaxZ();
+    }
+
+    /**
+     * Minecraft's INITIALIZE_LIGHT and LIGHT steps on every terrain chunk, core and halo, as the
+     * server lights a chunk among lit neighbors; the light engine reads the grid's blocks through
+     * chunkForLighting meanwhile. The engine runs on its own thread, so the four phases only bound
+     * how much work is queued at once. Chunks the server keeps are left to it.
+     */
+    private void executeLighting(ExecutorService workerPool, Runnable onChunkDone) {
+        List<ProtoChunk> lit = new ArrayList<>();
+        for (int cz = terrainMinZ(); cz <= terrainMaxZ(); cz++) {
+            for (int cx = terrainMinX(); cx <= terrainMaxX(); cx++) {
+                long pos = ChunkPos.asLong(cx, cz);
+                if (lightHeld.contains(pos) && !lightReplaced.contains(pos)) continue;
+                ProtoChunk chunk = getChunk(cx, cz);
+                if (chunk != null) lit.add(chunk);
+            }
+        }
+        lighting = true;
+        try {
+            List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size());
+            for (ProtoChunk chunk : lit) {
+                initFutures.add(ChunkStatus.INITIALIZE_LIGHT.generate(
+                    workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
+                ));
+            }
+            CompletableFuture.allOf(initFutures.toArray(new CompletableFuture[0])).join();
+            for (int phase = 0; phase < 4; phase++) {
+                List<CompletableFuture<?>> phaseFutures = new ArrayList<>();
+                for (ProtoChunk chunk : lit) {
+                    ChunkPos pos = chunk.getPos();
+                    if (phaseOf(pos.x, pos.z, 2) != phase) continue;
+                    CompletableFuture<?> f = ChunkStatus.LIGHT.generate(workerPool, level, generator, templateManager,
+                            lightEngine, fullChunkGetter, getNeighborhoodCache(pos.x, pos.z, ChunkStatus.LIGHT.getRange()));
+                    if (onChunkDone != null && isCore(pos.x, pos.z)) f = f.thenRun(onChunkDone);
+                    phaseFutures.add(f);
+                }
+                CompletableFuture.allOf(phaseFutures.toArray(new CompletableFuture[0])).join();
+            }
+        } finally {
+            lighting = false;
         }
     }
 
@@ -1036,7 +1100,9 @@ public class InMemoryChunkGrid {
      * which drops that chunk's block/sky light layers from the shared light engine. This grid
      * never goes through ChunkMap, so without the same call every lit chunk's light data stays
      * in the server's light engine for the life of the process. Chunks were serialized in
-     * encodeForSaving before this runs; chunks the server itself has loaded are left alone.
+     * encodeForSaving before this runs. Positions the server holds keep their light at any
+     * status: the server lit its partly generated chunks already, and replaced ones were lit
+     * from this grid, so dropping it would leave them dark.
      */
     private void releaseLightData() {
         long[] positions = new long[gridChunksX * gridChunksZ];
@@ -1050,12 +1116,10 @@ public class InMemoryChunkGrid {
         ThreadedLevelLightEngine engine = lightEngine;
         ThreadedLevelLightEngineInvoker invoker = (ThreadedLevelLightEngineInvoker) (Object) engine;
         target.getServer().execute(() -> {
-            ServerChunkCache chunkCache = target.getChunkSource();
+            var map = (com.example.pregen.mixin.ChunkMapAccessor) target.getChunkSource().chunkMap;
             for (long packed : positions) {
-                int x = ChunkPos.getX(packed);
-                int z = ChunkPos.getZ(packed);
-                if (chunkCache.getChunkNow(x, z) != null) continue;
-                invoker.callUpdateChunkStatus(new ChunkPos(x, z));
+                if (map.pregen$getVisibleChunk(packed) != null || map.pregen$getUpdatingChunk(packed) != null) continue;
+                invoker.callUpdateChunkStatus(new ChunkPos(ChunkPos.getX(packed), ChunkPos.getZ(packed)));
             }
             engine.tryScheduleUpdate();
         });

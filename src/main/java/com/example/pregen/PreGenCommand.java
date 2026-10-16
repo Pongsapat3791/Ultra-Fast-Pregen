@@ -2,6 +2,7 @@ package com.example.pregen;
 
 import com.mojang.brigadier.CommandDispatcher;
 import java.io.IOException;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.commands.CommandSourceStack;
@@ -19,8 +20,10 @@ import net.minecraft.world.level.Level;
  * In-game command registration for /pregen operations:
  * - /pregen start <world_k> [profile]
  *   Example: /pregen start 20
- *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) are set only in
+ *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) come from
  *   config/ultrafastpregen.conf. "profile" saves a JFR recording of the run to the server directory.
+ * - /pregen set [batch_size|threads|skip_existing_chunks] [value]
+ *   writes one setting into that file (without a value: shows the settings)
  * - /pregen world [dimension]   select the world for the next start, e.g. minecraft:the_nether
  * - /pregen center [x z]         center of the square for the next start (accepts ~ ~)
  * - /pregen resume             continue the selected world's last run (size and center) from its save file
@@ -73,7 +76,60 @@ public class PreGenCommand {
             .then(Commands.literal("status")
                 .executes(ctx -> statusPreGen(ctx.getSource()))
             )
+            .then(Commands.literal("set")
+                .executes(ctx -> showConfig(ctx.getSource()))
+                .then(Commands.literal("batch_size")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.argument("blocks", IntegerArgumentType.integer(PreGenConfig.MIN_BATCH_SIZE, PreGenConfig.MAX_BATCH_SIZE))
+                        .executes(ctx -> setConfig(ctx.getSource(), "batch_size",
+                                Integer.toString(IntegerArgumentType.getInteger(ctx, "blocks"))))
+                    )
+                )
+                .then(Commands.literal("threads")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.literal("max")
+                        .executes(ctx -> setConfig(ctx.getSource(), "threads", "max"))
+                    )
+                    .then(Commands.argument("count", IntegerArgumentType.integer(1, PreGenConfig.MAX_THREADS))
+                        .executes(ctx -> setConfig(ctx.getSource(), "threads",
+                                Integer.toString(IntegerArgumentType.getInteger(ctx, "count"))))
+                    )
+                )
+                .then(Commands.literal("skip_existing_chunks")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.argument("keep", BoolArgumentType.bool())
+                        .executes(ctx -> setConfig(ctx.getSource(), "skip_existing_chunks",
+                                Boolean.toString(BoolArgumentType.getBool(ctx, "keep"))))
+                    )
+                )
+            )
         );
+    }
+
+    /** Writes one setting into the config file (the command arguments validate the value). */
+    private static int setConfig(CommandSourceStack source, String key, String value) {
+        try {
+            PreGenConfig.set(PreGenMod.configDirectory, key, value);
+        } catch (IOException failure) {
+            source.sendFailure(Component.literal("§c[PreGen] Could not write config/" + PreGenConfig.FILE_NAME + ": " + failure.getMessage()));
+            return 0;
+        }
+        DynamicBatchPreGen running = activeTask;
+        String when = running != null && running.isRunning()
+                ? "the running task keeps its settings; the next /pregen start uses it"
+                : "used from the next /pregen start";
+        source.sendSuccess(() -> Component.literal("§a[PreGen] " + key + "=" + value + " saved in config/"
+                + PreGenConfig.FILE_NAME + " §7(" + when + ")"), true);
+        return 1;
+    }
+
+    private static int showConfig(CommandSourceStack source) {
+        PreGenConfig config = PreGenConfig.load();
+        String threads = config.threadsFromCpuCount ? "max (" + config.threads + ")" : Integer.toString(config.threads);
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§a[PreGen] batch_size=%d | threads=%s | skip_existing_chunks=%b §7(change with /pregen set <key> <value>; config/%s)",
+                config.batchSizeBlocks, threads, config.skipExistingChunks, PreGenConfig.FILE_NAME)), false);
+        return 1;
     }
 
     private static int startPreGen(CommandSourceStack source, int worldK, boolean profile) {

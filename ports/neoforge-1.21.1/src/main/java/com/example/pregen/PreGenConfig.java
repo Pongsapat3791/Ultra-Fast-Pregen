@@ -233,6 +233,33 @@ final class PreGenConfig {
                 skipExistingChunks, pipeline);
     }
 
+    /**
+     * Writes one setting into the file (from /pregen set), keeping its comments and every other
+     * line: lines of the key get the new value, or it is appended. Callers validate the value.
+     */
+    static void set(Path directory, String key, String value) throws IOException {
+        // Creates or migrates the file, with every key, first.
+        load(directory, 1, message -> {});
+        Path file = directory.resolve(FILE_NAME);
+        List<String> lines = new java.util.ArrayList<>(Files.readAllLines(file, StandardCharsets.UTF_8));
+        boolean found = false;
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).trim();
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith("!")) continue;
+            int separator = line.length();
+            for (char mark : new char[]{'=', ':', ' ', '\t'}) {
+                int at = line.indexOf(mark);
+                if (at >= 0 && at < separator) separator = at;
+            }
+            if (line.substring(0, separator).equals(key)) {
+                lines.set(i, key + "=" + value);
+                found = true;
+            }
+        }
+        if (!found) lines.add(key + "=" + value);
+        Files.write(file, lines, StandardCharsets.UTF_8);
+    }
+
     private static boolean readBoolean(Properties properties, String key, boolean fallback, Path file,
                                        Consumer<String> warn) {
         String value = properties.getProperty(key, Boolean.toString(fallback)).trim();

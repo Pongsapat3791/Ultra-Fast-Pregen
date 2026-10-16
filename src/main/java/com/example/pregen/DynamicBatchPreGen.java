@@ -1,7 +1,9 @@
 package com.example.pregen;
 
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerBossEvent;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.BossEvent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
 import org.slf4j.Logger;
@@ -43,7 +45,10 @@ public class DynamicBatchPreGen {
     private final int centerX;
     private final int centerZ;
     private final AtomicBoolean started = new AtomicBoolean();
-    private final AtomicBoolean actionBarPending = new AtomicBoolean();
+    private final AtomicBoolean bossBarPending = new AtomicBoolean();
+    private final AtomicLong lastBossBarAt = new AtomicLong();
+    /** Overall progress for ops online (server thread only, see updateBossBar). */
+    private ServerBossEvent bossBar;
     private volatile boolean profiling;
     private volatile PreGenConfig.TerrainPipeline terrainPipeline = PreGenConfig.TerrainPipeline.AUTO;
     private volatile boolean parallelSteps = true;
@@ -108,7 +113,6 @@ public class DynamicBatchPreGen {
         final int total;
         final long startedAt = System.currentTimeMillis();
         final AtomicInteger done = new AtomicInteger();
-        final AtomicLong lastActionBarAt = new AtomicLong(startedAt);
         volatile long endedAt;
         int baseChunks;
         int tileChunks;
@@ -346,7 +350,12 @@ public class DynamicBatchPreGen {
         });
         progressTicker.scheduleAtFixedRate(() -> {
             try {
-                if (isRunning && !generationCompleted) reportProgress();
+                if (isRunning && !generationCompleted) {
+                    reportProgress();
+                    long now = System.currentTimeMillis();
+                    long last = lastBossBarAt.get();
+                    if (now - last >= 1000 && lastBossBarAt.compareAndSet(last, now)) updateBossBar();
+                }
             } catch (RuntimeException failure) {
                 LOGGER.warn("[PreGen] Progress report failed", failure);
             }
@@ -505,7 +514,7 @@ public class DynamicBatchPreGen {
             if (completedAll) {
                 generationCompleted = true;
                 reportProgress(true);
-                broadcastActionBar();
+                updateBossBar();
                 finalStatus = "Completed";
                 log(String.format("[PreGen] All %d batches (%d Chunks) completed successfully in %s! Average Speed: %.1f chunks/s",
                         completedBatchesCount, completedChunksCount, formatDuration(getElapsedMillis()), getChunksPerSecond()));
@@ -540,6 +549,7 @@ public class DynamicBatchPreGen {
             currentStageName = finalStatus;
             isRunning = false;
             if (progressTicker != null) progressTicker.shutdownNow();
+            hideBossBar();
             if (tailExecutor != null) tailExecutor.shutdown();
             workerPool.shutdown();
         }
@@ -807,7 +817,7 @@ public class DynamicBatchPreGen {
         stageTimes.setLength(0);
         currentStageName = "Preparing batch";
         reportProgress();
-        broadcastActionBar();
+        updateBossBar();
         log(String.format("[%d/%d] (%.1f%%) Starting Tile at Block [%d, %d] (Core Chunks: %dx%d = %d%s)...",
                 index, total, getProgressPercent(), tile.minBlockX(), tile.minBlockZ(),
                 tile.chunksX(), tile.chunksZ(), tile.totalChunks(),
@@ -906,6 +916,21 @@ public class DynamicBatchPreGen {
         // Running beside the next batch, this batch keeps its own step times off the shown stage.
         StringBuilder times = overlapped ? new StringBuilder(tail.headTimes) : stageTimes;
         try {
+            // The server's chunks inside the grid now: those this batch replaces are lit from the
+            // grid like the rest, the others stay the server's (see InMemoryChunkGrid#chunkForLighting).
+            LongSet heldAtLight = await(WorldChunkIO.findHeldByServer(level, LongArrayList.wrap(grid.getTerrainPositions())),
+                    "the server's loaded chunk list");
+            LongSet replaced = new LongOpenHashSet();
+            if (!heldAtLight.isEmpty()) {
+                LongArrayList heldCore = new LongArrayList();
+                for (long pos : heldAtLight) if (grid.isCore(pos) && !skip.contains(pos)) heldCore.add(pos);
+                // When keeping existing chunks, one the server holds fully generated stays (a player's).
+                LongSet heldFull = skipExistingChunks && !heldCore.isEmpty()
+                        ? await(WorldChunkIO.findHeldFullByServer(level, heldCore), "the server's loaded chunk list")
+                        : LongSets.EMPTY_SET;
+                for (long pos : heldCore) if (!heldFull.contains(pos)) replaced.add(pos);
+            }
+            grid.setLightOwnership(heldAtLight, replaced);
             Runnable progress = startTailStage(tail, overlapped, "Stage 5/6: Lighting", grid.getCoreTotalChunks());
             grid.executePhased(ChunkLayer.LIGHTING, workerPool, progress);
             endTailStage(tail, overlapped, times);
@@ -919,7 +944,7 @@ public class DynamicBatchPreGen {
             endTailStage(tail, overlapped, times);
             // Chunks the server holds get the generated terrain too, or its later save would
             // overwrite ours; when keeping existing chunks, only part-way generated ones.
-            LoadedChunkRegeneration.apply(level, grid, skip, skipExistingChunks);
+            LoadedChunkRegeneration.applyLit(level, grid, replaced);
             LOGGER.debug(grid.getEncodeDiagnostics() + String.format(" | Spawned mobs: %d", grid.getSpawnedEntities()));
             keptExistingChunks.addAndGet(skip.size());
             submitWrites(index, total, encoded, !overlapped);
@@ -958,7 +983,7 @@ public class DynamicBatchPreGen {
                 index, total, batchElapsed / 1000.0, getProgressPercent(), completedChunksCount,
                 getTotalWorldChunks(), getEstimatedRemainingTime(), usedMemoryMB));
         LOGGER.info("  [{}/{}] Step times: {} | {} | {}", index, total, times, tail.terrainDiagnostics, tail.featureDiagnostics);
-        broadcastActionBar();
+        updateBossBar();
     }
 
     /** A tail step: the shown stage when batches run one at a time, otherwise tracked on the tail only. */
@@ -1061,7 +1086,7 @@ public class DynamicBatchPreGen {
                                 (System.nanoTime() - startedAt) / 1e9));
                     }
                     reportProgress();
-                    broadcastActionBar();
+                    updateBossBar();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                     return;
@@ -1100,7 +1125,7 @@ public class DynamicBatchPreGen {
         activeStage = stage;
         currentStageName = name;
         reportProgress();
-        broadcastActionBar();
+        updateBossBar();
         return () -> onChunkDoneInStage(stage);
     }
 
@@ -1110,12 +1135,6 @@ public class DynamicBatchPreGen {
         if (stage.total <= 0 || activeStage != stage) return;
 
         reportProgress();
-
-        long now = System.currentTimeMillis();
-        long previous = stage.lastActionBarAt.get();
-        if (now - previous >= 1500 && stage.lastActionBarAt.compareAndSet(previous, now)) {
-            broadcastActionBar();
-        }
     }
 
     private void endStage() {
@@ -1125,7 +1144,7 @@ public class DynamicBatchPreGen {
         // Includes steps with zero work (e.g. no new chunks to spawn or encode).
         stage.done.set(stage.total);
         reportProgress();
-        broadcastActionBar();
+        updateBossBar();
     }
 
     private static void appendStageTime(StringBuilder times, StageProgress stage) {
@@ -1139,22 +1158,46 @@ public class DynamicBatchPreGen {
         return colon >= 0 ? name.substring(colon + 2) : name;
     }
 
-    private void broadcastActionBar() {
+    /**
+     * The boss bar ops online see during the run: overall progress, speed and ETA. Ops who join
+     * meanwhile get it on the next update (every second); it goes a few seconds after the end.
+     */
+    private void updateBossBar() {
         if (level == null) return;
-        if (!actionBarPending.compareAndSet(false, true)) return;
+        if (!bossBarPending.compareAndSet(false, true)) return;
         level.getServer().execute(() -> {
             try {
                 if (!isRunning && !generationCompleted) return;
-                String message = "§a" + progressMessage();
+                if (bossBar == null) {
+                    bossBar = new ServerBossEvent(Component.literal(PreGenMod.NAME), BossEvent.BossBarColor.GREEN,
+                            BossEvent.BossBarOverlay.PROGRESS);
+                }
+                double percent = getProgressPercent();
+                bossBar.setName(Component.literal(generationCompleted
+                        ? String.format("%s: done in %s", PreGenMod.NAME, formatDuration(getElapsedMillis()))
+                        : String.format("%s %.1f%% | %.1f chunks/s | ETA %s", PreGenMod.NAME, percent,
+                                getChunksPerSecond(), getEstimatedRemainingTime())));
+                bossBar.setProgress((float) Math.max(0.0, Math.min(1.0, percent / 100.0)));
                 for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
                     if (player.hasPermissions(2)) {
-                        player.displayClientMessage(Component.literal(message), true);
+                        bossBar.addPlayer(player);
+                    } else {
+                        bossBar.removePlayer(player);
                     }
                 }
             } finally {
-                actionBarPending.set(false);
+                bossBarPending.set(false);
             }
         });
+    }
+
+    /** Removes the boss bar a few seconds after the run ends; the result stays in chat. */
+    private void hideBossBar() {
+        if (level == null) return;
+        var server = level.getServer();
+        CompletableFuture.delayedExecutor(5, TimeUnit.SECONDS).execute(() -> server.execute(() -> {
+            if (bossBar != null) bossBar.removeAllPlayers();
+        }));
     }
 
     private void log(String message) {

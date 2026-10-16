@@ -39,7 +39,7 @@ neoForge {
             gameDirectory = file('build/partial-batch-check')
             def heap = providers.gradleProperty('checkHeap').getOrElse('4G')
             jvmArguments.addAll("-Xmx${heap}", '-Dpregen.partialBatchCheck=true')
-            ['pipelineBenchmark', 'pipelineBenchmark.rounds', 'pipelineBenchmark.threads', 'pipelineBenchmark.profile',
+            ['onlyChecks', 'pipelineBenchmark', 'pipelineBenchmark.rounds', 'pipelineBenchmark.threads', 'pipelineBenchmark.profile',
              'batchBenchmark', 'batchBenchmark.worldK', 'batchBenchmark.threads'].each { key ->
                 def value = providers.gradleProperty(key).orNull
                 if (value != null) jvmArgument "-Dpregen.${key}=${value}"

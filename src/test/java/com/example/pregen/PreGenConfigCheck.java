@@ -22,8 +22,9 @@ public final class PreGenConfigCheck {
             checkLegacyMigration(scratch.resolve("legacy"));
             checkCustomAndInvalidValues(scratch.resolve("values"));
             checkBatchFitsHeap();
+            checkSetCommand(scratch.resolve("set"));
             System.out.println("PREGEN_CONFIG_CHECK PASS defaults=batch1000,threads_max created=true legacy_migrated=true"
-                    + " missing_keys_appended_once=true invalid_values_fall_back=true");
+                    + " missing_keys_appended_once=true invalid_values_fall_back=true set_keeps_comments=true");
         } finally {
             delete(scratch, outputRoot);
         }
@@ -124,6 +125,23 @@ public final class PreGenConfigCheck {
         require(!PreGenConfig.overlapFits(1000, (long) (3.6 * gb)), "A 4 GB server (about 3.6 GB free) runs batches one at a time");
         System.out.println("PREGEN_BATCH_HEAP_CHECK PASS batch_for_1.5GB=" + small + " heap_for_1000="
                 + PreGenConfig.heapForBatch(1000) / (1 << 20) + "MB");
+    }
+
+    /** /pregen set: one key's value changes in place, comments and other keys stay. */
+    private static void checkSetCommand(Path directory) throws IOException {
+        List<String> warnings = new ArrayList<>();
+        PreGenConfig.set(directory, "batch_size", "1500");
+        PreGenConfig.set(directory, "threads", "6");
+        PreGenConfig.set(directory, "skip_existing_chunks", "false");
+        PreGenConfig config = PreGenConfig.load(directory, 12, warnings::add);
+        require(config.batchSizeBlocks == 1500 && config.threads == 6 && !config.threadsFromCpuCount
+                && !config.skipExistingChunks, "Set values must be read back");
+        require(warnings.isEmpty(), "Set values must be valid: " + warnings);
+        String text = Files.readString(directory.resolve(PreGenConfig.FILE_NAME), StandardCharsets.UTF_8);
+        require(text.contains("# batch_size:") && text.contains("terrain_pipeline=auto"), "Comments and other keys must stay");
+        require(text.indexOf("batch_size=") == text.lastIndexOf("batch_size="), "A key must not be written twice");
+        PreGenConfig.set(directory, "threads", "max");
+        require(PreGenConfig.load(directory, 12, warnings::add).threadsFromCpuCount, "threads=max must restore every core");
     }
 
     private static void require(boolean condition, String message) {
