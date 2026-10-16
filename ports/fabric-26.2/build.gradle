@@ -1,0 +1,83 @@
+plugins {
+	// Minecraft 26.x is unobfuscated: this Loom plugin builds against its own names, no remapping.
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+loom {
+	mods {
+		"ultrafastpregen" {
+			sourceSet sourceSets.main
+		}
+		"pregen-benchmark" {
+			sourceSet sourceSets.test
+		}
+	}
+	runs {
+		partialBatchCheck {
+			server()
+			name = "Partial existing batch regression"
+			source sourceSets.test
+			runDir "build/partial-batch-check"
+			vmArgs "-Xmx4G", "-Dpregen.partialBatchCheck=true"
+			["onlyChecks", "batchBenchmark", "batchBenchmark.worldK", "batchBenchmark.threads"].each { key ->
+				def value = providers.gradleProperty(key).orNull
+				if (value != null) vmArgs "-Dpregen.${key}=${value}"
+			}
+			def heap = providers.gradleProperty("checkHeap").orNull
+			if (heap != null) vmArgs "-Xmx${heap}"
+			programArgs "nogui"
+		}
+		terrainBenchmark {
+			server()
+			name = "Stage 2 terrain benchmark"
+			source sourceSets.test
+			runDir "build/terrain-benchmark"
+			vmArgs "-Xmx4G", "-Dpregen.benchmark=true"
+			["chunks", "threads", "seeds", "compare"].each { key ->
+				def value = providers.gradleProperty("benchmark.${key}").orNull
+				if (value != null) vmArgs "-Dpregen.benchmark.${key}=${value}"
+			}
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	// Only the checks use Fabric API (server lifecycle events); the mod itself needs none.
+	testImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 25
+	it.options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+tasks.named('test') {
+	// Executable checks run through runTerrainBenchmark and runPartialBatchCheck, outside JUnit.
+	enabled = false
+}
+
+jar {
+	from("LICENSE") {
+		rename { "${it}_ultrafastpregen" }
+	}
+}

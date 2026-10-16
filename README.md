@@ -7,6 +7,7 @@ Mod สร้างโลกล่วงหน้า (pre-generation) สำห�
 - ไฟล์: `build/libs/ultrafastpregen-fabric-1.20.1-x.jar` โดย `x` คือรอบอัปเดต (`version` ใน `gradle.properties`)
 - รุ่น Forge 1.20.1 (47.x): `ultrafastpregen-forge-1.20.1-x.jar` จาก [ports/forge-1.20.1](ports/forge-1.20.1/README.md) ใช้โค้ดชุดเดียวกัน เลขรุ่นตรงกัน
 - รุ่น NeoForge 1.21.1: `ultrafastpregen-neoforge-1.21.1-x.jar` จาก [ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md) (พอร์ตของรุ่นเดียวกัน เลขรุ่นตรงกัน)
+- รุ่น Fabric 26.2 (Java 25): `ultrafastpregen-fabric-26.2-x.jar` จาก [ports/fabric-26.2](ports/fabric-26.2/README.md)
 
 ## ความเร็ว (วัดจริง)
 
@@ -208,7 +209,7 @@ batch ใหญ่เร็วขึ้นเพียงเล็กน้อ�
 
 ## ข้อจำกัด
 
-- โปรเจกต์หลักคือ Fabric 1.20.1 ส่วน Forge 1.20.1 อยู่ที่ `ports/forge-1.20.1` และ NeoForge 1.21.1 อยู่ที่ `ports/neoforge-1.21.1`
+- โปรเจกต์หลักคือ Fabric 1.20.1 ส่วน Forge 1.20.1 อยู่ที่ `ports/forge-1.20.1`, NeoForge 1.21.1 ที่ `ports/neoforge-1.21.1` และ Fabric 26.2 ที่ `ports/fabric-26.2`
 - พื้นที่เป็นสี่เหลี่ยมจัตุรัสรอบจุดศูนย์กลาง
 - ใช้ CPU เต็มทุก core server กระตุกได้ระหว่างรัน ถ้ามีผู้เล่นออนไลน์ ลด `threads` ลง 1–2 core
 - ชังก์ที่ server กำลังถืออยู่ (มีผู้เล่นอยู่ใกล้) และชังก์ของ Minecraft รุ่นเก่าที่ยังไม่ถูกอัปเกรด จะไม่รับส่วนที่ features ล้ำเข้าไป
