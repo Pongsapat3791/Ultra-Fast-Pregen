@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "pregen-benchmark",
+  "version": "1.0.0",
+  "name": "PreGen terrain benchmark",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.example.pregen.fabric.FabricChecks"]
+  },
+  "depends": {
+    "ultrafastpregen": "*"
+  }
+}

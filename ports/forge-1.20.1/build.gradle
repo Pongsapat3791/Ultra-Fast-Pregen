@@ -1,0 +1,151 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev.legacyforge' version "${moddev_version}"
+}
+
+// The Fabric build two folders up holds the shared source, checks and update round; only the
+// entry points (packages fabric and forge) differ.
+def shared = file('../..')
+def sharedProperties = new Properties()
+new File(shared, 'gradle.properties').withInputStream { sharedProperties.load(it) }
+version = sharedProperties.getProperty('version')
+group = project.group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+sourceSets {
+    main {
+        java {
+            srcDir new File(shared, 'src/main/java')
+            exclude 'com/example/pregen/fabric/**'
+        }
+        resources {
+            srcDir new File(shared, 'src/main/resources')
+            exclude 'fabric.mod.json'
+        }
+    }
+    test {
+        java {
+            srcDir new File(shared, 'src/test/java')
+            exclude 'com/example/pregen/fabric/**'
+            // Client only (quick play); the Fabric build runs it.
+            exclude 'com/example/pregen/SingleplayerCheck.java'
+        }
+    }
+}
+
+legacyForge {
+    version = project.forge_version
+
+    mods {
+        ultrafastpregen {
+            sourceSet sourceSets.main
+            // Development checks (see forge.ForgeChecks); the jar only packages main.
+            sourceSet sourceSets.test
+        }
+    }
+
+    runs {
+        server {
+            server()
+            gameDirectory = file('run')
+            programArgument '--nogui'
+        }
+        partialBatchCheck {
+            server()
+            sourceSet = sourceSets.test
+            gameDirectory = file('build/partial-batch-check')
+            def heap = providers.gradleProperty('checkHeap').getOrElse('4G')
+            jvmArguments.addAll("-Xmx${heap}", '-Dpregen.partialBatchCheck=true')
+            ['onlyChecks', 'batchBenchmark', 'batchBenchmark.worldK', 'batchBenchmark.threads'].each { key ->
+                def value = providers.gradleProperty(key).orNull
+                if (value != null) jvmArgument "-Dpregen.${key}=${value}"
+            }
+            programArgument '--nogui'
+        }
+        terrainBenchmark {
+            server()
+            sourceSet = sourceSets.test
+            gameDirectory = file('build/terrain-benchmark')
+            jvmArguments.addAll('-Xmx4G', '-Dpregen.benchmark=true')
+            // Exits once mods have loaded, before a world is opened.
+            ['chunks', 'threads', 'seeds', 'compare'].each { key ->
+                def value = providers.gradleProperty("benchmark.${key}").orNull
+                if (value != null) jvmArgument "-Dpregen.benchmark.${key}=${value}"
+            }
+            programArgument '--nogui'
+        }
+    }
+}
+
+legacyForge.addModdingDependenciesTo(sourceSets.test)
+
+mixin {
+    add sourceSets.main, 'pregen.refmap.json'
+    config 'pregen.mixins.json'
+}
+
+dependencies {
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+tasks.named('processResources') {
+    def props = [version: project.version, forge_version_range: project.forge_version_range,
+                 loader_version_range: project.loader_version_range, minecraft_version: project.minecraft_version]
+    inputs.properties props
+    filesMatching('META-INF/mods.toml') {
+        expand props
+    }
+    // Forge maps the mixins' Mojang names to its runtime names through this refmap.
+    filesMatching('pregen.mixins.json') {
+        filter { line -> line.contains('"package"') ? line + '\n\t"refmap": "pregen.refmap.json",' : line }
+    }
+}
+
+// The checks' server folder: the same settings as the Fabric build's regression world.
+def prepareCheckFolder = tasks.register('prepareCheckFolder') {
+    def target = file('build/partial-batch-check')
+    def template = file('checks')
+    doLast {
+        target.mkdirs()
+        // Keeps the level-name a run was pointed at.
+        template.listFiles().each { source ->
+            def copy = new File(target, source.name)
+            if (!copy.exists()) copy.text = source.text
+        }
+    }
+}
+// Forge's server reads the EULA before it loads mods, so the benchmark needs one too.
+def prepareBenchmarkFolder = tasks.register('prepareBenchmarkFolder') {
+    def target = file('build/terrain-benchmark')
+    doLast {
+        target.mkdirs()
+        new File(target, 'eula.txt').text = 'eula=true' + System.lineSeparator()
+    }
+}
+afterEvaluate {
+    tasks.named('runPartialBatchCheck') { dependsOn prepareCheckFolder }
+    tasks.named('runTerrainBenchmark') { dependsOn prepareBenchmarkFolder }
+}
+
+tasks.named('test') {
+    // Executable checks run through runTerrainBenchmark and runPartialBatchCheck, outside JUnit.
+    enabled = false
+}
+
+jar {
+    // Forge loads a jar's mixins from this attribute.
+    manifest.attributes('MixinConfigs': 'pregen.mixins.json')
+    from(new File(shared, 'LICENSE')) {
+        rename { "${it}_ultrafastpregen" }
+    }
+}

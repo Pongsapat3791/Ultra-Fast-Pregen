@@ -1,0 +1,1164 @@
+package com.example.pregen;
+
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import java.io.IOException;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import java.util.List;
+import java.util.HashMap;
+import net.minecraft.nbt.CompoundTag;
+import it.unimi.dsi.fastutil.longs.LongSets;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+
+/** Manages chunk-aligned tiles and keeps stage work separate from completed world chunks. */
+public class DynamicBatchPreGen {
+    private static final Logger LOGGER = LoggerFactory.getLogger("PreGenEngine");
+
+    private final ServerLevel level;
+    private final int worldSizeBlocks;
+    private final int batchSizeBlocks;
+    private final int parallelThreads;
+    private final ExecutorService workerPool;
+    private final Consumer<String> progressCallback;
+    private final ChunkBatchPlan batchPlan;
+    private final int centerX;
+    private final int centerZ;
+    private final AtomicBoolean started = new AtomicBoolean();
+    private final AtomicBoolean actionBarPending = new AtomicBoolean();
+    private volatile boolean profiling;
+    private volatile PreGenConfig.TerrainPipeline terrainPipeline = PreGenConfig.TerrainPipeline.AUTO;
+    private volatile boolean parallelSteps = true;
+    private boolean parallelFeatures = true;
+    private volatile boolean releaseMemoryEachBatch = true;
+    /** Keep chunks that exist on disk or in the server's memory (skip_existing_chunks); off for direct API use. */
+    private volatile boolean skipExistingChunks;
+    /** With skipExistingChunks: per region, the chunks stored when the run started. */
+    private WorldChunkIO.StoredChunks storedAtStart = WorldChunkIO.StoredChunks.NONE;
+    /** Feature writes across batch boundaries (see SeamWrites). */
+    private final SeamWrites seams = new SeamWrites();
+    private volatile int existingBatches;
+    private final AtomicInteger writtenChunks = new AtomicInteger();
+    private final AtomicInteger keptExistingChunks = new AtomicInteger();
+    private WorldChunkIO chunkIO;
+    private boolean fusedTerrain;
+    // At most one tile's encoded chunks are in flight to the server's IO thread at a time.
+    private volatile CompletableFuture<WorldChunkIO.WriteResult> pendingWrite;
+    /** Lights and saves each batch on its own thread while the next one generates (see BatchTail). */
+    private volatile boolean overlapBatches = Boolean.parseBoolean(System.getProperty("fastpregen.overlapBatches", "true"));
+    private ExecutorService tailExecutor;
+    private volatile CompletableFuture<Void> pendingTail = CompletableFuture.completedFuture(null);
+    private volatile BatchTail runningTail;
+    /** Batch completion and the progress base of a starting stage change together. */
+    private final Object progressLock = new Object();
+    private volatile WorldChunkIO.WriteResult pendingWriteResult;
+
+    // Includes the brief queued interval so two start commands cannot race before
+    // the coordinator thread enters start(). A task owns its pool for one run only.
+    private volatile boolean isRunning = true;
+    private volatile boolean isCancelled;
+    private volatile int currentBatchIndex;
+    private volatile int completedBatchesCount;
+    private volatile String currentStageName = "Queued";
+    private volatile int currentMinX;
+    private volatile int currentMinZ;
+    private volatile long totalStartTime = System.currentTimeMillis();
+    private volatile long totalEndTime;
+    private volatile int completedChunksCount;
+    private volatile StageProgress activeStage = new StageProgress("Queued", 0);
+    private static final int PROGRESS_PHASES = 7;
+    private volatile int currentTileChunks;
+    private int currentPhase;
+    private volatile boolean generationCompleted;
+    /** Progress, speed and ETA are logged on a fixed 3-second cadence, not per percent. */
+    private static final long PROGRESS_LOG_INTERVAL_MS = 3_000;
+    private final AtomicLong lastProgressLogAt = new AtomicLong();
+    private ScheduledExecutorService progressTicker;
+    /** Chunks earlier runs already generated; held in RAM and written back after every tile. */
+    private volatile PreGenSaveFile saveFile;
+    /** Target chunks skipped because the save file has them; excluded from speed and ETA. */
+    private volatile int resumedChunks;
+    private volatile int resumedBatches;
+    /** Per-step durations of the running batch, logged with its completion line. */
+    private final StringBuilder stageTimes = new StringBuilder();
+    private String featureDiagnostics = "";
+    private String terrainDiagnostics = "";
+
+    /** Each callback captures its stage, so a delayed callback cannot update a later stage. */
+    private static final class StageProgress {
+        final String name;
+        final int total;
+        final long startedAt = System.currentTimeMillis();
+        final AtomicInteger done = new AtomicInteger();
+        final AtomicLong lastActionBarAt = new AtomicLong(startedAt);
+        volatile long endedAt;
+        int baseChunks;
+        int tileChunks;
+        int phase;
+        /** A batch still finishing when this stage started; baseChunks counts it as done. */
+        BatchTail overlappedTail;
+
+        StageProgress(String name, int total) {
+            this.name = name;
+            this.total = total;
+        }
+
+        long elapsedMillis() {
+            return Math.max(1, (endedAt == 0 ? System.currentTimeMillis() : endedAt) - startedAt);
+        }
+
+        double percent() {
+            return total > 0 ? Math.min(100.0, done.get() * 100.0 / total) : 0.0;
+        }
+
+        double speed() {
+            return done.get() * 1000.0 / elapsedMillis();
+        }
+    }
+
+    /**
+     * A batch after its features: lighting, mobs, encoding and saving remain. With overlapBatches
+     * these run on the tail thread while the next batch generates structures, terrain and caves;
+     * the next batch waits for them before it touches any chunk around it (prepareNeighbors), so
+     * reads and writes stay in the order of one batch at a time.
+     */
+    private static final class BatchTail {
+        final int index;
+        final int total;
+        final ChunkBatchPlan.Tile tile;
+        final InMemoryChunkGrid grid;
+        final LongSet done;
+        final long startedAt;
+        final List<WorldChunkIO.EncodedChunk> partGenerated;
+        final Map<Long, List<SeamWrites.Write>> intoSaved;
+        final String headTimes;
+        final String terrainDiagnostics;
+        final String featureDiagnostics;
+        /** Progress phases the batch finished before its tail. */
+        final int firstPhase;
+        volatile StageProgress stage;
+        volatile boolean finished;
+
+        BatchTail(int index, int total, ChunkBatchPlan.Tile tile, InMemoryChunkGrid grid, LongSet done, long startedAt,
+                  List<WorldChunkIO.EncodedChunk> partGenerated, Map<Long, List<SeamWrites.Write>> intoSaved,
+                  String headTimes, String terrainDiagnostics, String featureDiagnostics, int firstPhase) {
+            this.index = index;
+            this.total = total;
+            this.tile = tile;
+            this.grid = grid;
+            this.done = done;
+            this.startedAt = startedAt;
+            this.partGenerated = partGenerated;
+            this.intoSaved = intoSaved;
+            this.headTimes = headTimes;
+            this.terrainDiagnostics = terrainDiagnostics;
+            this.featureDiagnostics = featureDiagnostics;
+            this.firstPhase = firstPhase;
+        }
+
+        /** Share of the batch's work done. */
+        double fraction() {
+            StageProgress current = stage;
+            if (current == null) return (double) firstPhase / PROGRESS_PHASES;
+            return (current.phase + (current.endedAt != 0 ? 1.0 : current.percent() / 100.0)) / PROGRESS_PHASES;
+        }
+    }
+
+    public DynamicBatchPreGen(ServerLevel level, int worldK, int batchK, int parallelThreads,
+                              Consumer<String> progressCallback) {
+        this(level, worldK, Math.multiplyExact(batchK, 1000), parallelThreads, 0, 0, progressCallback);
+    }
+
+    /**
+     * Generates the worldK x worldK square centered on block (centerX, centerZ) of the given world,
+     * one batchSizeBlocks x batchSizeBlocks tile at a time.
+     */
+    public DynamicBatchPreGen(ServerLevel level, int worldK, int batchSizeBlocks, int parallelThreads,
+                              int centerX, int centerZ, Consumer<String> progressCallback) {
+        this.level = level;
+        this.centerX = centerX;
+        this.centerZ = centerZ;
+        this.worldSizeBlocks = Math.multiplyExact(worldK, 1000);
+        this.batchSizeBlocks = batchSizeBlocks;
+        this.parallelThreads = parallelThreads;
+        this.batchPlan = new ChunkBatchPlan(worldSizeBlocks, batchSizeBlocks, centerX, centerZ);
+        this.workerPool = Executors.newFixedThreadPool(parallelThreads, new ThreadFactory() {
+            private final AtomicInteger count = new AtomicInteger(1);
+
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread thread = new InMemoryChunkGrid.WorkerThread(r, "PreGen-Worker-" + count.getAndIncrement());
+                thread.setDaemon(true);
+                return thread;
+            }
+        });
+        this.progressCallback = progressCallback != null ? progressCallback : message -> {};
+    }
+
+    public void cancel() {
+        isCancelled = true;
+    }
+
+    /** Off when the heap cannot hold a batch and the previous one's tail at once (see PreGenConfig#overlapFits). */
+    public void setOverlapBatches(boolean overlap) {
+        overlapBatches = overlap;
+    }
+
+    /** Records a JFR profile of the whole run into the server directory. Call before start(). */
+    /** Stage 2 path selection from config; call before start(). */
+    void setTerrainPipeline(PreGenConfig.TerrainPipeline pipeline) {
+        terrainPipeline = pipeline;
+    }
+
+    /** Whether vanilla's one-chunk-at-a-time steps run on every worker; call before start(). */
+    /** Whether to collect garbage after every batch, not only at the end; call before start(). */
+    void setReleaseMemoryEachBatch(boolean release) {
+        releaseMemoryEachBatch = release;
+    }
+
+    /** Keep every chunk that already exists instead of overwriting it; call before start(). */
+    void setSkipExistingChunks(boolean skip) {
+        skipExistingChunks = skip;
+    }
+
+    void setParallelSteps(boolean parallel) {
+        parallelSteps = parallel;
+    }
+
+    public void enableProfiling() {
+        profiling = true;
+    }
+
+    public boolean isRunning() {
+        return isRunning;
+    }
+
+    public int getCurrentBatchIndex() {
+        return currentBatchIndex;
+    }
+
+    public int getCompletedBatchesCount() {
+        return completedBatchesCount;
+    }
+
+    public int getTotalBatchesCount() {
+        return batchPlan.totalBatches();
+    }
+
+    public String getCurrentStageName() {
+        return currentStageName;
+    }
+
+    public String getWorldName() {
+        return level != null ? level.dimension().location().toString() : "-";
+    }
+
+    public int getCenterX() {
+        return centerX;
+    }
+
+    public int getCenterZ() {
+        return centerZ;
+    }
+
+    public int getCurrentMinX() {
+        return currentMinX;
+    }
+
+    public int getCurrentMinZ() {
+        return currentMinZ;
+    }
+
+    public int getCompletedChunksCount() {
+        return completedChunksCount;
+    }
+
+    public int getTotalWorldChunks() {
+        return batchPlan.totalChunks();
+    }
+
+    public double getOverallPercent() {
+        return completedChunksCount * 100.0 / getTotalWorldChunks();
+    }
+
+    /** Estimated work progress; repeated halo work never counts as completed world chunks. */
+    public double getProgressPercent() {
+        if (generationCompleted) return 100.0;
+        StageProgress stage = activeStage;
+        double inFlight = 0.0;
+        if (stage.tileChunks > 0) {
+            inFlight = stage.baseChunks + stage.tileChunks *
+                    (stage.phase + (stage.endedAt != 0 ? 1.0 : stage.percent() / 100.0)) / PROGRESS_PHASES;
+            BatchTail tail = stage.overlappedTail;
+            // Counted as done in baseChunks; take off what it still has to do.
+            if (tail != null && !tail.finished) inFlight -= tail.tile.totalChunks() * (1.0 - tail.fraction());
+        }
+        return Math.min(99.9, Math.max(completedChunksCount, inFlight) * 100.0 / getTotalWorldChunks());
+    }
+
+    private String progressMessage() {
+        return String.format("[Ultra Fast Pregen] Progress: %.1f%% | Speed: %.1f chunks/s | ETA: %s",
+                getProgressPercent(), getChunksPerSecond(), getEstimatedRemainingTime());
+    }
+
+    /** Logs at most once per interval; the first call and forced calls (completion) always log. */
+    private void reportProgress() {
+        reportProgress(false);
+    }
+
+    private void reportProgress(boolean force) {
+        long now = System.currentTimeMillis();
+        if (force) {
+            lastProgressLogAt.set(now);
+        } else {
+            long last = lastProgressLogAt.get();
+            // The compare-and-set lets exactly one of several racing callers log.
+            if (last != 0 && now - last < PROGRESS_LOG_INTERVAL_MS) return;
+            if (!lastProgressLogAt.compareAndSet(last, now)) return;
+        }
+        log(progressMessage());
+    }
+
+    /** Keeps the 3-second cadence while no chunk finishes, e.g. during lighting or saving. */
+    private void startProgressTicker() {
+        progressTicker = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "PreGen-Progress");
+            thread.setDaemon(true);
+            return thread;
+        });
+        progressTicker.scheduleAtFixedRate(() -> {
+            try {
+                if (isRunning && !generationCompleted) reportProgress();
+            } catch (RuntimeException failure) {
+                LOGGER.warn("[PreGen] Progress report failed", failure);
+            }
+        }, 250, 250, TimeUnit.MILLISECONDS);
+    }
+
+    public int getStageDoneChunks() {
+        return activeStage.done.get();
+    }
+
+    public int getStageTotalChunks() {
+        return activeStage.total;
+    }
+
+    public double getStagePercent() {
+        return activeStage.percent();
+    }
+
+    public double getStageChunksPerSecond() {
+        return activeStage.speed();
+    }
+
+    /**
+     * Target chunks the run has effectively finished: completed tiles, or the running tile's
+     * estimated share when larger. Halo work and repeated stage callbacks are never counted, but
+     * a single-tile run no longer reports 0 chunks/s until its very end.
+     */
+    private double progressedChunks() {
+        return Math.max(completedChunksCount, getProgressPercent() / 100.0 * getTotalWorldChunks());
+    }
+
+    /** Chunks this run generated itself; resumed tiles finish instantly and would inflate speed. */
+    private double generatedChunks() {
+        return Math.max(0.0, progressedChunks() - resumedChunks);
+    }
+
+    public int getResumedChunksCount() {
+        return resumedChunks;
+    }
+
+    public int getResumedBatchesCount() {
+        return resumedBatches;
+    }
+
+    public double getRealtimeChunksPerSecond() {
+        long elapsed = getElapsedMillis();
+        return elapsed > 0 ? generatedChunks() * 1000.0 / elapsed : 0.0;
+    }
+
+    public long getElapsedMillis() {
+        long endedAt = totalEndTime;
+        return Math.max(0, (endedAt == 0 ? System.currentTimeMillis() : endedAt) - totalStartTime);
+    }
+
+    public String getEstimatedRemainingTime() {
+        if (completedChunksCount == getTotalWorldChunks()) return "0s";
+        if (!isRunning) return "--";
+        long elapsed = getElapsedMillis();
+        double generated = generatedChunks();
+        if (generated <= 0 || elapsed < 3000) return "Calculating...";
+        return formatDuration((long) ((getTotalWorldChunks() - progressedChunks()) * elapsed / generated));
+    }
+
+    public double getChunksPerSecond() {
+        return getRealtimeChunksPerSecond();
+    }
+
+    public static String formatDuration(long millis) {
+        if (millis < 0) return "0s";
+        long seconds = millis / 1000;
+        long hours = seconds / 3600;
+        long minutes = seconds % 3600 / 60;
+        long secs = seconds % 60;
+        if (hours > 0) return String.format("%dh %02dm %02ds", hours, minutes, secs);
+        if (minutes > 0) return String.format("%dm %02ds", minutes, secs);
+        return String.format("%ds", secs);
+    }
+
+    public void start() {
+        if (!started.compareAndSet(false, true)) {
+            log("[PreGen] This generation task has already started!");
+            return;
+        }
+        totalStartTime = System.currentTimeMillis();
+        String finalStatus = "Failed";
+        startProgressTicker();
+        PreGenProfiler profiler = profiling
+                ? PreGenProfiler.start(level.getServer().getServerDirectory().toPath(), this::log) : null;
+        try {
+            int tilesAxis = batchPlan.tilesPerAxis();
+            int totalBatches = getTotalBatchesCount();
+            log(String.format("[PreGen] Target: %dx%d blocks (%d Chunks) in %s centered on [%d, %d] (blocks %d..%d, %d..%d) | Batch: %dx%d blocks | Total Batches: %d | Worker Threads: %d",
+                    worldSizeBlocks, worldSizeBlocks, getTotalWorldChunks(), level.dimension().location(),
+                    centerX, centerZ, batchPlan.minBlockX(), batchPlan.minBlockX() + worldSizeBlocks - 1,
+                    batchPlan.minBlockZ(), batchPlan.minBlockZ() + worldSizeBlocks - 1, batchSizeBlocks,
+                    batchSizeBlocks, totalBatches, parallelThreads));
+            chunkIO = WorldChunkIO.forLevel(level);
+            WorldgenCompat.TerrainChoice terrain = WorldgenCompat.chooseTerrainPath(
+                    level.getChunkSource().getGenerator(), terrainPipeline);
+            fusedTerrain = terrain.fused();
+            List<String> featureState = WorldgenCompat.featurePlacementMixins();
+            parallelFeatures = parallelSteps && featureState.isEmpty();
+            log("[PreGen] Terrain pipeline: " + (terrain.fused() ? "fused fast path" : "Minecraft per-status path")
+                    + " (" + terrain.reason() + ") | Cell-skipping noise fill: "
+                    + (terrain.fused() && WorldgenCompat.fastNoiseFillAllowed() ? "on" : "off")
+                    + " | Structures, caves and features: "
+                    + (parallelSteps ? parallelThreads + " threads" : "one chunk at a time (parallel_steps=false)")
+                    + (parallelSteps && !parallelFeatures
+                        ? ", except features one chunk at a time (other mods keep state in feature placement " + featureState + ")"
+                        : "")
+                    + (skipExistingChunks
+                        ? ". Chunks that already exist (on disk or loaded) are kept; only missing chunks are generated."
+                        : ". skip_existing_chunks=false: every chunk in the area is regenerated and overwritten.")
+                    + (overlapBatches
+                        ? " Each batch is lit and saved while the next one generates."
+                        : " Batches run one at a time (too little free heap to hold two)."));
+            openSaveFile();
+            findStoredChunks();
+
+            for (int tx = 0; tx < tilesAxis && !isCancelled; tx++) {
+                for (int tz = 0; tz < tilesAxis && !isCancelled; tz++) {
+                    currentBatchIndex++;
+                    ChunkBatchPlan.Tile tile = batchPlan.tile(tx, tz);
+                    currentMinX = tile.minBlockX();
+                    currentMinZ = tile.minBlockZ();
+                    long[] core = corePositions(tile);
+                    LongSet done = saveFile != null ? saveFile.doneAmong(core) : new LongOpenHashSet();
+                    boolean allByFastpregen = done.size() == core.length;
+                    if (!allByFastpregen && skipExistingChunks) done.addAll(existingChunks(core));
+                    if (done.size() == core.length) {
+                        awaitTail();
+                        skipGeneratedBatch(currentBatchIndex, totalBatches, tile, allByFastpregen);
+                    } else if (overlapBatches) {
+                        startTail(generateBatch(currentBatchIndex, totalBatches, tile, done));
+                    } else {
+                        processBatch(currentBatchIndex, totalBatches, tile, done);
+                    }
+                }
+            }
+
+            awaitTail();
+            awaitPendingWrites();
+            totalEndTime = System.currentTimeMillis();
+            log(String.format("[Ultra Fast Pregen] Generated and saved %d chunks; kept %d chunks that already existed (%d whole batches skipped).",
+                    writtenChunks.get(), resumedChunks + keptExistingChunks.get(), resumedBatches));
+            if (seams.carriedForward() + seams.mergedBack() + seams.borderChunksSaved() > 0) {
+                log(String.format("[Ultra Fast Pregen] Edges: %d feature blocks carried into later batches, %d merged into stored chunks"
+                                + " (%d existing chunks joined), %d read back from part-generated chunks, %d border chunks saved part-generated.",
+                        seams.carriedForward(), seams.mergedBack(), seams.joinedExisting(), seams.importedWrites(),
+                        seams.borderChunksSaved()));
+            }
+            boolean completedAll = completedChunksCount == getTotalWorldChunks()
+                    && completedBatchesCount == totalBatches
+                    && (pendingWrite == null || (pendingWrite.isDone()
+                        && !pendingWrite.isCompletedExceptionally() && !pendingWrite.isCancelled()));
+            if (completedAll) {
+                generationCompleted = true;
+                reportProgress(true);
+                broadcastActionBar();
+                finalStatus = "Completed";
+                log(String.format("[PreGen] All %d batches (%d Chunks) completed successfully in %s! Average Speed: %.1f chunks/s",
+                        completedBatchesCount, completedChunksCount, formatDuration(getElapsedMillis()), getChunksPerSecond()));
+            } else {
+                finalStatus = "Cancelled";
+                log(String.format("[PreGen] Pre-generation was cancelled after %d/%d completed batches (%d/%d chunks, %s).",
+                        completedBatchesCount, totalBatches, completedChunksCount,
+                        getTotalWorldChunks(), formatDuration(getElapsedMillis())));
+            }
+        } catch (Throwable failure) {
+            LOGGER.error("[PreGen] Error during world pre-generation", failure);
+            log("[PreGen] Error during pre-generation: " + failure.getMessage());
+        } finally {
+            try {
+                awaitTail();
+            } catch (Throwable failure) {
+                LOGGER.error("[PreGen] Finishing the last batch failed", failure);
+            }
+            try {
+                awaitPendingWrites();
+            } catch (Throwable failure) {
+                LOGGER.error("[PreGen] Saving the last tile failed", failure);
+            }
+            if (totalEndTime == 0) totalEndTime = System.currentTimeMillis();
+            if (saveFile != null) {
+                saveFile.setLastRun(worldSizeBlocks / 1000, centerX, centerZ, generationCompleted);
+                writeSaveFile();
+            }
+            if (profiler != null) profiler.finish(this::log);
+            currentStageName = "Releasing memory";
+            releaseMemory(true, currentBatchIndex);
+            currentStageName = finalStatus;
+            isRunning = false;
+            if (progressTicker != null) progressTicker.shutdownNow();
+            if (tailExecutor != null) tailExecutor.shutdown();
+            workerPool.shutdown();
+        }
+    }
+
+    /**
+     * Tile garbage is only reclaimed when the JVM next collects, and an idle server allocates
+     * too little to trigger that, so the heap would otherwise stay inflated after the run.
+     * Elapsed time is already frozen, so this does not count against generation speed.
+     */
+    private void releaseMemory(boolean finalCleanup, int batchIndex) {
+        try {
+            long before = usedHeapMegabytes();
+            // Light-data unloads queued by the last tile are applied on another thread. Between
+            // batches they are collected one batch later instead of delaying generation.
+            if (finalCleanup) Thread.sleep(2000);
+            long started = System.nanoTime();
+            System.gc();
+            Runtime runtime = Runtime.getRuntime();
+            log(String.format("%s heap in use %dMB -> %dMB (committed %dMB, max %dMB, GC %.1fs)",
+                    finalCleanup ? "[PreGen] Memory cleanup:" : String.format("  [%d/%d] Batch memory release:",
+                            batchIndex, getTotalBatchesCount()),
+                    before, usedHeapMegabytes(), runtime.totalMemory() / (1024 * 1024),
+                    runtime.maxMemory() / (1024 * 1024), (System.nanoTime() - started) / 1e9));
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (RuntimeException failure) {
+            LOGGER.warn("[PreGen] Memory cleanup failed", failure);
+        }
+    }
+
+    private static long usedHeapMegabytes() {
+        Runtime runtime = Runtime.getRuntime();
+        return (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
+    }
+
+    /** Loads the dimension's record into RAM; without it every chunk is generated as before. */
+    private void openSaveFile() {
+        try {
+            PreGenSaveFile record = PreGenSaveFile.load(level);
+            if (record.seedChanged()) {
+                log("[Ultra Fast Pregen] Save file " + record.file() + " belongs to another world seed; starting a new record.");
+            } else {
+                log(String.format("[Ultra Fast Pregen] Save file loaded into RAM: %d chunks already generated in this world (%s).",
+                        record.doneChunks(), record.file()));
+            }
+            record.setLastRun(worldSizeBlocks / 1000, centerX, centerZ, false);
+            saveFile = record;
+            writeSaveFile();
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.error("[PreGen] Could not read the save file", failure);
+            log("[Ultra Fast Pregen] Could not read the save file (" + failure.getMessage()
+                    + "); every chunk is generated and progress is not recorded.");
+        }
+    }
+
+    private void writeSaveFile() {
+        PreGenSaveFile record = saveFile;
+        if (record == null) return;
+        try {
+            record.save();
+        } catch (IOException | RuntimeException failure) {
+            LOGGER.warn("[PreGen] Could not write the save file {}", record.file(), failure);
+        }
+    }
+
+    /** A batch whose every core chunk already exists; counted as done without generating. */
+    private void skipGeneratedBatch(int index, int total, ChunkBatchPlan.Tile tile, boolean allByFastpregen) {
+        synchronized (progressLock) {
+            completedChunksCount += tile.totalChunks();
+            completedBatchesCount++;
+        }
+        resumedChunks += tile.totalChunks();
+        resumedBatches++;
+        if (!allByFastpregen) existingBatches++;
+        for (long pos : corePositions(tile)) {
+            seams.markHandled(pos, false);
+            seams.take(pos);
+        }
+        log(String.format("[%d/%d] Skipped Tile at Block [%d, %d]: all %d chunks %s.",
+                index, total, tile.minBlockX(), tile.minBlockZ(), tile.totalChunks(),
+                allByFastpregen ? "were already generated by Ultra Fast Pregen" : "already exist"));
+        reportProgress();
+    }
+
+    /**
+     * Reads, once, which chunks of the area and the ring around it exist (region headers and
+     * status only), so batches do not queue a disk check behind the previous batch's writes.
+     * Chunks the server saves later are still never overwritten: writes skip chunks present
+     * when they are written.
+     */
+    private void findStoredChunks() {
+        LongOpenHashSet regions = new LongOpenHashSet();
+        int minChunkX = Math.floorDiv(batchPlan.minBlockX(), 16) - 1;
+        int minChunkZ = Math.floorDiv(batchPlan.minBlockZ(), 16) - 1;
+        int maxChunkX = minChunkX + batchPlan.chunksX() + 1;
+        int maxChunkZ = minChunkZ + batchPlan.chunksZ() + 1;
+        for (int rx = minChunkX >> 5; rx <= maxChunkX >> 5; rx++) {
+            for (int rz = minChunkZ >> 5; rz <= maxChunkZ >> 5; rz++) {
+                regions.add(ChunkPos.asLong(rx, rz));
+            }
+        }
+        long started = System.nanoTime();
+        storedAtStart = await(chunkIO.findStoredInRegions(regions), "reading the area's region headers");
+        long stored = 0;
+        for (int x = minChunkX + 1; x < maxChunkX; x++) {
+            for (int z = minChunkZ + 1; z < maxChunkZ; z++) {
+                if (WorldChunkIO.isStored(storedAtStart.full(), ChunkPos.asLong(x, z))) stored++;
+            }
+        }
+        log(String.format("[Ultra Fast Pregen] Existing chunks: %d fully generated in the area (checked %d region files in %.1fs).",
+                stored, regions.size(), (System.nanoTime() - started) / 1e9));
+    }
+
+    /**
+     * Prepares the chunks around and among this batch's new chunks (see SeamWrites). Chunks
+     * generated before (kept core chunks, earlier batches, the stored world) get their final
+     * blocks and take writes; halo chunks not generated yet are generated here and get the
+     * writes earlier batches or stored part-generated chunks hold for them; new core chunks get
+     * theirs before their features. Chunks the server holds are left to the server. Returns
+     * those held chunks.
+     */
+    private LongSet prepareNeighbors(InMemoryChunkGrid grid, LongSet done, LongSet keptCore, LongSet freshHalo) {
+        long[] terrain = grid.getTerrainPositions();
+        LongSet held = await(WorldChunkIO.findHeldByServer(level, LongArrayList.wrap(terrain)), "the server's loaded chunk list");
+        LongArrayList readFinal = new LongArrayList();
+        LongArrayList readPart = new LongArrayList();
+        LongArrayList newCore = new LongArrayList();
+        for (long pos : terrain) {
+            boolean isCore = grid.isCore(pos);
+            if (isCore && !done.contains(pos)) {
+                newCore.add(pos);
+                if (SeamWrites.joinStoredChunks && storedPartGenerated(pos)) readPart.add(pos);
+                continue;
+            }
+            if (isCore) seams.take(pos);
+            if (held.contains(pos)) continue;
+            SeamWrites.Final known = seams.finalOf(pos);
+            if (known != null) {
+                grid.adoptSaved(pos, known);
+                if (isCore) keptCore.add(pos);
+            } else if (!SeamWrites.joinStoredChunks) {
+                if (!isCore) freshHalo.add(pos);
+            } else if (isCore || generatedBefore(pos)) {
+                readFinal.add(pos);
+            } else {
+                freshHalo.add(pos);
+                if (storedPartGenerated(pos)) readPart.add(pos);
+            }
+        }
+        Map<Long, CompletableFuture<java.util.Optional<CompoundTag>>> reads = new HashMap<>();
+        for (long pos : readFinal) reads.put(pos, chunkIO.load(pos));
+        for (long pos : readPart) reads.put(pos, chunkIO.load(pos));
+        int minSection = level.getMinSection();
+        int sections = level.getSectionsCount();
+        for (long pos : readFinal) {
+            CompoundTag tag = await(reads.get(pos), "reading a stored chunk").orElse(null);
+            SeamWrites.Final stored = tag == null ? null : SeamWrites.finalFromStored(tag, minSection, sections);
+            // Otherwise not a fully generated chunk of this version: generated again here and
+            // never written.
+            if (stored == null) continue;
+            seams.keepFinal(pos, stored, minSection);
+            seams.markExisting(pos);
+            grid.adoptSaved(pos, stored);
+            if (grid.isCore(pos)) keptCore.add(pos);
+        }
+        for (long pos : readPart) {
+            seams.markStoredRead(pos);
+            CompoundTag tag = await(reads.get(pos), "reading a stored chunk").orElse(null);
+            if (tag != null && SeamWrites.importStoredChunks) {
+                seams.importStored(pos, SeamWrites.diffStored(tag, grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos))));
+            }
+        }
+        for (long pos : newCore) {
+            List<SeamWrites.Write> writes = seams.take(pos);
+            if (!writes.isEmpty()) SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
+        }
+        for (long pos : freshHalo) {
+            List<SeamWrites.Write> writes = seams.peek(pos);
+            if (!writes.isEmpty()) SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
+        }
+        return held;
+    }
+
+    /** Stored part-generated when the run started and not read or replaced since. */
+    private boolean storedPartGenerated(long pos) {
+        return !seams.storedWasRead(pos) && WorldChunkIO.isStored(storedAtStart.present(), pos)
+                && !WorldChunkIO.isStored(storedAtStart.full(), pos);
+    }
+
+    /**
+     * A halo chunk stored fully generated that this run keeps: outside the area, or in it and
+     * recorded in the save file or kept by skip_existing_chunks.
+     */
+    private boolean generatedBefore(long pos) {
+        boolean full = WorldChunkIO.isStored(storedAtStart.full(), pos);
+        int x = ChunkPos.getX(pos);
+        int z = ChunkPos.getZ(pos);
+        if (!batchPlan.containsChunk(x, z)) return full;
+        boolean recorded = saveFile != null && saveFile.isDone(x, z);
+        if (seams.isHandled(pos)) return recorded || full;
+        return recorded || (skipExistingChunks && full);
+    }
+
+    /** Core chunks fully generated when the run started (on disk), or held fully generated by the server now. */
+    private LongSet existingChunks(long[] core) {
+        LongSet existing = new LongOpenHashSet();
+        LongArrayList notStored = new LongArrayList();
+        for (long pos : core) {
+            if (WorldChunkIO.isStored(storedAtStart.full(), pos)) existing.add(pos);
+            else notStored.add(pos);
+        }
+        if (!notStored.isEmpty()) {
+            existing.addAll(await(WorldChunkIO.findHeldFullByServer(level, notStored), "the server's loaded chunk list"));
+        }
+        return existing;
+    }
+
+    private void processBatch(int index, int total, ChunkBatchPlan.Tile tile) {
+        processBatch(index, total, tile, new LongOpenHashSet());
+    }
+
+    /** Generates and saves the tile; chunks in {@code done} were saved by an earlier run and are kept. */
+    private void processBatch(int index, int total, ChunkBatchPlan.Tile tile, LongSet done) {
+        finishBatch(generateBatch(index, total, tile, done), false);
+    }
+
+    /** Runs the tile's tail on the tail thread; the previous tail has finished (see generateBatch). */
+    private void startTail(BatchTail tail) {
+        awaitTail();
+        if (tailExecutor == null) {
+            tailExecutor = Executors.newSingleThreadExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "PreGen-Tail");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        runningTail = tail;
+        pendingTail = CompletableFuture.runAsync(() -> finishBatch(tail, true), tailExecutor);
+    }
+
+    /** Waits for the batch finishing on the tail thread and rethrows its failure once. */
+    private void awaitTail() {
+        CompletableFuture<Void> tail = pendingTail;
+        try {
+            tail.get();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while finishing the previous batch", interrupted);
+        } catch (ExecutionException failure) {
+            pendingTail = CompletableFuture.completedFuture(null);
+            throw new IllegalStateException("Finishing a batch failed", failure.getCause());
+        }
+    }
+
+    /**
+     * Structures through features of the tile, and the edge bookkeeping that depends on them;
+     * returns what remains (finishBatch). Waits for the previous batch's tail before preparing
+     * this batch's neighbors.
+     */
+    private BatchTail generateBatch(int index, int total, ChunkBatchPlan.Tile tile, LongSet done) {
+        long batchStartedAt = System.currentTimeMillis();
+        currentTileChunks = tile.totalChunks();
+        currentPhase = 0;
+        stageTimes.setLength(0);
+        currentStageName = "Preparing batch";
+        reportProgress();
+        broadcastActionBar();
+        log(String.format("[%d/%d] (%.1f%%) Starting Tile at Block [%d, %d] (Core Chunks: %dx%d = %d%s)...",
+                index, total, getProgressPercent(), tile.minBlockX(), tile.minBlockZ(),
+                tile.chunksX(), tile.chunksZ(), tile.totalChunks(),
+                done.isEmpty() ? "" : ", " + done.size() + " that already exist are kept"));
+
+        long[] core = corePositions(tile);
+        // Start generation immediately; every core chunk not generated before is overwritten.
+        LongSet existing = done;
+
+        InMemoryChunkGrid grid = new InMemoryChunkGrid(level, tile.minBlockX(), tile.minBlockZ(),
+                tile.chunksX(), tile.chunksZ(), fusedTerrain, parallelSteps);
+        grid.setParallelFeatures(parallelFeatures);
+        grid.setWorkerThreads(parallelThreads);
+        InMemoryChunkGrid.setCurrentGrid(grid);
+        boolean handedOver = false;
+        try {
+            Runnable progress = startStage(index, total, "Stage 1/6: Structure Starts & References",
+                    grid.getStructureStageChunks());
+            grid.executeLayer(ChunkLayer.STRUCTURES, workerPool, progress);
+            endStage();
+
+            progress = startStage(index, total, "Stage 2/6: Biomes, Noise & Surface", grid.getPaddedChunksCount());
+            grid.executeLayer(ChunkLayer.TERRAIN_PIPELINE, workerPool, progress);
+            endStage();
+            terrainDiagnostics = grid.getTerrainDiagnostics();
+
+            progress = startStage(index, total, "Stage 3/6: Caves & Aquifers", grid.getPaddedChunksCount());
+            grid.executeLayer(ChunkLayer.CARVERS, workerPool, progress);
+            endStage();
+            // The previous batch's saves and edge merges are queued before this batch reads any
+            // stored chunk, as when batches run one at a time.
+            awaitTail();
+
+            LongSet heldByServer = LongSets.EMPTY_SET;
+            LongSet keptCore = new LongOpenHashSet();
+            LongSet freshHalo = new LongOpenHashSet();
+            if (SeamWrites.enabled) {
+                heldByServer = prepareNeighbors(grid, done, keptCore, freshHalo);
+            } else {
+                for (long pos : core) {
+                    List<SeamWrites.Write> carried = seams.take(pos);
+                    if (!carried.isEmpty() && !done.contains(pos)) {
+                        SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), carried);
+                    }
+                }
+            }
+            grid.setFeatureSkip(keptCore);
+            grid.snapshotHalo(keptCore);
+
+            progress = startStage(index, total, "Stage 4/6: Features Decoration", grid.getCoreTotalChunks());
+            grid.executePhased(ChunkLayer.FEATURES, workerPool, progress);
+            endStage();
+            featureDiagnostics = grid.getFeatureDiagnostics();
+            for (long pos : core) seams.markHandled(pos, !done.contains(pos));
+            LongSet held = heldByServer;
+            Map<Long, List<SeamWrites.Write>> intoSaved = SeamWrites.enabled
+                    ? seams.route(grid.collectHaloWrites(workerPool), batchPlan, held::contains) : Map.of();
+            List<WorldChunkIO.EncodedChunk> partGenerated = List.of();
+            if (SeamWrites.enabled) {
+                // Final blocks of this batch's edge chunks, for the halo of batches still to come.
+                for (long pos : core) {
+                    if (done.contains(pos) || !seams.hasUnhandledNeighbor(pos, batchPlan)) continue;
+                    seams.keepFinal(pos, grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
+                }
+                // Halo chunks that do not exist yet but received blocks: saved part-generated.
+                LongArrayList border = new LongArrayList();
+                for (long pos : freshHalo) {
+                    if (SeamWrites.joinStoredChunks && seams.hasPending(pos) && !seams.isMergeable(pos)
+                            && !WorldChunkIO.isStored(storedAtStart.full(), pos)) {
+                        border.add(pos);
+                        seams.markStoredRead(pos);
+                    }
+                }
+                partGenerated = grid.encodePartGenerated(border, workerPool);
+                seams.countBorderSaved(border.size());
+                seams.pruneFinals(batchPlan);
+            }
+            BatchTail tail = new BatchTail(index, total, tile, grid, existing, batchStartedAt, partGenerated, intoSaved,
+                    stageTimes.toString(), terrainDiagnostics, featureDiagnostics, currentPhase);
+            handedOver = true;
+            return tail;
+        } finally {
+            if (!handedOver) grid.dispose();
+        }
+    }
+
+    /** Lighting, mobs, encoding and saving of a generated tile (see BatchTail); disposes its grid. */
+    private void finishBatch(BatchTail tail, boolean overlapped) {
+        int index = tail.index;
+        int total = tail.total;
+        ChunkBatchPlan.Tile tile = tail.tile;
+        InMemoryChunkGrid grid = tail.grid;
+        LongSet skip = tail.done;
+        List<WorldChunkIO.EncodedChunk> partGenerated = tail.partGenerated;
+        Map<Long, List<SeamWrites.Write>> intoSaved = tail.intoSaved;
+        // Running beside the next batch, this batch keeps its own step times off the shown stage.
+        StringBuilder times = overlapped ? new StringBuilder(tail.headTimes) : stageTimes;
+        try {
+            Runnable progress = startTailStage(tail, overlapped, "Stage 5/6: Lighting", grid.getCoreTotalChunks());
+            grid.executePhased(ChunkLayer.LIGHTING, workerPool, progress);
+            endTailStage(tail, overlapped, times);
+
+            progress = startTailStage(tail, overlapped, "Stage 6/6: Mob Spawning", tile.totalChunks() - skip.size());
+            grid.executeSpawn(workerPool, skip, progress);
+            endTailStage(tail, overlapped, times);
+
+            progress = startTailStage(tail, overlapped, "Saving: encoding chunks", tile.totalChunks() - skip.size());
+            List<WorldChunkIO.EncodedChunk> encoded = grid.encodeForSaving(workerPool, skip, progress);
+            endTailStage(tail, overlapped, times);
+            // Chunks the server holds get the generated terrain too, or its later save would
+            // overwrite ours; when keeping existing chunks, only part-way generated ones.
+            LoadedChunkRegeneration.apply(level, grid, skip, skipExistingChunks);
+            LOGGER.debug(grid.getEncodeDiagnostics() + String.format(" | Spawned mobs: %d", grid.getSpawnedEntities()));
+            keptExistingChunks.addAndGet(skip.size());
+            submitWrites(index, total, encoded, !overlapped);
+            if (!partGenerated.isEmpty()) {
+                // Never over a chunk stored fully generated meanwhile (a player's).
+                WorldChunkIO.PendingWrite border = chunkIO.write(partGenerated, false);
+                pendingWrite = pendingWrite.thenCombine(border.done(), (result, saved) -> result);
+            }
+            if (!intoSaved.isEmpty()) {
+                // Ordered after this batch's writes on the IO thread; awaited with them.
+                CompletableFuture<Integer> merge = chunkIO.mergeIntoSaved(intoSaved).exceptionally(failure -> {
+                    LOGGER.warn("[PreGen] Could not merge feature edges into earlier batches", failure);
+                    return 0;
+                });
+                pendingWrite = pendingWrite.thenCombine(merge, (result, merged) -> {
+                    LOGGER.debug("  [{}/{}] Merged feature edges into {} chunks of earlier batches", index, total, merged);
+                    return result;
+                });
+            }
+
+            synchronized (progressLock) {
+                completedChunksCount += tile.totalChunks();
+                completedBatchesCount++;
+                tail.finished = true;
+            }
+            reportProgress();
+        } finally {
+            grid.dispose();
+        }
+
+        // The tile's chunks are released (dispose); only its encoded bytes wait for the IO thread.
+        if (releaseMemoryEachBatch && !isCancelled) releaseMemory(false, index);
+        long batchElapsed = System.currentTimeMillis() - tail.startedAt;
+        long usedMemoryMB = (Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / (1024 * 1024);
+        log(String.format("[%d/%d] Completed Tile in %.1fs | Total: %.1f%% (%d/%d chunks) | ETA: %s | RAM: %dMB",
+                index, total, batchElapsed / 1000.0, getProgressPercent(), completedChunksCount,
+                getTotalWorldChunks(), getEstimatedRemainingTime(), usedMemoryMB));
+        LOGGER.info("  [{}/{}] Step times: {} | {} | {}", index, total, times, tail.terrainDiagnostics, tail.featureDiagnostics);
+        broadcastActionBar();
+    }
+
+    /** A tail step: the shown stage when batches run one at a time, otherwise tracked on the tail only. */
+    private Runnable startTailStage(BatchTail tail, boolean overlapped, String name, int totalChunks) {
+        if (!overlapped) return startStage(tail.index, tail.total, name, totalChunks);
+        StageProgress stage = new StageProgress(name, totalChunks);
+        StageProgress previous = tail.stage;
+        stage.tileChunks = tail.tile.totalChunks();
+        stage.phase = previous == null ? tail.firstPhase : previous.phase + 1;
+        tail.stage = stage;
+        return stage.done::incrementAndGet;
+    }
+
+    private void endTailStage(BatchTail tail, boolean overlapped, StringBuilder times) {
+        if (!overlapped) {
+            endStage();
+            return;
+        }
+        StageProgress stage = tail.stage;
+        stage.endedAt = System.currentTimeMillis();
+        appendStageTime(times, stage);
+        stage.done.set(stage.total);
+    }
+
+    private static long[] corePositions(ChunkBatchPlan.Tile tile) {
+        int minX = Math.floorDiv(tile.minBlockX(), 16);
+        int minZ = Math.floorDiv(tile.minBlockZ(), 16);
+        long[] positions = new long[tile.chunksX() * tile.chunksZ()];
+        int index = 0;
+        for (int cx = minX; cx < minX + tile.chunksX(); cx++) {
+            for (int cz = minZ; cz < minZ + tile.chunksZ(); cz++) {
+                positions[index++] = ChunkPos.asLong(cx, cz);
+            }
+        }
+        return positions;
+    }
+
+    private void submitWrites(int index, int total, List<WorldChunkIO.EncodedChunk> encoded, boolean showStage) {
+        awaitPendingWrites(showStage);
+        long submittedAt = System.nanoTime();
+        // Positions only, so the callback does not keep the encoded bytes alive.
+        List<ChunkPos> positions = encoded.stream().map(WorldChunkIO.EncodedChunk::pos).toList();
+        WorldChunkIO.PendingWrite writes = chunkIO.write(encoded, !skipExistingChunks);
+        pendingWriteResult = writes.progress();
+        pendingWrite = writes.done().whenComplete((result, failure) -> {
+            if (failure != null) {
+                LOGGER.error("[PreGen] Saving tile {} failed", index, failure);
+                return;
+            }
+            writtenChunks.addAndGet(result.written);
+            keptExistingChunks.addAndGet(result.skippedExisting);
+            // Recorded only once the tile is on disk, so a crash or stop regenerates it next time.
+            PreGenSaveFile record = saveFile;
+            if (record != null) {
+                record.markDone(positions);
+                writeSaveFile();
+            }
+            log(String.format("  [%d/%d] Saved %d chunks to %d region files in %.1fs (disk %.1fs)%s",
+                    index, total, result.written, result.regions, (System.nanoTime() - submittedAt) / 1e9, result.ioNanos / 1e9,
+                    result.skippedExisting > 0 ? ", kept " + result.skippedExisting + " the server saved meanwhile" : ""));
+        });
+    }
+
+    /**
+     * Rethrows a failed write, so a broken save stops the run instead of losing tiles silently.
+     * Logs progress while waiting, and stops waiting if the server shuts down: its IO worker
+     * then drops queued tasks, so the remaining chunks are simply generated later by the game.
+     */
+    private void awaitPendingWrites() {
+        awaitPendingWrites(true);
+    }
+
+    /** {@code showStage}: shows the wait as the current stage (not while another batch runs). */
+    private void awaitPendingWrites(boolean showStage) {
+        CompletableFuture<WorldChunkIO.WriteResult> pending = pendingWrite;
+        if (pending == null || pending.isDone()) {
+            if (pending != null) pending.join();
+            return;
+        }
+        String stage = currentStageName;
+        long startedAt = System.nanoTime();
+        try {
+            while (true) {
+                WorldChunkIO.WriteResult progress = pendingWriteResult;
+                if (showStage) {
+                    currentStageName = progress == null ? "Saving to disk"
+                            : String.format("Saving to disk (%d/%d chunks)", progress.processed(), progress.total);
+                }
+                try {
+                    pending.get(10, TimeUnit.SECONDS);
+                    return;
+                } catch (TimeoutException stillWriting) {
+                    if (level != null && !level.getServer().isRunning()) {
+                        log("[PreGen] Server is stopping; unsaved generated chunks will be generated normally later.");
+                        return;
+                    }
+                    if (progress != null) {
+                        LOGGER.debug(String.format("  Saving to disk: %d/%d chunks, %d/%d region files (%.0fs)",
+                                progress.processed(), progress.total, progress.regionsDone, progress.regions,
+                                (System.nanoTime() - startedAt) / 1e9));
+                    }
+                    reportProgress();
+                    broadcastActionBar();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (ExecutionException failure) {
+                    throw new IllegalStateException("Saving chunks failed", failure.getCause());
+                }
+            }
+        } finally {
+            if (showStage) currentStageName = stage;
+        }
+    }
+
+    private static <T> T await(CompletableFuture<T> future, String what) {
+        try {
+            return future.get(2, TimeUnit.MINUTES);
+        } catch (TimeoutException timeout) {
+            throw new IllegalStateException("Timed out waiting for " + what + " (is the server thread busy?)", timeout);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting for " + what, interrupted);
+        } catch (ExecutionException failure) {
+            throw new IllegalStateException(what + " failed", failure.getCause());
+        }
+    }
+
+    private Runnable startStage(int batchIndex, int totalBatches, String name, int totalChunks) {
+        StageProgress stage = new StageProgress(name, totalChunks);
+        synchronized (progressLock) {
+            BatchTail tail = runningTail;
+            stage.overlappedTail = tail != null && !tail.finished ? tail : null;
+            stage.baseChunks = completedChunksCount
+                    + (stage.overlappedTail != null ? stage.overlappedTail.tile.totalChunks() : 0);
+        }
+        stage.tileChunks = currentTileChunks;
+        stage.phase = currentPhase++;
+        activeStage = stage;
+        currentStageName = name;
+        reportProgress();
+        broadcastActionBar();
+        return () -> onChunkDoneInStage(stage);
+    }
+
+    private void onChunkDoneInStage(StageProgress stage) {
+        if (activeStage != stage) return;
+        stage.done.incrementAndGet();
+        if (stage.total <= 0 || activeStage != stage) return;
+
+        reportProgress();
+
+        long now = System.currentTimeMillis();
+        long previous = stage.lastActionBarAt.get();
+        if (now - previous >= 1500 && stage.lastActionBarAt.compareAndSet(previous, now)) {
+            broadcastActionBar();
+        }
+    }
+
+    private void endStage() {
+        StageProgress stage = activeStage;
+        stage.endedAt = System.currentTimeMillis();
+        appendStageTime(stageTimes, stage);
+        // Includes steps with zero work (e.g. no new chunks to spawn or encode).
+        stage.done.set(stage.total);
+        reportProgress();
+        broadcastActionBar();
+    }
+
+    private static void appendStageTime(StringBuilder times, StageProgress stage) {
+        times.append(times.length() == 0 ? "" : " | ").append(shortStageName(stage.name))
+                .append(' ').append(String.format("%.1fs", (stage.endedAt - stage.startedAt) / 1000.0));
+    }
+
+    /** "Stage 2/6: Biomes, Noise & Surface" -> "Biomes, Noise & Surface". */
+    private static String shortStageName(String name) {
+        int colon = name.indexOf(": ");
+        return colon >= 0 ? name.substring(colon + 2) : name;
+    }
+
+    private void broadcastActionBar() {
+        if (level == null) return;
+        if (!actionBarPending.compareAndSet(false, true)) return;
+        level.getServer().execute(() -> {
+            try {
+                if (!isRunning && !generationCompleted) return;
+                String message = "§a" + progressMessage();
+                for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
+                    if (player.hasPermissions(2)) {
+                        player.displayClientMessage(Component.literal(message), true);
+                    }
+                }
+            } finally {
+                actionBarPending.set(false);
+            }
+        });
+    }
+
+    private void log(String message) {
+        LOGGER.info(message);
+        progressCallback.accept(message);
+    }
+}

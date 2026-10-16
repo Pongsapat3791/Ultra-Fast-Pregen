@@ -1,0 +1,90 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version "${moddev_version}"
+}
+
+version = project.version
+group = project.group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    enable {
+        version = project.neo_version
+        // Only compiled classes are needed; skips decompiling and recompiling Minecraft.
+        disableRecompilation = true
+    }
+
+    mods {
+        ultrafastpregen {
+            sourceSet sourceSets.main
+            // Development checks (see PregenChecksMod); jar only packages main.
+            sourceSet sourceSets.test
+        }
+    }
+
+    runs {
+        server {
+            server()
+            gameDirectory = file('run')
+            programArgument '--nogui'
+        }
+        partialBatchCheck {
+            server()
+            sourceSet = sourceSets.test
+            gameDirectory = file('build/partial-batch-check')
+            def heap = providers.gradleProperty('checkHeap').getOrElse('4G')
+            jvmArguments.addAll("-Xmx${heap}", '-Dpregen.partialBatchCheck=true')
+            ['pipelineBenchmark', 'pipelineBenchmark.rounds', 'pipelineBenchmark.threads', 'pipelineBenchmark.profile',
+             'batchBenchmark', 'batchBenchmark.worldK', 'batchBenchmark.threads'].each { key ->
+                def value = providers.gradleProperty(key).orNull
+                if (value != null) jvmArgument "-Dpregen.${key}=${value}"
+            }
+            programArgument '--nogui'
+        }
+        terrainBenchmark {
+            server()
+            sourceSet = sourceSets.test
+            gameDirectory = file('build/terrain-benchmark')
+            jvmArguments.addAll('-Xmx4G', '-Dpregen.benchmark=true')
+            // Exits once mods have loaded, before a world is opened.
+            ['chunks', 'threads', 'warmupChunks', 'warmupIterations', 'iterations', 'seeds', 'jfr', 'output', 'optimized',
+             'compare', 'blendingScan', 'saveSpeed', 'ab'].each { key ->
+                def value = providers.gradleProperty("benchmark.${key}").orNull
+                if (value != null) jvmArgument "-Dpregen.benchmark.${key}=${value}"
+            }
+            programArgument '--nogui'
+        }
+    }
+}
+
+neoForge.addModdingDependenciesTo(sourceSets.test)
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+tasks.named('processResources') {
+    def props = [version: project.version, neo_version_range: project.neo_version_range,
+                 minecraft_version: project.minecraft_version]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+tasks.named('test') {
+    // Executable checks run through runTerrainBenchmark and runPartialBatchCheck, outside JUnit.
+    enabled = false
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_ultrafastpregen" }
+    }
+}

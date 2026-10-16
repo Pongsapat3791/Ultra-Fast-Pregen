@@ -1,0 +1,27 @@
+modLoader="javafml"
+loaderVersion="${loader_version_range}"
+license="LGPL-3.0"
+
+[[mods]]
+modId="ultrafastpregen"
+version="${version}"
+displayName="Ultra Fast Pregen"
+description='''Pre-generates the world with every CPU core: /pregen start <size in thousands of blocks>'''
+logoFile="assets/pregen/icon.png"
+authors="Developer"
+# Server side only: players join with or without it.
+displayTest="IGNORE_ALL_VERSION"
+
+[[dependencies.ultrafastpregen]]
+modId="forge"
+mandatory=true
+versionRange="${forge_version_range}"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.ultrafastpregen]]
+modId="minecraft"
+mandatory=true
+versionRange="[${minecraft_version}]"
+ordering="NONE"
+side="BOTH"
