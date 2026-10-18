@@ -7,7 +7,7 @@ Every change to the Fabric build is in the Forge build too, with the same versio
 Commands, the config file, the save file and how it works are the same as in the Fabric build: see the [main README](../../README.md).
 
 - **Requires:** Forge 1.20.1 (47.x) and Java 17 or newer
-- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20.1-14.jar`
+- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20.1-14.1.jar`
 - **Install:** on the server only; players can join with or without it
 
 ## Building and testing (from the main project folder)

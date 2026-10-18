@@ -1272,9 +1272,44 @@ public final class PartialExistingBatchCheck {
         }).get(60, TimeUnit.SECONDS);
         require(dark.isEmpty(), dark.size() + " replaced chunks are dark under open sky: "
                 + dark.subList(0, Math.min(10, dark.size())));
+        requireCavesDark(server, level, tile);
         System.out.printf(java.util.Locale.ROOT,
-                "SPAWN_EDGE_REGENERATION_CHECK PASS full_held=%d partial_held=%d worst_server_latency=%.3fs reload_full=%.1fs%n",
+                "SPAWN_EDGE_REGENERATION_CHECK PASS full_held=%d partial_held=%d worst_server_latency=%.3fs reload_full=%.1fs caves_dark=true%n",
                 held[0], held[1], worstSeconds, (System.nanoTime() - started) / 1e9);
+    }
+
+    /**
+     * Opaque blocks well below the surface hold no sky light. A chunk lit as if it had no blocks
+     * (the light engine got none for it, as for replaced chunks the server held too early in
+     * generation to report) has sky light 15 throughout, and its caves show bright in game.
+     */
+    private static void requireCavesDark(MinecraftServer server, ServerLevel level, ChunkBatchPlan.Tile tile) throws Exception {
+        List<String> bright = server.submit(() -> {
+            List<String> lit = new ArrayList<>();
+            for (int x = tile.minChunkX(); x < tile.minChunkX() + tile.chunksX(); x++) {
+                for (int z = tile.minChunkZ(); z < tile.minChunkZ() + tile.chunksZ(); z++) {
+                    int opaque = 0;
+                    int skyLit = 0;
+                    for (int dx = 1; dx < 16; dx += 3) {
+                        for (int dz = 1; dz < 16; dz += 3) {
+                            int bx = x * 16 + dx;
+                            int bz = z * 16 + dz;
+                            int top = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, bx, bz);
+                            for (int y = top - 60; y < top - 24; y += 4) {
+                                BlockPos pos = new BlockPos(bx, y, bz);
+                                if (!level.getBlockState(pos).canOcclude()) continue;
+                                opaque++;
+                                if (level.getBrightness(net.minecraft.world.level.LightLayer.SKY, pos) > 0) skyLit++;
+                            }
+                        }
+                    }
+                    if (opaque > 0 && skyLit * 4 > opaque) lit.add(x + "," + z + " (" + skyLit + "/" + opaque + ")");
+                }
+            }
+            return lit;
+        }).get(60, TimeUnit.SECONDS);
+        require(bright.isEmpty(), bright.size() + " chunks hold sky light inside solid blocks underground (lit as if empty): "
+                + bright.subList(0, Math.min(10, bright.size())));
     }
 
     /**

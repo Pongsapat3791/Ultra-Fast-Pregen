@@ -5,7 +5,7 @@ only the loader entrypoint differs. It has the commands (including `/pregen set`
 change of round 14: see the [main README](../../README.md).
 
 - **Requires:** Fabric Loader 0.14 or newer and Java 21 (Fabric API is not needed)
-- **File:** `build/libs/ultrafastpregen-fabric-1.21.1-14.jar`; `14` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-fabric-1.21.1-14.1.jar`; `14.1` is the update round, the same for every build
 - **Install:** on the server only; players do not need it (in singleplayer it runs in the integrated server)
 
 ## Differences from the NeoForge 1.21.1 build

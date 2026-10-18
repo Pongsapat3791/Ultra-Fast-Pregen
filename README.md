@@ -6,14 +6,14 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 
 | Loader | Minecraft | Java | File |
 |---|---|---|---|
-| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-14.jar` |
-| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-14.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
-| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-14.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
-| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-14.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
-| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-14.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
-| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-14.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
+| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-14.1.jar` |
+| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-14.1.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
+| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-14.1.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
+| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-14.1.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
+| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-14.1.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
+| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-14.1.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
 
-`14` is the update round, the same for every build. Install it on the server only: players do not need it
+`14.1` is the update round, the same for every build. Install it on the server only: players do not need it
 (it has no packets of its own). In singleplayer it runs in the integrated server.
 
 ## Speed

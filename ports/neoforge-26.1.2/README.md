@@ -4,7 +4,7 @@ The port of Ultra Fast Pregen 14 to Minecraft 26.1.2 (NeoForge), with the comman
 the config file, the save file and every change of round 14: see the [main README](../../README.md).
 
 - **Requires:** NeoForge 26.1.2 (tested with 26.1.2.122) and Java 25
-- **File:** `build/libs/ultrafastpregen-neoforge-26.1.2-14.jar`, into the server's `mods/` folder; `14` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-neoforge-26.1.2-14.1.jar`, into the server's `mods/` folder; `14.1` is the update round, the same for every build
 - **Install:** on the server only; players do not need it, as the mod has no packets of its own
 - **Commands:** `/pregen start|resume|reset|stop|status|world|center|set`, operator level 2
 - **Config:** `config/ultrafastpregen.conf`, with the same keys as the other builds

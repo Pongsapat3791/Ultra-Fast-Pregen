@@ -109,7 +109,10 @@ public class InMemoryChunkGrid {
         for (InMemoryChunkGrid grid : activeGrids) {
             if (!grid.lighting || grid.level != level || !grid.isTerrain(chunkX, chunkZ)) continue;
             long pos = ChunkPos.pack(chunkX, chunkZ);
-            if (held != null ? !grid.lightReplaced.contains(pos) : grid.lightHeld.contains(pos)) return null;
+            // A chunk this batch replaces is lit from the grid, also while the server's own copy is
+            // too early in generation for the server to report it (then held is null).
+            if (grid.lightReplaced.contains(pos)) return grid.getChunk(chunkX, chunkZ);
+            if (held != null || grid.lightHeld.contains(pos)) return null;
             return grid.getChunk(chunkX, chunkZ);
         }
         return null;

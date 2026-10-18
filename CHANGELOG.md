@@ -1,5 +1,23 @@
 # Changelog
 
+## 14.1
+
+### Fixed
+- **Bright caves next to loaded chunks:** chunks the server had only started generating when a batch reached them were
+  lit as if they had no blocks: sky light 15 everywhere underground and no light from lava, so their caves showed
+  bright. These are the ring of partly generated chunks, about 11 chunks wide, around chunks the server keeps loaded:
+  the spawn chunks (1.20.1, 1.21.1), players and force-loaded chunks. A run centered on spawn, or near a player
+  (always the case in singleplayer), crossed such a ring. Those chunks are now lit from their generated blocks like
+  every other chunk. Runs away from loaded chunks were not affected.
+- **Worlds generated with 14 around spawn or players:** Minecraft relights every chunk after "Erase cached data": in
+  singleplayer, Edit World → Optimize World with "Erase cached data" ticked; on a server, start it once with
+  `--forceUpgrade --eraseCache`. Deleting the affected chunks so they generate again works too.
+
+### Tested
+- A new check in the test suite looks for sky light inside solid blocks underground after a batch that covers chunks
+  the server holds full and partly generated: with 14, 175 of its 256 chunks were lit as if empty; with 14.1, none.
+  It passes on all six builds, and the light of every block still matches Minecraft's light engine.
+
 ## 14
 
 ### New builds
