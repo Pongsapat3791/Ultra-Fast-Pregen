@@ -6,7 +6,7 @@ the config file, the save file and every change up to round 15: see the [main RE
 - **Requires:** NeoForge 26.1.2 (tested with 26.1.2.122) and Java 25
 - **File:** `build/libs/ultrafastpregen-neoforge-26.1.2-15.jar`, into the server's `mods/` folder; `15` is the update round, the same for every build
 - **Install:** on the server only; players do not need it, as the mod has no packets of its own
-- **Commands:** `/pregen start|resume|reset|stop|status|world|center|radius|shape|worldborder|spawn|set`, operator level 2
+- **Commands:** `/pregen start|resume|reset|stop|status|world|center|radius|shape|worldborder|spawn|set`, operator level 2 (in singleplayer the world's owner, cheats or not)
 - **Config:** `config/ultrafastpregen.conf`, with the same keys as the other builds
 
 ## Differences from the other builds

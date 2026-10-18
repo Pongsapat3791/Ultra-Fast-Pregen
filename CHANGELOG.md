@@ -13,6 +13,8 @@
 - **API for other mods** ([API.md](API.md)): start, resume and stop runs and read their status; listen to a run's start,
   progress, every batch of saved chunks and its end; declare their own mixins compatible with the fast paths, or ask for
   Minecraft's terrain steps, in code or in fabric.mod.json / mods.toml.
+- **Singleplayer without cheats:** the world's owner can use `/pregen` without turning cheats on; before, the command
+  looked missing in such worlds. Servers and LAN guests still need op level 2.
 
 ### Safer
 - **Stopping the server during a run:** the server waits for the batch being saved (up to 20 s) and drops the one being

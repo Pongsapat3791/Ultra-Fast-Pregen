@@ -64,7 +64,7 @@ Operators (level 2) see the progress, speed and ETA on a boss bar. `/pregen stop
 batch being saved (up to 20 s). A run cut short this way, or by a crash, continues by itself once the server has started
 again (`resume_after_restart`).
 
-## Commands (operator level 2)
+## Commands (operator level 2; in singleplayer the world's owner, cheats or not)
 
 | Command | What it does |
 |---|---|

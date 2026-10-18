@@ -42,9 +42,22 @@ public class PreGenCommand {
     private static volatile int radius = 0;
     private static volatile ChunkBatchPlan.Shape shape = ChunkBatchPlan.Shape.SQUARE;
 
+    private static final java.util.function.Predicate<CommandSourceStack> GAMEMASTERS =
+            Commands.hasPermission(Commands.LEVEL_GAMEMASTERS);
+
+    /**
+     * The singleplayer world's owner: there an op level exists only with cheats on, and without one
+     * the command would look missing, so the owner may pregenerate anyway. Other players (a server,
+     * LAN guests) need op level 2.
+     */
+    private static boolean isSingleplayerOwner(CommandSourceStack source) {
+        net.minecraft.server.level.ServerPlayer player = source.getPlayer();
+        return player != null && source.getServer().isSingleplayerOwner(player.nameAndId());
+    }
+
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext buildContext, Commands.CommandSelection selection) {
         dispatcher.register(Commands.literal("pregen")
-            .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+            .requires(source -> GAMEMASTERS.test(source) || isSingleplayerOwner(source))
             .then(Commands.literal("start")
                 .executes(ctx -> startPreGen(ctx.getSource()))
                 .then(Commands.argument("world_k", IntegerArgumentType.integer(1, 100))

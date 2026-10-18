@@ -22,6 +22,14 @@ public final class SingleplayerCheck {
         String result;
         try {
             Thread.sleep(5_000);
+            // The test world has cheats off: its owner has no op level, and may still use /pregen.
+            boolean ownerCanPregen = server.submit(() -> {
+                var players = server.getPlayerList().getPlayers();
+                if (players.isEmpty()) throw new AssertionError("The world's owner must have joined");
+                var node = server.getCommands().getDispatcher().getRoot().getChild("pregen");
+                return node != null && node.canUse(players.get(0).createCommandSourceStack());
+            }).get(10, TimeUnit.SECONDS);
+            if (!ownerCanPregen) throw new AssertionError("The singleplayer owner must be able to use /pregen without cheats");
             int centerBlock = Integer.getInteger("pregen.singleplayerCenter", 300000);
             command(server, "pregen center " + centerBlock + " " + centerBlock);
             command(server, "pregen start " + Integer.getInteger("pregen.singleplayerArea", 1));
@@ -40,7 +48,7 @@ public final class SingleplayerCheck {
                     () -> new AssertionError("The area's center chunk must be stored"));
             if (!"minecraft:full".equals(stored.getString("Status"))) throw new AssertionError("Center chunk not full");
             long answered = server.submit(System::nanoTime).get(10, TimeUnit.SECONDS);
-            result = String.format(java.util.Locale.ROOT, "SINGLEPLAYER_CHECK PASS speed=%.1f chunks/s max_heap=%dMB server_answers=%b",
+            result = String.format(java.util.Locale.ROOT, "SINGLEPLAYER_CHECK PASS speed=%.1f chunks/s max_heap=%dMB server_answers=%b owner_can_pregen=true",
                     task.getChunksPerSecond(), Runtime.getRuntime().maxMemory() >> 20, answered > 0);
         } catch (Throwable failure) {
             failure.printStackTrace();
