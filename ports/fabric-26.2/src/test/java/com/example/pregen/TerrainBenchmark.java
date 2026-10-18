@@ -109,6 +109,7 @@ public final class TerrainBenchmark {
         PreGenSaveFileCheck.run();
         PhaseSpacingCheck.run();
         ChunkSaveCheck.run();
+        C2meStorageCheck.run();
         HolderLookup.Provider lookup = VanillaRegistries.createLookup();
         MappedRegistry<Biome> mutableBiomes = new MappedRegistry<>(Registries.BIOME, Lifecycle.stable());
         lookup.lookupOrThrow(Registries.BIOME).listElements()

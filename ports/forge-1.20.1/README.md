@@ -1,33 +1,34 @@
-# Ultra Fast Pregen สำหรับ Forge 1.20.1
+# Ultra Fast Pregen for Forge 1.20.1
 
-รุ่น Forge ของ Ultra Fast Pregen ใช้โค้ดชุดเดียวกับรุ่น Fabric 1.20.1 (`src/` ของโปรเจกต์หลัก) ต่างกันแค่ตัวเริ่มของ loader
-(`com.example.pregen.forge.ForgeEntrypoint` แทน `com.example.pregen.fabric.FabricEntrypoint`)
-ทุกการแก้ในรุ่น Fabric จึงมีในรุ่น Forge ด้วย และเลขรุ่นตรงกัน (`version` ใน `gradle.properties` ของโปรเจกต์หลัก)
+The Forge build shares its code with the Fabric 1.20.1 build (`src/` of the main project); only the loader entrypoint differs
+(`com.example.pregen.forge.ForgeEntrypoint` instead of `com.example.pregen.fabric.FabricEntrypoint`).
+Every change to the Fabric build is in the Forge build too, with the same version number (`version` in the main project's `gradle.properties`).
 
-คำสั่ง ไฟล์ตั้งค่า ไฟล์ save และวิธีทำงานเหมือนรุ่น Fabric ทุกอย่าง อ่านได้ใน [README หลัก](../../README.md)
+Commands, the config file, the save file and how it works are the same as in the Fabric build: see the [main README](../../README.md).
 
-- ต้องการ: Forge 1.20.1 (47.x), Java 17 ขึ้นไป
-- ไฟล์: `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20.1-x.jar`
-- ใส่ฝั่ง server อย่างเดียวก็ได้ ผู้เล่นเข้า server ได้ทั้งที่มีและไม่มี mod นี้
+- **Requires:** Forge 1.20.1 (47.x) and Java 17 or newer
+- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20.1-14.jar`
+- **Install:** on the server only; players can join with or without it
 
-## Build และทดสอบ (จากโฟลเดอร์โปรเจกต์หลัก)
+## Building and testing (from the main project folder)
 
 ```powershell
 .\gradlew.bat -p ports/forge-1.20.1 build
 .\gradlew.bat -p ports/forge-1.20.1 runTerrainBenchmark
-.\gradlew.bat -p ports/forge-1.20.1 runPartialBatchCheck
+.\gradlew.bat -p ports/forge-1.20.1 runPartialBatchCheck -PcheckHeap=8G
 ```
 
-- ใช้ ModDevGradle (legacyforge) กับ Forge 47.4.28 ชื่อใน mixin แปลงเป็นชื่อของ Forge ผ่าน `pregen.refmap.json` ตอน build
-- `runTerrainBenchmark` และ `runPartialBatchCheck` คือเทสต์ชุดเดียวกับรุ่น Fabric (ไฟล์ใน `src/test` ของโปรเจกต์หลัก) รันบน server ของ Forge
-  `runPartialBatchCheck` ใช้โลกทดสอบที่ `build/partial-batch-check` ตั้ง `level-name` ใหม่ทุกครั้ง (ค่าเริ่มต้นมาจาก `checks/`)
+- Built with ModDevGradle (legacyforge) against Forge 47.4.28; mixin names are mapped to Forge's names through `pregen.refmap.json` at build time.
+- `runTerrainBenchmark` and `runPartialBatchCheck` run the Fabric build's tests (`src/test` of the main project) on a Forge server.
+  `runPartialBatchCheck` uses the test world in `build/partial-batch-check`: set a new `level-name` before every run (the defaults come from `checks/`).
 
-## ผลทดสอบ (1.20.1-13)
+## Test results
 
-- **เทสต์ชุดเต็มบน Forge 47.4.28:** ผ่านทุกข้อ ได้ hash ของบล็อกเท่ากับรุ่น Fabric ทุกตัว (ความเหมือน vanilla รอบหมู่บ้าน, ลำดับ features, ขั้นตอนของ Minecraft)
-  รวมทั้ง preset อื่นของ vanilla, รอยต่อ batch, หยุดแล้วรันต่อ, ต่อกับชังก์ที่มีอยู่แล้ว, nether, end
-  และแสงทุกบล็อกตรงกับ light engine ของ Minecraft (`LIGHT_PARITY_CHECK`)
-- **jar ที่แจกจริงบน server Forge (i9-11900T ES, 16 thread, `-Xmx8G`), พื้นที่ 3k, seed 42, center 100000 100000:**
-  5 นาที 22 วินาที, 109.6 ชังก์/วินาที (รุ่น Fabric บนเครื่องเดียวกัน 113.3; รุ่น 12 ที่แสงยังผิดได้ 112.8 และ 120.6) ใช้ทางลัดของ terrain ครบ
-  ช้ากว่า Fabric ราว 3% (รุ่น 12 วัดได้ 6% ที่ขั้น terrain โดยเฉพาะ surface) ยังไม่ได้หาว่าส่วนไหนของ Forge ทำให้ช้า (วัดรอบเดียว)
-- **เทียบทั้งโลกกับรุ่น Fabric (รุ่น 12, 28,900 ชังก์):** ต่างกัน 50 บล็อก ทั้งหมดเป็นรังผึ้ง (Minecraft สุ่มตำแหน่งรังผึ้งแบบไม่มี seed)
+- **Full test suite, round 14 (Forge 47.4.28):** every check passes, with the same block hashes as the Fabric build (vanilla parity around a village,
+  feature order, Minecraft's own steps), including vanilla's other presets, batch seams, stopping and resuming, joining existing chunks, the Nether,
+  the End, the light of every block (`LIGHT_PARITY_CHECK`) and the safety net (`SAFE_MODE_RETRY_CHECK`).
+- **The released jar on a Forge server (round 13, i9-11900T ES, 16 threads, `-Xmx8G`), 3k area, seed 42, center 100000 100000:**
+  5 min 22 s, 109.6 chunks/s on the full fast terrain path (the Fabric build on the same machine: 113.3), about 3% slower than Fabric (one run).
+- **A whole world compared with the Fabric build (round 12, 28,900 chunks):** 50 blocks differ, all of them bee nests
+  (Minecraft places bee nests with an unseeded shuffle).
+- **With other mods and modpacks:** see [COMPATIBILITY.md](../../COMPATIBILITY.md).

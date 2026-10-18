@@ -1,239 +1,175 @@
 # Ultra Fast Pregen
 
-Mod สร้างโลกล่วงหน้า (pre-generation) สำหรับ **Minecraft 1.20.1 (Fabric และ Forge)** (เดิมชื่อ fastpregen) สร้างพื้นที่สี่เหลี่ยมจัตุรัสทีละ batch
-ใน RAM ทุก stage ใช้ทุก core แล้วเขียนลงไฟล์ region ครั้งเดียวต่อ batch
+A world pre-generation mod for Minecraft servers and singleplayer. It generates a square area one batch at a time
+**in RAM, with every CPU core in every stage**, then writes each batch to the region files in one go.
+The blocks, biomes and light are the same as Minecraft's own generation (checked block for block by its test suite).
 
-- ต้องการ: Fabric Loader 0.14 ขึ้นไป, Java 17 ขึ้นไป (Fabric API ไม่จำเป็น)
-- ไฟล์: `build/libs/ultrafastpregen-fabric-1.20.1-x.jar` โดย `x` คือรอบอัปเดต (`version` ใน `gradle.properties`)
-- รุ่น Forge 1.20.1 (47.x): `ultrafastpregen-forge-1.20.1-x.jar` จาก [ports/forge-1.20.1](ports/forge-1.20.1/README.md) ใช้โค้ดชุดเดียวกัน เลขรุ่นตรงกัน
-- รุ่น NeoForge 1.21.1: `ultrafastpregen-neoforge-1.21.1-x.jar` จาก [ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md) (พอร์ตของรุ่นเดียวกัน เลขรุ่นตรงกัน)
-- รุ่น Fabric 26.2 (Java 25): `ultrafastpregen-fabric-26.2-x.jar` จาก [ports/fabric-26.2](ports/fabric-26.2/README.md)
-
-## ความเร็ว (วัดจริง)
-
-i9-11900T ES (8 คอร์ 16 thread), พื้นที่ 3000×3000 blocks, seed 42, center 100000 100000, server ค่าเริ่มต้น
-
-| | เวลา | ความเร็ว | เทียบ Chunky |
+| Loader | Minecraft | Java | File |
 |---|---|---|---|
-| Ultra Fast Pregen 1.20.1-13 | 5 นาที 11 วินาที | 113.3 ชังก์/วินาที | 2.22 เท่า |
-| Ultra Fast Pregen 1.20.1-12 | 4 นาที 52 วินาที | 120.6 ชังก์/วินาที | 2.36 เท่า |
-| Ultra Fast Pregen 1.20.1-11 | 5 นาที 2 วินาที | 116.9 ชังก์/วินาที | 2.29 เท่า |
-| Ultra Fast Pregen 1.20.1-10 | 4 นาที 58 วินาที | 118.5 ชังก์/วินาที | 2.32 เท่า |
-| Ultra Fast Pregen 1.20.1-9 | 5 นาที 6 วินาที | 115.3 ชังก์/วินาที | 2.26 เท่า |
-| Ultra Fast Pregen 1.20.1-8 | 4 นาที 56 วินาที | 119.2 ชังก์/วินาที | 2.34 เท่า |
-| Ultra Fast Pregen 1.20.1-7 | 5 นาที 22 วินาที | 109.6 ชังก์/วินาที | 2.15 เท่า |
-| Chunky 1.3.146 | 11 นาที 41 วินาที | 51.0 ชังก์/วินาที | 1.00 |
+| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-14.jar` |
+| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-14.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
+| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-14.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
+| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-14.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
+| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-14.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
+| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-14.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
 
-รันแบบละครั้ง Chunky รันบน pipeline ของ Minecraft (ให้ server ยังเล่นได้ระหว่างสร้าง) ส่วน Ultra Fast Pregen ใช้ CPU เต็มทุก core
-1.20.1-9 ช้ากว่า 1.20.1-8 ราว 3% เพราะเพิ่มการจัดการ features ที่ล้ำข้ามรอยต่อ batch (ดูหัวข้อความถูกต้อง) ส่วน 1.20.1-10 และ 1.20.1-11 ต่างจาก 1.20.1-9 ไม่เกินช่วงคลาดเคลื่อน
+`14` is the update round, the same for every build. Install it on the server only: players do not need it
+(it has no packets of its own). In singleplayer it runs in the integrated server.
 
-**1.20.1-13 แก้แสง (ควรอัปเดตจากทุกรุ่นก่อนหน้า):**
-- **ถ้ำสว่างเท่ากลางวัน:** light engine ของ Minecraft อ่านบล็อกเฉพาะชังก์ที่ server ถืออยู่ จึงมองไม่เห็นชังก์ที่ mod สร้างใน RAM
-  แล้วคำนวณแสงเหมือนโลกว่าง ใต้ดินทั้งหมดได้ sky light 15 และไม่มีแสงจาก lava หรือ glow lichen (เป็นมาตั้งแต่รุ่นแรก)
-  ผิวดินดูปกติเพราะตรงนั้นควรเป็น 15 อยู่แล้ว ตอนนี้ light engine อ่านบล็อกจาก RAM ระหว่างทำแสง และทำแสงให้วงรอบ 1 ชังก์ด้วยเหมือน Minecraft
-  แสงทุกบล็อกตรงกับที่ Minecraft คำนวณจากบล็อกชุดเดียวกัน (เทสต์ `LIGHT_PARITY_CHECK`)
-- **ชังก์มืดรอบผู้เล่น (singleplayer หรือ server ที่มีผู้เล่นอยู่ในพื้นที่):** ชังก์ที่ server สร้างค้างไว้แล้วถูกเขียนทับ ถูกลบข้อมูลแสงตอนจบ batch
-  จึงแสดงเป็นผืนดำ ตอนนี้ไม่ลบแสงของชังก์ที่ server ถืออยู่ และเขียนทับเฉพาะชังก์ที่ทำแสงจากบล็อกใหม่แล้ว
-- ขั้นแสงต้องคำนวณจริงจึงช้าลง: บน i9 จาก 120.6 เป็น 113.3 ชังก์/วินาที (ส่วนใหญ่ซ่อนอยู่หลัง batch ถัดไป)
-- **`/pregen set`:** ตั้ง `batch_size`, `threads` และ `skip_existing_chunks` จากในเกม (บันทึกลงไฟล์ config)
-- **bossbar:** op ที่ออนไลน์เห็น % รวม ความเร็ว และ ETA บน bossbar แทนข้อความเหนือ hotbar
+## Speed
 
-**1.20.1-12 เร็วขึ้นบนเครื่อง core เยอะ:** จาก profile ของเครื่อง 24 thread (Core Ultra 7 270K Plus) worker ว่างราว 30%
-- **features ไม่ต้องรอ server:** แมวที่เกิดในหมู่บ้านเช็คว่าเป็นกระท่อมแม่มดไหม โดยถามชังก์จาก server ซึ่งสร้างชังก์นั้นซ้ำบน main thread ขณะที่ worker รอ
-  (รวม 89 วินาทีของ worker ในการรัน 8 นาที, ชังก์หมู่บ้านใช้ 4–5 วินาที) ตอนนี้ตอบจากชังก์ใน RAM ทันที (เหลือไม่เกิน 1 วินาที) และ log ไม่มี "Can't keep up" จากส่วนนี้แล้ว
-- **features ไม่แย่ง lock:** การเช็ครูปทรงบล็อกเต็มก้อน (ตอน glow lichen ลาม) ใช้ cache กลางของ Minecraft ที่ล็อกทุกครั้งที่หาไม่เจอ (รวม 216 วินาที)
-  ตอนนี้แต่ละ worker มี cache ของตัวเอง ได้คำตอบเดียวกัน
-- **แสงและการบันทึกทำซ้อนกับ batch ถัดไป:** แสงของ Minecraft ใช้ได้ทีละ thread ระหว่างนั้น core อื่นว่าง ตอนนี้ batch ถัดไปสร้าง structure, terrain และถ้ำไปพร้อมกัน
-  ยิ่ง core เยอะ แสงยิ่งกินสัดส่วนเวลามาก (เครื่อง 24 thread ราว 10%) บน i9 (16 thread) ได้ราว 1–3%
-- บรรทัด `Step times` บอกด้วยว่า features ใช้ worker ได้กี่ % และชังก์ไหนช้าสุด
+Measured with the [benchmark tool](benchmark/README.md) on an **AMD Ryzen 5 7500F (6 cores, 12 threads)**, 32 GB RAM,
+Windows 11, NeoForge 26.1.2: a fresh world (seed 42), a square of radius 1,500 blocks (about 35,000 chunks), average of 2 runs.
+"Vanilla" is Minecraft's own generation driven by Chunky 1.5.4.
 
-## คำสั่ง (ต้องเป็น op ระดับ 2)
+![Chunk pregeneration speed: Overworld, Tectonic + WWOO, Nether and End, without and with C2ME](images/benchmark-summary.png)
 
-| คำสั่ง | ทำอะไร |
-|---|---|
-| `/pregen start <world_k> [profile]` | สร้างพื้นที่ `world_k × 1000` บล็อกต่อด้าน รอบจุดศูนย์กลาง (`profile` บันทึก JFR ลงโฟลเดอร์ server) |
-| `/pregen resume` | รันต่องานล่าสุดของโลกที่เลือก ด้วยขนาดและจุดศูนย์กลางเดิมจากไฟล์ save (ใช้ได้แม้รีสตาร์ท server) |
-| `/pregen reset` | ลืมว่า Ultra Fast Pregen สร้างชังก์ไหนไปแล้วในโลกที่เลือก |
-| `/pregen stop` | หยุดหลัง batch ปัจจุบัน |
-| `/pregen status` | ความคืบหน้า ความเร็ว ETA และ RAM |
-| `/pregen world [dimension]` | เลือกโลก/มิติ เช่น `minecraft:the_nether` (ค่าเริ่มต้น: โลกของผู้สั่ง, console = overworld) |
-| `/pregen center [x z]` | จุดศูนย์กลาง (รองรับ `~ ~`, ค่าเริ่มต้น `0 0`) |
-| `/pregen set batch_size <512..10000>` | ขนาด batch (บันทึกลงไฟล์ config ใช้กับ `start` ครั้งถัดไป) |
-| `/pregen set threads <max\|1..128>` | จำนวน worker |
-| `/pregen set skip_existing_chunks <true\|false>` | เก็บชังก์ที่มีอยู่แล้ว หรือสร้างใหม่ทับ |
-| `/pregen set` | แสดงค่าทั้งสามที่ตั้งไว้ |
-
-`world` และ `center` อยู่จนรีสตาร์ท server งานที่กำลังรันใช้ค่าเดิมต่อ
-
-ระหว่างรัน op ที่ออนไลน์เห็น bossbar บอก % รวม ความเร็ว และ ETA (หายไปหลังเสร็จ 5 วินาที)
-log จะแสดง `Progress / Speed / ETA` ทุก 3 วินาที และหลังแต่ละ batch มีบรรทัด `Step times`
-บอกเวลาของแต่ละขั้น เวลาเฉลี่ยต่อชังก์ของ biome, noise, surface และ features ใช้ worker ได้กี่ % (`features: busy ...`) ไว้ดูว่าเครื่องช้าที่ขั้นไหน
-
-## ตั้งค่า: `config/ultrafastpregen.conf`
-
-(ไฟล์ `inmemory-pregen.conf` เดิมถูกย้ายมาเอง) อ่านใหม่ทุกครั้งที่ `start` แก้ได้ที่ไฟล์นี้ หรือด้วย `/pregen set` (สำหรับ `batch_size`, `threads`, `skip_existing_chunks`)
-ค่าที่ไม่มีในไฟล์จะถูกเติมให้อัตโนมัติ
-
-| key | ค่าเริ่มต้น | ความหมาย |
-|---|---|---|
-| `batch_size` | `1000` | ขนาด batch เป็นบล็อก (512..10000) ดูตาราง RAM ด้านล่าง |
-| `threads` | `max` | จำนวน worker (`max` = ทุก core ที่ JVM เห็น บนโฮสต์คือลิมิต CPU ของแพ็กเกจ) หรือ 1..128 |
-| `skip_existing_chunks` | `true` | เก็บชังก์ที่มีอยู่แล้วไว้ สร้างเฉพาะชังก์ที่ขาด (ดูหัวข้อถัดไป) `false` = สร้างใหม่และเขียนทับทั้งพื้นที่ |
-| `parallel_steps` | `true` | รัน structure, carvers, features ทุก thread ถ้า mod world gen ตัวไหน crash ใน Stage 1, 3 หรือ 4 ให้ตั้ง `false` |
-| `release_memory_each_batch` | `true` | สั่ง GC หลังทุก batch เพื่อคืน RAM (หยุดราว 0.1–0.2 วินาที) ตั้ง `false` ถ้าผู้เล่นรู้สึกกระตุก |
-| `terrain_pipeline` | `auto` | `auto` ใช้ทางลัดเมื่อเป็น noise generator ของ Minecraft, `vanilla` ใช้ขั้นตอนของ Minecraft เสมอ, `fused` บังคับทางลัด |
-
-### เลือก batch_size (วัดบนพื้นที่ 3k, 8 thread)
-
-| batch_size | ความเร็ว | RAM จริงสูงสุด | heap สูงสุด |
+| World | Vanilla (Chunky) | Ultra Fast Pregen | Speed-up |
 |---|---|---|---|
-| 500 | 255 ชังก์/วินาที | 0.6 GB | 2.8 GB |
-| 750 | 262 ชังก์/วินาที | 0.96 GB | 3.1 GB |
-| **1000** | 266 ชังก์/วินาที | 1.4 GB | 3.3 GB |
-| 1500 | 273 ชังก์/วินาที | 2.4 GB | 4.3 GB |
+| Overworld | 107.2 chunks/s | **332.8 chunks/s** | 3.10× |
+| Overworld, Tectonic + WWOO | 23.0 | **121.1** | 5.25× |
+| Overworld + C2ME | 282.5 | **378.1** | 1.34× |
+| Overworld, Tectonic + WWOO + C2ME | 97.0 | **156.8** | 1.62× |
+| Nether | 106.0 | **445.1** | 4.20× |
+| Nether + C2ME | 394.9 | **460.6** | 1.17× |
+| End | 752.1 | **1,079.7** | 1.44× |
+| End + C2ME | 992.2 | **1,113.8** | 1.12× |
 
-batch ใหญ่เร็วขึ้นเพียงเล็กน้อย (ทำขอบซ้ำน้อยลง) แต่ RAM โตตามกำลังสอง
+Ultra Fast Pregen runs on the CPU only (no OpenCL / GPU). The same worlds on Bye?Pregen's published chart
+(Ryzen 9 9950X3D, 16 cores / 32 threads, NeoForge 26.1.2, also Chunky as vanilla): vanilla 201.9 → Bye?Pregen 304.1 chunks/s (1.51×),
+Tectonic + WWOO 27.9 → 60.2 (2.16×), C2ME 1,173.2 → 1,467.6 (1.25×), Tectonic + WWOO + C2ME 301.7 → 531.1 (1.76×).
+Different machines: compare the speed-ups, not the absolute numbers.
 
-**RAM ไม่พอ:** ตอน `start` ถ้า heap ที่ว่างไม่พอสำหรับ `batch_size` (เช่น server ตั้ง `-Xmx` ต่ำ หรือ singleplayer ที่ client ใช้ heap ร่วม)
-จะลด batch ลงเอง (ทีละ 1/4 ต่ำสุด 256) และแจ้งในแชท ไม่ปล่อยให้ OutOfMemory
-ทดสอบแล้ว: server `-Xmx2G` ลดเป็น 750 แล้วรัน 3k จนเสร็จ (112 ชังก์/วินาที), singleplayer heap 2 GB ก็เช่นกัน
+**Modpacks** (i9-11900T ES, 16 threads, Ultra Fast Pregen 14 vs 13): All the Mods 9 35.0 → 39.1 chunks/s, All the Mods 10 48.6 → 54.2,
+Prominence II 32.4 → 36.9 (the fast terrain path now stays on in all three).
 
-**ทำ 2 batch ซ้อนกัน (1.20.1-12):** ถ้า heap ว่างพอสำหรับ 2 batch (batch 1000 ราว 3.8 GB เช่น `-Xmx6G` ขึ้นไป) แสงและการบันทึกของ batch หนึ่งจะทำพร้อมกับ batch ถัดไป
-ถ้าไม่พอจะทำทีละ batch เหมือนเดิม log ตอนเริ่มบอกว่าใช้แบบไหน (ทดสอบ `-Xmx4G` แบบซ้อนกันก็รันจบ แต่ช้าลงราว 3% จึงตั้งเกณฑ์ไว้ที่ 2 batch)
+## Quick start
 
-## ชังก์ที่มีอยู่แล้ว (`skip_existing_chunks=true`)
-
-- ตอนเริ่ม อ่าน header ของไฟล์ region ในพื้นที่ครั้งเดียว และอ่านเฉพาะค่า `Status` ของชังก์ที่มีอยู่ (เร็ว: 4,096 ชังก์ใช้ราว 0.1 วินาที)
-- **เก็บไว้:** ชังก์ที่สร้างเสร็จแล้ว (status full) ทั้งบนดิสก์ และที่ server กำลังถืออยู่
-- **สร้างและเขียนทับ:** ชังก์ที่ server สร้างค้างไว้ครึ่งทาง (proto) ทั้งบนดิสก์และใน RAM เพื่อให้พื้นที่สร้างครบจริง
-- batch ที่ทุกชังก์มีอยู่แล้วจะถูกข้ามทันที
-- ตอนเขียน ถ้า server เพิ่งเซฟชังก์ที่สร้างเสร็จระหว่างรัน (เช่น ผู้เล่นเดินไปสร้าง) จะไม่เขียนทับ
-- **ชังก์ที่เก็บไว้ต่อกับชังก์ใหม่ได้เนียน (1.20.1-11):** ชังก์เดิมไม่ถูกสร้างใหม่ แต่ใช้บล็อกจริงจากไฟล์
-  features ของชังก์ใหม่จึงล้ำเข้าชังก์เดิมได้เหมือน vanilla (ต้นไม้ไม่ขาดตรงแนวที่โลกเดิมต่อกับส่วนที่ pregen)
-
-## ไฟล์ save และการรันต่อ
-
-`<โลก>/data/ultrafastpregen.dat` (มิติอื่นอยู่ในโฟลเดอร์ของมิตินั้น เช่น `DIM-1/data/`) จดว่าชังก์ไหน Ultra Fast Pregen สร้างแล้ว
-1 bit ต่อชังก์ โหลดเข้า RAM ครั้งเดียวตอนเริ่ม และบันทึกหลังทุก batch ที่เขียนลงดิสก์สำเร็จ
-(ไฟล์ `fastpregen.dat` ของรุ่นก่อนเปลี่ยนชื่อถูกย้ายมาใช้ต่อเอง) ถ้า seed ของโลกไม่ตรงกับในไฟล์ ไฟล์จะถูกเมิน `/pregen resume` ใช้ไฟล์นี้รันต่อจากจุดเดิม
-หยุดแล้วรันต่อได้ผลเหมือนรันรวดเดียว (ส่วนที่ล้ำข้ามจุดที่หยุดอยู่ในชังก์ขอบที่บันทึกไว้แล้ว ดูหัวข้อถัดไป)
-
-## ทำงานอย่างไร
-
-แต่ละ batch สร้างใน RAM ตามลำดับ:
-
-1. **Structure starts / references:** ทุกชังก์ของ batch และวงรอบ 9 ชังก์ (structure อ้างอิงได้ไกล 8 ชังก์)
-2. **Biomes, noise, surface:** ชังก์หลักและวงรอบ 1 ชังก์
-3. **Carvers (ถ้ำ):** ชังก์หลักและวงรอบ 1 ชังก์
-4. **Features:** ชังก์ที่เขียนพื้นที่ทับกัน (ห่างกันไม่เกิน 2 ชังก์) วางตามลำดับ 9 phase เดิมเสมอ ส่วนชังก์อื่นเริ่มได้ทันทีโดยไม่ต้องรอทั้ง phase
-5. **แสง:** ขั้น INITIALIZE_LIGHT และ LIGHT ของ Minecraft บนชังก์หลักและวงรอบ 1 ชังก์ ใช้ light engine ของ server ซึ่งอ่านบล็อกจาก RAM ระหว่างขั้นนี้
-6. **Mob spawn เริ่มต้น:** ทีละชังก์เหมือน vanilla
-7. **บันทึก:** encode ขนานทุก thread แล้วเขียนผ่าน IO worker ของ server ด้วย handle เดียวต่อ region (ไม่ fsync ทีละชังก์) ระหว่างนั้นสร้าง batch ถัดไปต่อได้
-
-ขั้น 5–7 ทำบน thread แยก (`PreGen-Tail`) พร้อมกับขั้น 1–3 ของ batch ถัดไป (ถ้า RAM พอ) batch ถัดไปจะรอให้ขั้น 5–7 ของ batch ก่อนเสร็จ
-ก่อนอ่านหรือเขียนชังก์รอบตัว (ก่อนขั้น 4) ลำดับการอ่านเขียนไฟล์จึงเหมือนทำทีละ batch ทุกอย่าง
-
-**รอยต่อ batch:** features ของชังก์หนึ่งวางล้ำเข้าชังก์ข้างเคียงได้ จึงจัดการรอยต่อให้ได้ผลเหมือน Minecraft สร้าง batch ก่อนเสร็จแล้วค่อยสร้าง batch ถัดไป
-- **ส่วนที่ล้ำเข้า batch ถัดไป:** เก็บไว้ แล้วใส่ให้ชังก์ของ batch นั้นก่อน features ของมันเอง
-- **ชังก์ขอบที่บันทึกไปแล้ว:** batch ถัดไปเห็นบล็อกและ heightmap สุดท้ายของชังก์นั้น (เก็บไว้ใน RAM เฉพาะชังก์ขอบ จนชังก์รอบข้างสร้างครบ)
-- **ส่วนที่ล้ำกลับเข้าชังก์ที่บันทึกแล้ว:** เติมลงไฟล์ แล้วให้ server คำนวณแสงและ heightmap ใหม่ตอนโหลด
-- **ผล:** แบบแบ่ง batch ได้บล็อกเหมือนการรัน features ทีละ batch ในชุดเดียวกันทุกบล็อก (เทสต์ `BATCH_SEAM_CHECK`)
-
-**ขอบพื้นที่และชังก์ที่มีอยู่แล้ว (1.20.1-11):** ใช้หลักเดียวกับที่ Minecraft สร้างชังก์ต่อจากชังก์ที่มีอยู่
-- **ชังก์รอบ ๆ ที่สร้างเสร็จแล้วบนดิสก์** (โลกเดิม, รอบก่อน หรือชังก์ที่ Ultra Fast Pregen เคยเขียน): อ่านบล็อกจริงจากไฟล์มาให้ features ของชังก์ใหม่เห็น
-  ส่วนที่ล้ำเข้าไปเติมลงไฟล์ (เฉพาะชังก์ของ Minecraft รุ่นเดียวกัน และที่ server ไม่ได้ถืออยู่)
-- **ชังก์ขอบที่ยังไม่มี:** บันทึกเป็นชังก์สร้างค้าง (status carvers) พร้อมส่วนที่ features ล้ำเข้าไป เหมือนที่ Minecraft และ Chunky ทิ้งไว้รอบชังก์ที่สร้างเสร็จ
-  ต่อมา Minecraft สร้างต่อจนเสร็จเอง ส่วนการรันครั้งถัดไปหรือ `resume` อ่านส่วนที่ล้ำเข้าไปกลับมาจากชังก์นั้น
-- ชังก์ที่ Ultra Fast Pregen เขียนเก็บ heightmap ช่วง worldgen ไว้ด้วย (Minecraft ไม่อ่านค่านี้ในชังก์ที่สร้างเสร็จ) เพื่อให้รอบถัดไปเห็นชังก์นั้นเหมือนตอนรันรวดเดียว
-
-**Stage 2 เร็วกว่า Minecraft ราว 1.8 เท่า โดยได้ผลเหมือนเดิมทุกบิต:**
-- **ข้ามการคำนวณทีละบล็อก:** cell 4×8×4 บล็อกที่พิสูจน์จากค่ามุม interpolation ได้ว่าเป็นอากาศหรือหินทั้งก้อน ไม่ต้องคำนวณทีละบล็อก
-- **aquifer:** cache จุดอ้างอิงต่อชังก์ และทางลัดสำหรับอากาศที่อยู่สูงกว่าระดับน้ำ
-- **biome:**
-  - temperature และ humidity คำนวณครั้งเดียวต่อคอลัมน์ เพราะไม่ขึ้นกับความสูง
-  - ค้น biome ใน RTree แบบ array ต่อเนื่อง ใช้ warm start เดิมของ Minecraft
-  - surface อ่าน biome ที่ชังก์ข้างเคียงเก็บไว้ แทนการคำนวณซ้ำจาก noise
-- **surface:** ไม่สร้าง object ใหม่ทุกบล็อก และเขียนบล็อกโดยไม่ต้องล็อก
-
-## ความถูกต้อง
-
-- **Terrain และ biome:**
-  - benchmark เทียบ vanilla ใน JVM เดียวกัน checksum ของบล็อก biome heightmap และ fluid ตรงกันทุก seed
-  - รอบหมู่บ้านที่มี structure ตรงกันทุกบล็อก
-  - biome ที่เก็บในชังก์ตรงกับที่คำนวณสดทุก quart
-- **Features:** ลำดับแบบใหม่ได้ผลเหมือนแบบแบ่ง phase เดิมทุกบล็อก และรันซ้ำได้ผลเดิม
-- **แสง (1.20.1-13):** sky light และ block light ของทุกบล็อกตรงกับที่ light engine ของ Minecraft คำนวณจากบล็อกชุดเดียวกัน (1,572,864 บล็อก ต่าง 0)
-  และชังก์ที่ server ถือค้างแล้วถูกเขียนทับไม่มืด
-- **Preset อื่นของ vanilla:** large biomes, amplified, nether, end, caves และ floating islands ได้ terrain ตรงกับ Minecraft ทุกบล็อก
-- **หยุดแล้วรันต่อ:** เทียบกับการรันรวดเดียวที่จุดเดียวกัน บล็อกตรงกันทุกตำแหน่ง ยกเว้นรังผึ้ง (และใบไม้ข้างรังผึ้งไม่กี่ก้อน)
-- **ต่อกับพื้นที่เดิม:** สร้างพื้นที่เล็กก่อนแล้วสร้างพื้นที่ใหญ่รอบ ๆ ได้บล็อกตรงขอบเหมือนการรันรวดเดียวที่ให้พื้นที่เล็กวาง features ก่อน
-  (ก่อน 1.20.1-11 ต่างกัน 17,467 บล็อกตรงขอบ ตอนนี้ 0)
-- **ทางลัดเทียบกับขั้นตอนของ Minecraft (`terrain_pipeline=vanilla`):** หลัง carvers และ features ได้บล็อก, heightmap และตำแหน่งที่รอ post-processing เหมือนกันทุกตำแหน่ง
-- **ลาวาในถ้ำลึก (แก้ใน 1.20.1-10):**
-  - carver อ่านค่า "ต้องอัปเดต fluid" ที่ aquifer ค้างไว้ ตอนวางลาวาใต้ระดับลาวา (y ≤ -56)
-  - ทางลัดของ aquifer เคยตั้งค่านี้ไม่ตรงกับ Minecraft ลาวาบางก้อนจึงถูกตั้งให้ไหลตอนโหลดครั้งแรก ทั้งที่ vanilla ไม่ตั้ง (บล็อกเหมือนกัน)
-- **เทียบทั้งโลกกับ Chunky (vanilla) ที่ seed เดียวกัน พื้นที่ 3k (สคริปต์อ่านไฟล์ region ตรง ๆ):**
-  - biome ตรงกันทุก quart
-  - Minecraft เองรันสองครั้งก็ได้ features ต่างกัน 0.11–0.15% ของบล็อก (ก้อนแร่, ใบไม้, เถาวัลย์ ฯลฯ) เพราะผลขึ้นกับลำดับที่ชังก์ถูกสร้าง
-  - 1.20.1-9 ต่างจาก vanilla 0.157% อยู่ในระดับเดียวกัน
-  - **รอยต่อ batch:**
-    - ก่อน 1.20.1-9 ชังก์ที่แตะรอยต่อต่างจาก vanilla 336 บล็อกต่อชังก์ เพราะก้อนแร่และต้นไม้ที่ล้ำข้ามรอยต่อหายไป
-    - 1.20.1-9 เหลือ 167 บล็อกต่อชังก์ แต่ฝั่ง batch ก่อนหน้ายังมีก้อนหิน granite/diorite/andesite ต่างจาก vanilla ราว 2 เท่าในระยะ 4 บล็อกจากรอยต่อ
-    - 1.20.1-10 แก้ส่วนนี้แล้ว ความต่างที่เหลือตรงรอยต่อมาจากลำดับที่ Chunky สร้างชังก์ในบริเวณนั้น ซึ่งเป็นลำดับที่ vanilla ใช้ได้ทั้งคู่
-  - ใน 1.20.1 ตำแหน่งรังผึ้งสุ่มแบบไม่มี seed (`Collections.shuffle`) จึงไม่ตรงกันทุกครั้งแม้ใน vanilla
-
-## ความเข้ากันได้กับ mod อื่น
-
-- **ตรวจ mixin อัตโนมัติ:**
-  - ถ้ามี mod อื่น mixin เข้า generator, `ChunkStatus` หรือส่วน noise/aquifer ที่ตัวนี้แก้ ทางลัดที่เกี่ยวข้องจะปิดตัวเอง
-  - log ตอนเริ่มจะบอกว่า `Terrain pipeline` และ `Cell-skipping noise fill` เปิดหรือปิด และเพราะ mod ไหน
-- **datapack:** ใช้ได้ เพราะทุกขั้นอ่าน registry ของโลกนั้นตรง ๆ
-- **thread-safety:** Minecraft สร้าง structure และ features ทีละชังก์ แต่ตัวนี้รันขนาน จึงแก้จุดที่ไม่รองรับการทำงานพร้อมกันไว้แล้ว:
-  - cache ของ StructureTemplate palette (เคยทำให้งานล้มด้วย `ConcurrentModificationException`)
-  - layout ของ stronghold ที่เก็บเป็นตัวแปร static
-  - `placeSettings` ที่ใช้ร่วมกันของชิ้น structure ขนาดใหญ่
-- **feature ที่ถามชังก์จาก server:** (เช่นแมวในหมู่บ้านเช็คกระท่อมแม่มด) worker ของ Ultra Fast Pregen ได้ชังก์จาก RAM ของ batch ที่มี structure ชุดเดียวกัน
-  แทนการให้ server สร้างชังก์นั้นซ้ำ thread อื่นของ server และ mod อื่นยังได้ชังก์จาก server ตามปกติ
-- **mod ที่เก็บสถานะไว้ตอนวาง features:** ถ้ามี mod อื่น mixin เข้า `applyBiomeDecoration` หรือ seed ของ feature
-  (เช่น BCLib ของ BetterEnd/BetterNether นับ feature ไว้ในตัว generator เพื่อคำนวณ seed)
-  จะวาง features ทีละชังก์อัตโนมัติ ส่วนขั้นอื่นยังรันขนาน log ตอนเริ่มจะบอกว่าเพราะ mod ไหน
-  ถ้าไม่ทำแบบนี้ ก้อนแร่และ feature อื่นจะไปอยู่คนละที่กับ vanilla
-- **Lithium และ mod ที่แก้ `WorldGenRegion`:** แต่ละขั้นได้ชังก์รอบข้างในระยะเท่าที่ Minecraft ให้ (8 ชังก์สำหรับ carvers และ features)
-- **mod world gen ที่ crash ตอนรันขนาน:** ตั้ง `parallel_steps=false`
-- **ทดสอบกับ modpack Prominence II: Hasturian Era v4.1.3 (Fabric, 365 mods):** พื้นที่ 1k ใน server เดียวกันกับ Chunky
-  - ใช้ขั้นตอนของ Minecraft (มี mod แก้ terrain) และวาง features ทีละชังก์ (BCLib)
-  - Ultra Fast Pregen 36.1 ชังก์/วินาที, Chunky 19.8 ชังก์/วินาที (1.8 เท่า)
-  - บล็อกต่างจาก Chunky 0.30% ส่วนใหญ่เป็นใบโกงกาง ใบ cypress และเถาวัลย์ที่ขึ้นกับลำดับการสร้าง biome ตรงกันทุก quart
-    (Chunky สองรอบใน pack นี้ต่างกันเอง 0.16% ทั้งที่ใช้ลำดับเดียวกัน)
-  - server โหลดและ tick ชังก์ที่ Ultra Fast Pregen สร้างได้ปกติ
-
-## ข้อจำกัด
-
-- โปรเจกต์หลักคือ Fabric 1.20.1 ส่วน Forge 1.20.1 อยู่ที่ `ports/forge-1.20.1`, NeoForge 1.21.1 ที่ `ports/neoforge-1.21.1` และ Fabric 26.2 ที่ `ports/fabric-26.2`
-- พื้นที่เป็นสี่เหลี่ยมจัตุรัสรอบจุดศูนย์กลาง
-- ใช้ CPU เต็มทุก core server กระตุกได้ระหว่างรัน ถ้ามีผู้เล่นออนไลน์ ลด `threads` ลง 1–2 core
-- ชังก์ที่ server กำลังถืออยู่ (มีผู้เล่นอยู่ใกล้) และชังก์ของ Minecraft รุ่นเก่าที่ยังไม่ถูกอัปเกรด จะไม่รับส่วนที่ features ล้ำเข้าไป
-- feature บางตัวอ่านบล็อกไกลเกิน 1 ชังก์ (เช่น large dripstone) ตรงรอยต่อ batch จะเห็นชังก์ที่ห่างออกไปเป็นที่ว่าง
-  ซึ่งเป็นสภาพหนึ่งที่ vanilla ก็เจอได้ ขึ้นกับว่าชังก์นั้นถูกสร้างไปถึงไหนแล้ว
-
-## พัฒนาและทดสอบ
-
-```powershell
-.\gradlew.bat build -x test
+```
+/pregen center 0 0
+/pregen start 4        # a 4000 x 4000 block square around the center
+/pregen status
 ```
 
-- `runTerrainBenchmark`: เทียบ Stage 2 แบบ vanilla/optimized ใน JVM เดียวกัน ตรวจ checksum และรันเทสต์ย่อยทั้งหมด
-  ```powershell
-  .\gradlew.bat runTerrainBenchmark '-Pbenchmark.compare=true' '-Pbenchmark.chunks=512' '-Pbenchmark.threads=4' '-Pbenchmark.seeds=1,42,7'
-  ```
-- `runPartialBatchCheck`: เทสต์บน server จริงในโลกทดสอบที่ `build/partial-batch-check` ตั้ง `level-name` ใหม่ทุกครั้ง ครอบคลุม:
-  - เขียนทับ, ขอบ spawn, ไฟล์ save และการรันต่อ
-  - ผลเหมือน vanilla รอบหมู่บ้าน, ลำดับ features และขั้นตอนของ Minecraft
-  - biome, ชังก์ที่มีอยู่แล้ว, รอยต่อ batch, หยุดแล้วรันต่อ และต่อกับพื้นที่เดิม
-  - `-PonlyChecks=resume,existing` รันเฉพาะสองข้อหลัง
-- `runSingleplayerCheck`: เปิด client จริง เข้าโลก singleplayer (`build/singleplayer-check/saves/sp-check`) สั่ง `/pregen start 1` แล้วปิดเอง
-  (`-PcheckHeap=2G` ทดสอบ RAM น้อย, `-x downloadAssets` ถ้าไม่ต้องการโหลดเสียงและภาษา)
-- Benchmark ทั้งระบบบน server จริง:
-  - `-PpipelineBenchmark=true`: สลับเทียบตัวเลือก
-  - `-PbatchBenchmark=1500,1000,750,500`: เทียบขนาด batch
-  - `-PcheckHeap=8G`: กำหนด heap
+Operators (level 2) see the progress, speed and ETA on a boss bar. `/pregen stop` stops after the current batch;
+`/pregen resume` continues the last run of the selected world, even after a server restart.
+
+## Commands (operator level 2)
+
+| Command | What it does |
+|---|---|
+| `/pregen start <world_k> [profile]` | Generates a square of `world_k × 1000` blocks per side around the center (`profile` records a JFR profile in the server folder) |
+| `/pregen resume` | Continues the last run of the selected world with its size and center from the save file |
+| `/pregen reset` | Forgets which chunks Ultra Fast Pregen generated in the selected world |
+| `/pregen stop` | Stops after the current batch |
+| `/pregen status` | Progress, speed, ETA and RAM |
+| `/pregen world [dimension]` | Selects the world, e.g. `minecraft:the_nether` (default: the sender's world; the console means the overworld) |
+| `/pregen center [x z]` | The center (`~ ~` works; default `0 0`) |
+| `/pregen set batch_size <512..10000>` | Batch size, saved in the config file for the next `start` |
+| `/pregen set threads <max\|1..128>` | Number of workers |
+| `/pregen set skip_existing_chunks <true\|false>` | Keep chunks that already exist, or regenerate them |
+| `/pregen set` | Shows the three values |
+
+`world` and `center` last until the server restarts; a running job keeps its own.
+The console shows `Progress / Speed / ETA` every 3 seconds and, after each batch, a `Step times` line with the time of every stage.
+
+## Configuration: `config/ultrafastpregen.conf`
+
+Read again on every `start`. Missing keys are added automatically.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `batch_size` | `1000` | Batch size in blocks (512..10000); larger batches are slightly faster but RAM grows with the square |
+| `threads` | `max` | Workers (`max` = every core the JVM sees) or 1..128 |
+| `skip_existing_chunks` | `true` | Keep chunks that already exist and generate only missing ones; `false` regenerates and overwrites the whole area |
+| `parallel_steps` | `true` | Structures, carvers and features on all threads; set `false` if a worldgen mod crashes when they run in parallel |
+| `release_memory_each_batch` | `true` | Runs a GC after each batch to give RAM back (pauses about 0.1–0.2 s); `false` if players notice it |
+| `terrain_pipeline` | `auto` | `auto` uses the fast path with Minecraft's noise generator; `vanilla` always uses Minecraft's own steps; `fused` forces the fast path |
+
+**Not enough RAM:** when the free heap cannot hold `batch_size`, the batch shrinks by itself (down to 256) and the chat says so,
+instead of running out of memory. With room for two batches (about 3.8 GB for batch 1000), each batch is lit and saved while the next one generates.
+
+## Existing chunks (`skip_existing_chunks=true`)
+
+- At start it reads each region file's header once and only the `Status` of existing chunks (4,096 chunks in about 0.1 s).
+- **Kept:** fully generated chunks on disk and chunks the server holds.
+- **Generated and overwritten:** chunks the server left part-generated, so the area really ends up complete.
+- **Seamless edges:** kept chunks are not regenerated; their real blocks are read from disk, so features of new chunks reach into them
+  as in vanilla (trees are not cut along the line where the old world meets the pregenerated part).
+
+## Save file and resuming
+
+`<world>/data/ultrafastpregen.dat` (other dimensions in their own folder) records which chunks Ultra Fast Pregen generated,
+1 bit per chunk, saved after every batch that reached the disk. `/pregen resume` continues from it.
+Stopping and resuming gives the blocks of an uninterrupted run.
+
+## How it works
+
+Each batch is generated in RAM in this order:
+
+1. **Structure starts and references** for the batch and a 9-chunk ring (structures reference up to 8 chunks away).
+2. **Biomes, noise and surface** in one fused pass for the batch and a 1-chunk ring.
+3. **Carvers (caves).**
+4. **Features**, in the 9-phase order Minecraft's dependencies require for chunks that write over each other; other chunks start right away.
+5. **Light:** Minecraft's own INITIALIZE_LIGHT and LIGHT steps with the server's light engine, which reads the batch from RAM.
+6. **Initial mob spawning**, chunk by chunk as in vanilla.
+7. **Saving:** encoding on all threads, then one write per region file through the server's IO worker.
+
+Steps 5–7 run on a separate thread while the next batch runs steps 1–3. Feature placement that crosses a batch edge is carried into
+the next batch (or merged back into the saved chunk), so batches give the same blocks as one run (test `BATCH_SEAM_CHECK`).
+
+**Stage 2 is about 1.8× faster than Minecraft with bit-identical results:** 4×8×4 noise cells proven all air or all stone from the
+interpolation corners skip per-block work; aquifer and biome lookups are cached per column; surface writes without per-block allocation.
+
+## Correctness
+
+The test suite (`runPartialBatchCheck`, `runTerrainBenchmark`) runs on a real server for every build before a release:
+
+- Terrain, biomes, heightmaps and fluids match Minecraft's own steps block for block (overworld, nether, end and the large biomes,
+  amplified, caves and floating islands presets).
+- Sky and block light of every block match Minecraft's light engine on the same blocks (1,572,864 blocks, 0 different).
+- Batch seams, stopping and resuming, and joining an existing area give the blocks of one uninterrupted run.
+- A batch that fails on the fast paths is generated again Minecraft's way with the same blocks (`SAFE_MODE_RETRY_CHECK`).
+
+## Compatibility with other mods
+
+- **Automatic mixin check:** if another mod changes a method a fast path replaces, that fast path turns itself off and the start-up log says
+  which mod. Mixins that only add accessors or touch other methods no longer force the slower path (round 14), so big modpacks keep the fast path.
+- **Safety net (round 14):** if a batch still fails on the fast paths (another mod's code that does not expect them), the batch is generated
+  again the way Minecraft does (per-status terrain, one chunk at a time) and the rest of the run continues that way. The log names the mods involved.
+- **C2ME:** supported on every build, including its own chunk storage, on the fast terrain path. On 1.20.1 the cell-skipping
+  fill works with C2ME too. On 1.21.1 and 26.x it steps aside while C2ME's density function compiler is on (C2ME's default):
+  on 26.x that is the faster setting; on 1.21.1, setting `useDensityFunctionCompiler = false` under
+  `[vanillaWorldGenOptimizations]` in `config/c2me.toml` is faster still.
+- **Distant Horizons / Voxy (26.x builds):** saved chunks are sent to their LoD databases (Voxy only in singleplayer, as it is client-side).
+- **Datapacks, biome and structure modifiers:** work, since every step reads the world's registries.
+- **Tested together with** popular performance, LoD and worldgen mods on all six builds (C2ME, Lithium / Canary, Noisium,
+  FerriteCore, ModernFix, Starlight / ScalableLux, Distant Horizons, Voxy, Terralith, Biomes O' Plenty, YUNG's Better Caves,
+  Alex's Caves), in the Overworld, Nether and End with every saved chunk checked, and with the modpacks All the Mods 9,
+  All the Mods 10 and Prominence II. The mods, versions and results are in [COMPATIBILITY.md](COMPATIBILITY.md).
+  With Lithium or Canary and Noisium together, or with Alex's Caves, the start-up log shows Minecraft's per-status
+  terrain path: those mods change steps the fast path would skip, so it steps aside by itself.
+- **Not supported yet: Moonrise.** It replaces Minecraft's chunk system (chunk storage, chunk holders and the light engine),
+  which this mod generates and saves through; `/pregen start` says so and does nothing.
+
+## Limitations
+
+- The area is a square around the center.
+- Moonrise is not supported yet (see Compatibility).
+- It uses every core: with players online, lower `threads` by 1–2.
+- Chunks the server is holding (players nearby) and chunks of old Minecraft versions not yet upgraded do not receive features that reach into them.
+
+## Building and testing
+
+```powershell
+.\gradlew.bat build                                  # Fabric 1.20.1 (root)
+.\gradlew.bat -p ports/neoforge-26.1.2 build         # other builds
+.\gradlew.bat runTerrainBenchmark
+.\gradlew.bat runPartialBatchCheck -PcheckHeap=8G    # set a new level-name in build/partial-batch-check/server.properties first
+```
+
+The benchmark tool used for the speed section is in [benchmark/](benchmark/README.md).
+
+## License
+
+LGPL-3.0

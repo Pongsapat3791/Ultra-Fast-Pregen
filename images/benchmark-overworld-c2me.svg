@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="690" viewBox="0 0 960 690" role="img" aria-labelledby="ufp-c2me-title ufp-c2me-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="ufp-c2me-title">Chunk pregeneration speed with C2ME</title>
+<desc id="ufp-c2me-desc">Vanilla worldgen + C2ME: C2ME 282.5 chunks/s, C2ME + Ultra Fast Pregen 378.1 chunks/s (1.34x); Tectonic + WWOO + C2ME: C2ME 97.0 chunks/s, C2ME + Ultra Fast Pregen 156.8 chunks/s (1.62x)</desc>
+<rect width="960" height="690" fill="#ffffff"/>
+<text x="32.0" y="44.0" font-size="22" fill="#1f2328" text-anchor="start" font-weight="700">Chunk pregeneration speed with C2ME</text>
+<text x="32.0" y="68.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Bar height = chunks per second (higher is better) | independent y-axes</text>
+<rect x="32.0" y="87" width="12" height="12" rx="2" fill="#7f8790"/>
+<text x="50.0" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">C2ME</text>
+<rect x="103.1" y="87" width="12" height="12" rx="2" fill="#2e8b7a"/>
+<text x="121.1" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">C2ME + Ultra Fast Pregen</text>
+<rect x="32.0" y="120" width="428.0" height="386" rx="8" fill="#f6f7f8"/>
+<text x="48.0" y="144.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Vanilla worldgen + C2ME</text>
+<line x1="94.0" y1="462.0" x2="444.0" y2="462.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="466.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="94.0" y1="399.5" x2="444.0" y2="399.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="403.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="94.0" y1="337.0" x2="444.0" y2="337.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="341.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="94.0" y1="274.5" x2="444.0" y2="274.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="278.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="94.0" y1="212.0" x2="444.0" y2="212.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="216.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<text x="199.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME</text>
+<g><title>C2ME, Vanilla worldgen + C2ME: 282.5 chunks/s (average of 2 runs)</title><path d="M167.0,462.0 V289.4 Q167.0,285.4 171.0,285.4 H227.0 Q231.0,285.4 231.0,289.4 V462.0 Z" fill="#7f8790"/></g>
+<text x="199.0" y="277.4" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">282.5 CPS</text>
+<text x="339.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME + Ultra Fast Pregen</text>
+<g><title>C2ME + Ultra Fast Pregen, Vanilla worldgen + C2ME: 378.1 chunks/s (average of 2 runs)</title><path d="M307.0,462.0 V229.7 Q307.0,225.7 311.0,225.7 H367.0 Q371.0,225.7 371.0,229.7 V462.0 Z" fill="#2e8b7a"/></g>
+<text x="339.0" y="217.7" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">378.1 CPS</text>
+<path d="M199.0,191.0 V184.0 H339.0 V191.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="234.5" y="170.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="269.0" y="189.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.34x</text>
+<rect x="500.0" y="120" width="428.0" height="386" rx="8" fill="#f6f7f8"/>
+<text x="516.0" y="144.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Tectonic + WWOO + C2ME</text>
+<line x1="562.0" y1="462.0" x2="912.0" y2="462.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="466.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="562.0" y1="399.5" x2="912.0" y2="399.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="403.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">50</text>
+<line x1="562.0" y1="337.0" x2="912.0" y2="337.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="341.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="562.0" y1="274.5" x2="912.0" y2="274.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="278.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">150</text>
+<line x1="562.0" y1="212.0" x2="912.0" y2="212.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="216.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<text x="667.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME</text>
+<g><title>C2ME, Tectonic + WWOO + C2ME: 97.0 chunks/s (average of 2 runs)</title><path d="M635.0,462.0 V344.8 Q635.0,340.8 639.0,340.8 H695.0 Q699.0,340.8 699.0,344.8 V462.0 Z" fill="#7f8790"/></g>
+<text x="667.0" y="332.8" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">97.0 CPS</text>
+<text x="807.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME + Ultra Fast Pregen</text>
+<g><title>C2ME + Ultra Fast Pregen, Tectonic + WWOO + C2ME: 156.8 chunks/s (average of 2 runs)</title><path d="M775.0,462.0 V270.1 Q775.0,266.1 779.0,266.1 H835.0 Q839.0,266.1 839.0,270.1 V462.0 Z" fill="#2e8b7a"/></g>
+<text x="807.0" y="258.1" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">156.8 CPS</text>
+<path d="M667.0,191.0 V184.0 H807.0 V191.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="702.5" y="170.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="737.0" y="189.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.62x</text>
+<line x1="32" y1="522" x2="928" y2="522" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="32.0" y="540.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each run: fresh world, square of radius 1,500 blocks (3,000 x 3,000 blocks); chunks per run: C2ME 35,721 | C2ME + Ultra Fast Pregen 35,344.</text>
+<text x="32.0" y="558.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each bar is the average of 2 runs.</text>
+<text x="32.0" y="576.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">System: AMD Ryzen 5 7500F (6C/12T), 32 GB RAM, Windows 11 Pro.</text>
+<text x="32.0" y="594.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Minecraft 26.1.2, NeoForge 26.1.2.122.</text>
+<text x="32.0" y="612.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Mods: Ultra Fast Pregen 14 | Chunky 1.5.4 | C2ME 0.4.0-alpha.0.100 (density function compiler on) | Tectonic 3.0.28 | Lithostitched 1.8.1 |</text>
+<text x="32.0" y="630.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">WWOO 2.7.0 | Cristel Lib 3.1.13 | Cloth Config 26.1.154.</text>
+<text x="32.0" y="648.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">C2ME: Minecraft's generation with C2ME, driven by Chunky (same method as Bye?Pregen's chart).</text>
+<text x="32.0" y="666.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Ultra Fast Pregen runs on the CPU only: no OpenCL / GPU acceleration.</text>
+</svg>

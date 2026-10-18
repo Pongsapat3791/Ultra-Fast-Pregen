@@ -2,6 +2,7 @@ package com.example.pregen;
 
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -14,19 +15,26 @@ import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.OreVeinifier;
 import net.minecraft.world.level.levelgen.material.MaterialRuleList;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
+import org.spongepowered.asm.mixin.refmap.IReferenceMapper;
 import org.spongepowered.asm.mixin.transformer.ClassInfo;
 
 /**
  * Decides when the mod's shortcuts are safe alongside other world-generation mods.
  *
  * The fused terrain path calls NoiseBasedChunkGenerator's private biome and noise steps
- * directly, bypassing createBiomes, fillFromNoise and the ChunkStatus tasks. A custom
- * generator subclass, or another mod's mixin into those classes, may depend on exactly
- * what is bypassed, so either case falls back to Minecraft's own per-status tasks.
+ * directly, bypassing createBiomes, fillFromNoise and the biome and noise ChunkStatus tasks
+ * (the surface goes through Minecraft's own step). A custom generator subclass, or another
+ * mod's mixin changing what is bypassed, falls back to Minecraft's own per-status tasks;
+ * mixins into the rest of the generator apply on both paths.
  * Datapacks change only registry data, which both paths read, so they need no fallback.
  */
 public final class WorldgenCompat {
@@ -35,6 +43,58 @@ public final class WorldgenCompat {
     private static volatile Boolean fastNoiseFillAllowed;
     /** Mixin configs known to leave doFill, interpolation, aquifers and material rules untouched. */
     private static final Set<String> FILL_NEUTRAL_CONFIGS = Set.of("fabric-biome-api-v1.mixins.json");
+    /**
+     * Other mods' mixins, by class, with which the cell-skipping fill writes the same blocks
+     * (compared block for block on 10 000 chunks with C2ME 0.4.0-alpha.0.123).
+     */
+    private static final Set<String> FILL_NEUTRAL_MIXINS = Set.of(
+            // C2ME: accessors, a constructor-only mixin, Minecraft's random without atomics, its
+            // aquifer and beardifier rewrites (same results), and the executor of the noise step.
+            "com.ishland.c2me.base.mixin.access.IAquiferSamplerImpl",
+            "com.ishland.c2me.base.mixin.access.IChunkNoiseSampler",
+            "com.ishland.c2me.base.mixin.access.IChunkNoiseSamplerDensityInterpolator",
+            "com.ishland.c2me.base.mixin.access.INoiseChunkGenerator",
+            "com.ishland.c2me.base.mixin.access.IStructureWeightSampler",
+            "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinNoiseChunkGenerator",
+            "com.ishland.c2me.opts.worldgen.general.mixin.random_instances.MixinRedirectAtomicSimpleRandom",
+            "com.ishland.c2me.opts.worldgen.vanilla.mixin.aquifer.MixinAquiferSamplerImpl",
+            "com.ishland.c2me.opts.worldgen.vanilla.mixin.structure_weight_sampler.MixinStructureWeightSampler",
+            "com.ishland.c2me.rewrites.chunksystem.mixin.MixinNoiseChunkGenerator");
+    /** C2ME's density function compiler: noise compiled to its own code, which the cell-skipping fill cannot read. */
+    private static final String C2ME_DFC_CONFIG = "c2me-opts-dfc.mixins.json";
+    /**
+     * Other mods' mixins, by class, known to leave the terrain of the class they target unchanged;
+     * they do not count as modifying it.
+     */
+    private static final Set<String> NEUTRAL_MIXINS = Set.of(
+            // ModernFix: skips surface rules of biomes absent from the chunk; the surface comes out the same.
+            "org.embeddedt.modernfix.common.mixin.perf.optimize_surface_rules.NoiseBasedChunkGeneratorMixin",
+            // ModernFix worldgen_allocation: the same wrapping and material rules without lambdas or iterators.
+            "org.embeddedt.modernfix.common.mixin.perf.worldgen_allocation.NoiseChunkMixin",
+            "org.embeddedt.modernfix.common.mixin.perf.worldgen_allocation.MaterialRuleListMixin",
+            // ModernFix chunk_deadlock: only the FULL step, which the fused path leaves to Minecraft.
+            "org.embeddedt.modernfix.common.mixin.bugfix.chunk_deadlock.ChunkMapLoadMixin");
+    /**
+     * Mixins into feature placement known to work on separate chunks at the same time, with the
+     * same result in any order (shared state thread-safe, randomness seeded per chunk, writes only
+     * into the chunk being decorated), by mixin class. Features of such a pack still run in parallel.
+     */
+    private static final Set<String> PARALLEL_SAFE_FEATURE_MIXINS = Set.of(
+            // GregTech CEu: ore veins from a Guava cache, placed in the chunk's own sections with a
+            // random seeded from the world seed and chunk position.
+            "com.gregtechceu.gtceu.core.mixins.ChunkGeneratorMixin");
+
+    /**
+     * Other mods' mixins, by class, whose changes to what the fused path skips concern only work
+     * that path does not do; the rest of what they change applies on it as on Minecraft's path.
+     */
+    private static final Set<String> FUSED_COMPATIBLE_MIXINS = Set.of(
+            // C2ME: Minecraft's random sources created without atomics (a redirect in every method,
+            // same numbers): seen once MixinExtras' sugar wrappers are read (round 14).
+            "com.ishland.c2me.opts.worldgen.general.mixin.random_instances.MixinRedirectAtomicSimpleRandom",
+            // C2ME chunk system: runs createBiomes' and fillFromNoise's work on the calling thread
+            // instead of Minecraft's worker pool; the fused path runs it on its own pool.
+            "com.ishland.c2me.rewrites.chunksystem.mixin.MixinNoiseChunkGenerator");
 
     public record TerrainChoice(boolean fused, String reason) {}
 
@@ -48,17 +108,52 @@ public final class WorldgenCompat {
             return new TerrainChoice(false, "generator " + generator.getClass().getName() + " is not noise-based");
         }
         if (setting == PreGenConfig.TerrainPipeline.FUSED) {
-            return new TerrainChoice(true, "terrain_pipeline=fused in config");
+            List<String> details = new ArrayList<>();
+            Set<String> foreign = terrainMixinConfigs(details);
+            if (foreign.isEmpty()) return new TerrainChoice(true, "terrain_pipeline=fused in config");
+            PreGenMod.LOGGER.warn("[PreGen] terrain_pipeline=fused is forced although other mods modify terrain generation {}:"
+                    + " their changes are skipped and the terrain can come out wrong. terrain_pipeline=auto avoids this."
+                    + " Skipped: {}", foreign, details);
+            return new TerrainChoice(true, "terrain_pipeline=fused in config, skipping other mods' terrain changes " + foreign);
         }
         if (generator.getClass() != NoiseBasedChunkGenerator.class) {
             return new TerrainChoice(false, "custom generator " + generator.getClass().getName());
         }
-        Set<String> foreign = new TreeSet<>(foreignMixinConfigs(NoiseBasedChunkGenerator.class));
-        foreign.addAll(foreignMixinConfigs(ChunkStatusTasks.class));
+        List<String> details = new ArrayList<>();
+        Set<String> foreign = terrainMixinConfigs(details);
         if (!foreign.isEmpty()) {
+            PreGenMod.LOGGER.info("[PreGen] Terrain changes of other mods that the fused path would skip: {}", details);
             return new TerrainChoice(false, "other mods modify terrain generation " + foreign);
         }
-        return new TerrainChoice(true, "vanilla noise generator without other generator mixins");
+        return new TerrainChoice(true, "vanilla noise generator, no other mod changes the steps it replaces");
+    }
+
+    /**
+     * The generator methods the fused path does not call, with their lambdas: it runs
+     * doCreateBiomes, doFill and Minecraft's surface step itself, so other mods' changes to those
+     * (and to the rest of the generator) apply on it as well.
+     */
+    static final Set<String> FUSED_SKIPPED_GENERATOR_METHODS = Set.of("createBiomes", "fillFromNoise",
+            // Fabric's intermediary names (the Fabric build runs on them): the two methods and their lambdas.
+            "method_38275", "method_38333", "method_12088", "method_38332");
+    /** Minecraft's generation steps the fused path does not run: it does their work itself. */
+    static final Set<String> FUSED_SKIPPED_STEPS = Set.of("generateBiomes", "generateNoise",
+            // Fabric's intermediary names: the two steps and generateNoise's lambda.
+            "method_57605", "method_57607", "method_57599");
+
+    /**
+     * Other mods' configs with mixins that change what the fused path skips: the generator's
+     * createBiomes and fillFromNoise, and the biome and noise steps.
+     */
+    static Set<String> terrainMixinConfigs() {
+        return terrainMixinConfigs(null);
+    }
+
+    /** As above; each counted mixin and why goes into details when given. */
+    static Set<String> terrainMixinConfigs(List<String> details) {
+        Set<String> foreign = new TreeSet<>(changingMixinConfigs(NoiseBasedChunkGenerator.class, FUSED_SKIPPED_GENERATOR_METHODS, details));
+        foreign.addAll(changingMixinConfigs(ChunkStatusTasks.class, FUSED_SKIPPED_STEPS, details));
+        return foreign;
     }
 
     /**
@@ -89,13 +184,18 @@ public final class WorldgenCompat {
             for (Class<?> target : List.of(NoiseBasedChunkGenerator.class, NoiseChunk.class,
                     NoiseChunk.NoiseInterpolator.class, Aquifer.NoiseBasedAquifer.class, Beardifier.class,
                     OreVeinifier.class, MaterialRuleList.class)) {
-                foreign.addAll(foreignMixinConfigs(target));
+                foreign.addAll(foreignMixinConfigs(target, FILL_NEUTRAL_MIXINS));
             }
             // Fabric API's biome module hooks NoiseChunk's constructor and climate sampler only.
             foreign.removeAll(FILL_NEUTRAL_CONFIGS);
             allowed = foreign.isEmpty();
             if (!allowed) {
                 PreGenMod.LOGGER.info("[PreGen] Cell-skipping terrain fill disabled: other mods modify terrain noise {}", foreign);
+                if (foreign.equals(Set.of(C2ME_DFC_CONFIG))) {
+                    PreGenMod.LOGGER.info("[PreGen] With C2ME, set useDensityFunctionCompiler = false under"
+                            + " [vanillaWorldGenOptimizations] in config/c2me.toml: pregeneration then uses the"
+                            + " cell-skipping fill (faster than C2ME's compiled noise in this mod's tests).");
+                }
             }
             fastNoiseFillAllowed = allowed;
         }
@@ -120,7 +220,8 @@ public final class WorldgenCompat {
                     for (Object registered : (Set<?>) registeredMixins().get(info)) {
                         IMixinInfo mixin = (IMixinInfo) registered;
                         String config = mixin.getConfig().getName();
-                        if (!OWN_MIXIN_CONFIG.equals(config) && touchesFeaturePlacement(mixin)) configs.add(config);
+                        if (OWN_MIXIN_CONFIG.equals(config) || PARALLEL_SAFE_FEATURE_MIXINS.contains(mixin.getClassName())) continue;
+                        if (touchesFeaturePlacement(mixin)) configs.add(config);
                     }
                 } catch (Throwable failure) {
                     configs.add("unknown (" + failure.getClass().getSimpleName() + ")");
@@ -173,10 +274,18 @@ public final class WorldgenCompat {
      * targets are read. The runtime class name keeps this valid with intermediary names.
      */
     static List<String> foreignMixinConfigs(Class<?> target) {
+        return foreignMixinConfigs(target, Set.of());
+    }
+
+    /** As above, also leaving out the given mixin classes. */
+    static List<String> foreignMixinConfigs(Class<?> target, Set<String> alsoNeutral) {
         List<String> configs = new ArrayList<>();
         try {
-            for (String config : allMixinConfigs(target)) {
-                if (!OWN_MIXIN_CONFIG.equals(config) && !configs.contains(config)) configs.add(config);
+            for (IMixinInfo mixin : mixinsTargeting(target)) {
+                String config = mixin.getConfig().getName();
+                if (OWN_MIXIN_CONFIG.equals(config) || NEUTRAL_MIXINS.contains(mixin.getClassName())
+                        || alsoNeutral.contains(mixin.getClassName())) continue;
+                if (!configs.contains(config)) configs.add(config);
             }
         } catch (Throwable failure) {
             configs.add("unknown (" + failure.getClass().getSimpleName() + ")");
@@ -184,15 +293,266 @@ public final class WorldgenCompat {
         return configs;
     }
 
+    /**
+     * Configs of other mods with a mixin into the class that changes the named methods (all of
+     * the class's code when null; FUSED_COMPATIBLE_MIXINS excepted); see changes.
+     */
+    static List<String> changingMixinConfigs(Class<?> target, Set<String> methods) {
+        return changingMixinConfigs(target, methods, null);
+    }
+
+    /** As above; each counted mixin and why goes into details when given. */
+    static List<String> changingMixinConfigs(Class<?> target, Set<String> methods, List<String> details) {
+        List<String> configs = new ArrayList<>();
+        try {
+            for (IMixinInfo mixin : mixinsTargeting(target)) {
+                String config = mixin.getConfig().getName();
+                if (OWN_MIXIN_CONFIG.equals(config) || NEUTRAL_MIXINS.contains(mixin.getClassName())
+                        || FUSED_COMPATIBLE_MIXINS.contains(mixin.getClassName())) continue;
+                if (configs.contains(config) && details == null) continue;
+                String reason = changeReason(mixin, target, methods);
+                if (reason == null) continue;
+                if (!configs.contains(config)) configs.add(config);
+                if (details != null) details.add(mixin.getClassName() + " " + reason);
+            }
+        } catch (Throwable failure) {
+            configs.add("unknown (" + failure.getClass().getSimpleName() + ")");
+        }
+        return configs;
+    }
+
+    /** Mixin annotations that add to the target or refer to what it has, without changing its code. */
+    private static final Set<String> STRUCTURAL_ANNOTATIONS = Set.of(
+            "Lorg/spongepowered/asm/mixin/Shadow;", "Lorg/spongepowered/asm/mixin/Unique;",
+            "Lorg/spongepowered/asm/mixin/Final;", "Lorg/spongepowered/asm/mixin/Mutable;",
+            "Lorg/spongepowered/asm/mixin/Dynamic;", "Lorg/spongepowered/asm/mixin/gen/Accessor;",
+            "Lorg/spongepowered/asm/mixin/gen/Invoker;");
+    /** Annotations in Mixin's injection package that go with an injector rather than being one. */
+    private static final Set<String> INJECTOR_HELPERS = Set.of(
+            "Lorg/spongepowered/asm/mixin/injection/Group;", "Lorg/spongepowered/asm/mixin/injection/Surrogate;",
+            "Lorg/spongepowered/asm/mixin/injection/Coerce;");
+
+    /**
+     * Whether the mixin changes the code of the named methods of its target (methods null: any of
+     * its code). Mixins that only add to the class (accessors and invokers, getters, extra
+     * interfaces, shadowed fields) change none; BCLib, WorldsTogether, BetterEnd, Regions
+     * Unexplored and Porting Lib have only such mixins into the noise generator and ChunkStatus.
+     * Injectors and other transformations count by the methods their selectors name, resolved
+     * through the mixin's refmap as Mixin does; overwrites and methods replacing one of the
+     * target's by their own name. A selector this cannot read, and anything unreadable, counts.
+     */
+    static boolean changes(IMixinInfo mixin, Class<?> target, Set<String> methods) {
+        return changeReason(mixin, target, methods) != null;
+    }
+
+    /** What the mixin changes (see changes), or null when nothing. */
+    static String changeReason(IMixinInfo mixin, Class<?> target, Set<String> methods) {
+        try {
+            ClassNode node = mixin.getClassNode(0);
+            // Where the skipped work sits in the target's fields (1.20.1's ChunkStatus keeps each
+            // step's task in one), anything setting those fields changes it too.
+            boolean fieldsMatter = methods == null || target.getName().endsWith(".ChunkStatus");
+            Set<String> shadowFields = new HashSet<>();
+            for (FieldNode field : node.fields) {
+                if (hasAnnotation(field.visibleAnnotations, field.invisibleAnnotations, "Lorg/spongepowered/asm/mixin/Shadow;")) {
+                    shadowFields.add(field.name);
+                }
+            }
+            Set<String> targetMethods = null;
+            for (MethodNode method : node.methods) {
+                if (method.name.equals("<init>") || method.name.equals("<clinit>")) {
+                    // Merged into the target's own initializers: state every method of it reads.
+                    if (!fieldsMatter) continue;
+                    for (AbstractInsnNode insn : method.instructions) {
+                        if (insn instanceof FieldInsnNode field && field.owner.equals(node.name)
+                                && (field.getOpcode() == Opcodes.PUTFIELD || field.getOpcode() == Opcodes.PUTSTATIC)
+                                && shadowFields.contains(field.name)) {
+                            return "sets " + field.name + " in " + method.name;
+                        }
+                    }
+                    continue;
+                }
+                boolean mixinAnnotated = false;
+                for (List<AnnotationNode> annotations : java.util.Arrays.asList(method.visibleAnnotations, method.invisibleAnnotations)) {
+                    if (annotations == null) continue;
+                    for (AnnotationNode wrapper : annotations) {
+                        // MixinExtras rewrites handlers that use sugar (@Local and the like) under
+                        // @SugarWrapper and keeps the injector they had in "original": that one
+                        // says what the handler changes (Noisium's injection into fillFromNoise's
+                        // completion lambda on 1.20.1 is one).
+                        AnnotationNode annotation = annotationValue(wrapper, "original") instanceof AnnotationNode original
+                                ? original : wrapper;
+                        if (STRUCTURAL_ANNOTATIONS.contains(annotation.desc)) {
+                            // A setter accessor changes the target's state from outside.
+                            if (fieldsMatter && annotation.desc.equals("Lorg/spongepowered/asm/mixin/gen/Accessor;")
+                                    && Type.getArgumentTypes(method.desc).length > 0) {
+                                return "sets a field through accessor " + method.name;
+                            }
+                            mixinAnnotated = true;
+                        } else if (annotation.desc.equals("Lorg/spongepowered/asm/mixin/Overwrite;")
+                                || annotation.desc.equals("Lorg/spongepowered/asm/mixin/Intrinsic;")) {
+                            if (methods == null || methods.contains(method.name) || lambdaOf(method.name, methods)) {
+                                return "overwrites " + method.name;
+                            }
+                            mixinAnnotated = true;
+                        } else if ((annotation.desc.startsWith("Lorg/spongepowered/asm/mixin/injection/")
+                                        && !INJECTOR_HELPERS.contains(annotation.desc))
+                                || annotation.desc.startsWith("Lcom/llamalad7/mixinextras/injector/")) {
+                            // An injector: it transforms the methods its selectors name. Other
+                            // annotations (Mixin's meta markers) only accompany one.
+                            if (methods == null || selectsAny(mixin, annotation, methods)) {
+                                return "@" + annotation.desc.substring(annotation.desc.lastIndexOf('/') + 1, annotation.desc.length() - 1)
+                                        + " " + annotationValue(annotation, "method");
+                            }
+                            mixinAnnotated = true;
+                        } else if (annotationValue(annotation, "method") != null || annotationValue(annotation, "target") != null) {
+                            // An injector this check does not know (a relocated MixinExtras, say):
+                            // counted by its selectors all the same.
+                            if (methods == null || selectsAny(mixin, annotation, methods)) {
+                                return "@" + annotation.desc.substring(annotation.desc.lastIndexOf('/') + 1, annotation.desc.length() - 1)
+                                        + " " + annotationValue(annotation, "method");
+                            }
+                            mixinAnnotated = true;
+                        }
+                    }
+                }
+                if (mixinAnnotated || (method.access & Opcodes.ACC_ABSTRACT) != 0) continue;
+                if (methods != null) {
+                    if (methods.contains(method.name) || lambdaOf(method.name, methods)) return "replaces " + method.name;
+                    continue;
+                }
+                if (targetMethods == null) targetMethods = originalMethods(target);
+                if (targetMethods.contains(method.name + method.desc)) return "replaces " + method.name;
+            }
+            return null;
+        } catch (Throwable failure) {
+            return "unreadable (" + failure + ")";
+        }
+    }
+
+    private static Object annotationValue(AnnotationNode annotation, String name) {
+        if (annotation.values == null) return null;
+        for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+            if (name.equals(annotation.values.get(i))) return annotation.values.get(i + 1);
+        }
+        return null;
+    }
+
+    /** Whether the annotation's method selectors (after the refmap) name one of the methods. */
+    private static boolean selectsAny(IMixinInfo mixin, AnnotationNode annotation, Set<String> methods)
+            throws ReflectiveOperationException {
+        List<?> selectors = annotationValue(annotation, "method") instanceof List<?> list ? list : null;
+        if (selectors == null || selectors.isEmpty()) return true;  // e.g. a @Desc target: not read here
+        // The config's refmap (MixinConfig is not public API): the names the selectors resolve to.
+        java.lang.reflect.Method getter = mixin.getConfig().getClass().getMethod("getReferenceMapper");
+        getter.setAccessible(true);
+        IReferenceMapper refMapper = (IReferenceMapper) getter.invoke(mixin.getConfig());
+        String mixinName = mixin.getClassName().replace('.', '/');
+        for (Object selector : selectors) {
+            if (!(selector instanceof String text)) return true;
+            String mapped = refMapper == null ? null : refMapper.remap(mixinName, text);
+            if (selectorNames(text, methods) || (mapped != null && selectorNames(mapped, methods))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Whether a target selector ("name", "name(desc)", "Lowner;name(desc)", "owner.name", with
+     * a quantifier such as name+ or name{1,2}) names one of the methods or a lambda inside one.
+     * Wildcards, regular expressions and matcher selectors (name=/.../) count.
+     */
+    static boolean selectorNames(String selector, Set<String> methods) {
+        if (selector.contains("*") || selector.startsWith("/") || selector.contains("=/")) return true;
+        String name = selector;
+        int paren = name.indexOf('(');
+        if (paren >= 0) name = name.substring(0, paren);
+        int colon = name.indexOf(':');
+        if (colon >= 0) name = name.substring(0, colon);
+        name = name.substring(Math.max(name.lastIndexOf(';'), name.lastIndexOf('.')) + 1);
+        // Left over from a pattern this does not read: counts.
+        if (name.contains("/")) return true;
+        // Quantifiers: name+ and name{n,m} select methods of that name.
+        int brace = name.indexOf('{');
+        if (brace >= 0) name = name.substring(0, brace);
+        if (name.endsWith("+")) name = name.substring(0, name.length() - 1);
+        return methods.contains(name) || lambdaOf(name, methods);
+    }
+
+    /** A lambda compiled inside one of the methods (javac names it lambda$method$n). */
+    static boolean lambdaOf(String name, Set<String> methods) {
+        for (String method : methods) {
+            if (name.startsWith("lambda$" + method + "$")) return true;
+        }
+        return false;
+    }
+
+    /**
+     * The target's methods as compiled, before mixins added any, and those it inherits, as
+     * name + descriptor in runtime names. A mixin method with one of these replaces or overrides it.
+     */
+    private static Set<String> originalMethods(Class<?> target) {
+        Set<String> methods = new HashSet<>();
+        boolean own = true;
+        for (ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/')); info != null; info = info.getSuperClass()) {
+            for (ClassInfo.Method method : info.getMethods()) {
+                if (own && method.isInjected()) continue;
+                methods.add(method.getName() + method.getDesc());
+            }
+            own = false;
+        }
+        return methods;
+    }
+
+    private static boolean hasAnnotation(List<AnnotationNode> visible, List<AnnotationNode> invisible, String desc) {
+        for (List<AnnotationNode> annotations : java.util.Arrays.asList(visible, invisible)) {
+            if (annotations == null) continue;
+            for (AnnotationNode annotation : annotations) if (annotation.desc.equals(desc)) return true;
+        }
+        return false;
+    }
+
     /** Every config, including this mod's, with a mixin targeting the class. */
     static List<String> allMixinConfigs(Class<?> target) throws ReflectiveOperationException {
-        ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
         List<String> configs = new ArrayList<>();
-        for (Object mixin : (Set<?>) registeredMixins().get(info)) {
-            String config = ((IMixinInfo) mixin).getConfig().getName();
+        for (IMixinInfo mixin : mixinsTargeting(target)) {
+            String config = mixin.getConfig().getName();
             if (!configs.contains(config)) configs.add(config);
         }
         return configs;
+    }
+
+    private static volatile String chunkSystemReplacement;
+
+    /**
+     * A mod that replaces Minecraft's chunk system (chunk holders, chunk storage and the light
+     * engine), which this mod generates and saves through, or null. Moonrise (Paper's chunk
+     * system) does: none of the batch's chunks would reach the disk or be lit the way they are
+     * here, so a run does not start (see PreGenCommand).
+     */
+    public static String chunkSystemReplacement() {
+        String known = chunkSystemReplacement;
+        if (known == null) {
+            known = "";
+            try {
+                for (IMixinInfo mixin : mixinsTargeting(net.minecraft.server.level.ChunkMap.class)) {
+                    if (mixin.getConfig().getName().startsWith("moonrise")) {
+                        known = "Moonrise";
+                        break;
+                    }
+                }
+            } catch (ReflectiveOperationException | RuntimeException failure) {
+                PreGenMod.LOGGER.debug("[PreGen] Could not read the chunk system's mixins", failure);
+            }
+            chunkSystemReplacement = known;
+        }
+        return known.isEmpty() ? null : known;
+    }
+
+    static List<IMixinInfo> mixinsTargeting(Class<?> target) throws ReflectiveOperationException {
+        ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
+        List<IMixinInfo> mixins = new ArrayList<>();
+        for (Object mixin : (Set<?>) registeredMixins().get(info)) mixins.add((IMixinInfo) mixin);
+        return mixins;
     }
 
     private static Field registeredMixins() throws NoSuchFieldException {

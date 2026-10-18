@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="672" viewBox="0 0 960 672" role="img" aria-labelledby="ufp-title ufp-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="ufp-title">Chunk pregeneration speed</title>
+<desc id="ufp-desc">Vanilla worldgen: Vanilla 107.2 chunks/s, Ultra Fast Pregen 332.8 chunks/s (3.10x); Tectonic + WWOO: Vanilla 23.0 chunks/s, Ultra Fast Pregen 121.1 chunks/s (5.25x)</desc>
+<rect width="960" height="672" fill="#ffffff"/>
+<text x="32.0" y="44.0" font-size="22" fill="#1f2328" text-anchor="start" font-weight="700">Chunk pregeneration speed</text>
+<text x="32.0" y="68.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Bar height = chunks per second (higher is better) | independent y-axes</text>
+<rect x="32.0" y="87" width="12" height="12" rx="2" fill="#7f8790"/>
+<text x="50.0" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">Vanilla</text>
+<rect x="125.0" y="87" width="12" height="12" rx="2" fill="#2e8b7a"/>
+<text x="143.0" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">Ultra Fast Pregen</text>
+<rect x="32.0" y="120" width="428.0" height="386" rx="8" fill="#f6f7f8"/>
+<text x="48.0" y="144.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Vanilla worldgen</text>
+<line x1="94.0" y1="462.0" x2="444.0" y2="462.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="466.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="94.0" y1="399.5" x2="444.0" y2="399.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="403.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="94.0" y1="337.0" x2="444.0" y2="337.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="341.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="94.0" y1="274.5" x2="444.0" y2="274.5" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="278.5" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="94.0" y1="212.0" x2="444.0" y2="212.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="216.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<text x="199.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Vanilla</text>
+<g><title>Vanilla, Vanilla worldgen: 107.2 chunks/s (average of 2 runs)</title><path d="M167.0,462.0 V399.0 Q167.0,395.0 171.0,395.0 H227.0 Q231.0,395.0 231.0,399.0 V462.0 Z" fill="#7f8790"/></g>
+<text x="199.0" y="387.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">107.2 CPS</text>
+<text x="339.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Vanilla worldgen: 332.8 chunks/s (average of 2 runs)</title><path d="M307.0,462.0 V258.0 Q307.0,254.0 311.0,254.0 H367.0 Q371.0,254.0 371.0,258.0 V462.0 Z" fill="#2e8b7a"/></g>
+<text x="339.0" y="246.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">332.8 CPS</text>
+<path d="M199.0,191.0 V184.0 H339.0 V191.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="234.5" y="170.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="269.0" y="189.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">3.10x</text>
+<rect x="500.0" y="120" width="428.0" height="386" rx="8" fill="#f6f7f8"/>
+<text x="516.0" y="144.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Tectonic + WWOO</text>
+<line x1="562.0" y1="462.0" x2="912.0" y2="462.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="466.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="562.0" y1="412.0" x2="912.0" y2="412.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="416.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">25</text>
+<line x1="562.0" y1="362.0" x2="912.0" y2="362.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="366.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">50</text>
+<line x1="562.0" y1="312.0" x2="912.0" y2="312.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="316.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">75</text>
+<line x1="562.0" y1="262.0" x2="912.0" y2="262.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="266.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="562.0" y1="212.0" x2="912.0" y2="212.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="554.0" y="216.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">125</text>
+<text x="667.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Vanilla</text>
+<g><title>Vanilla, Tectonic + WWOO: 23.0 chunks/s (average of 2 runs)</title><path d="M635.0,462.0 V419.9 Q635.0,415.9 639.0,415.9 H695.0 Q699.0,415.9 699.0,419.9 V462.0 Z" fill="#7f8790"/></g>
+<text x="667.0" y="407.9" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">23.0 CPS</text>
+<text x="807.0" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Tectonic + WWOO: 121.1 chunks/s (average of 2 runs)</title><path d="M775.0,462.0 V223.9 Q775.0,219.9 779.0,219.9 H835.0 Q839.0,219.9 839.0,223.9 V462.0 Z" fill="#2e8b7a"/></g>
+<text x="807.0" y="211.9" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">121.1 CPS</text>
+<path d="M667.0,191.0 V184.0 H807.0 V191.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="702.5" y="170.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="737.0" y="189.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">5.25x</text>
+<line x1="32" y1="522" x2="928" y2="522" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="32.0" y="540.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each run: fresh world, square of radius 1,500 blocks (3,000 x 3,000 blocks); chunks per run: Vanilla 35,721 | Ultra Fast Pregen 35,344.</text>
+<text x="32.0" y="558.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each bar is the average of 2 runs.</text>
+<text x="32.0" y="576.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">System: AMD Ryzen 5 7500F (6C/12T), 32 GB RAM, Windows 11 Pro.</text>
+<text x="32.0" y="594.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Minecraft 26.1.2, NeoForge 26.1.2.122.</text>
+<text x="32.0" y="612.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Mods: Ultra Fast Pregen 14 | Chunky 1.5.4 | Tectonic 3.0.28 | Lithostitched 1.8.1 | WWOO 2.7.0 | Cristel Lib 3.1.13 | Cloth Config 26.1.154.</text>
+<text x="32.0" y="630.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Vanilla: Minecraft's own generation, driven by Chunky (same method as Bye?Pregen's chart).</text>
+<text x="32.0" y="648.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Ultra Fast Pregen runs on the CPU only: no OpenCL / GPU acceleration.</text>
+</svg>

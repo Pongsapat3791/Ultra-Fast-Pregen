@@ -97,6 +97,7 @@ public final class TerrainBenchmark {
         PreGenSaveFileCheck.run();
         PhaseSpacingCheck.run();
         ChunkSaveCheck.run();
+        C2meStorageCheck.run();
         if (Boolean.getBoolean("pregen.benchmark.blendingScan")) BlendingScanCheck.run();
         HolderLookup.Provider lookup = VanillaRegistries.createLookup();
         MappedRegistry<Biome> mutableBiomes = new MappedRegistry<>(Registries.BIOME, Lifecycle.stable());

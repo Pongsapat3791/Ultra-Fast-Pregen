@@ -111,6 +111,16 @@ final class PreGenConfig {
                 #   world-generation mod crashes in Stage 1, 3 or 4 (slower but always safe). Default: true.
                 parallel_steps=true
                 """);
+        SECTIONS.put("parallel_features", """
+
+                # parallel_features: whether features (trees, ores, structure pieces) run on all threads.
+                #   auto   - yes, except when another mod keeps state in feature placement (BCLib and
+                #            the mods built on it): then one chunk at a time, so their features land
+                #            where Minecraft puts them generating chunk by chunk (default)
+                #   always - on all threads anyway: much faster in such packs; those mods' features
+                #            land in other places, as random and valid as the usual ones
+                parallel_features=auto
+                """);
         SECTIONS.put("release_memory_each_batch", """
 
                 # release_memory_each_batch: run a garbage collection after every batch so the finished
@@ -125,6 +135,14 @@ final class PreGenConfig {
                 #   missing ones. A batch whose chunks all exist is skipped without generating it.
                 #   false regenerates and overwrites every chunk in the area. Default: true.
                 skip_existing_chunks=true
+                """);
+        SECTIONS.put("lod_export", """
+
+                # lod_export: send every chunk a run saves to the LoD mods that are loaded (Voxy in
+                #   singleplayer, Distant Horizons), so far terrain shows up without visiting it. They
+                #   build their LoDs while the run goes on, which makes it slower; false only saves.
+                #   Default: true.
+                lod_export=true
                 """);
         SECTIONS.put("terrain_pipeline", """
 
@@ -141,18 +159,24 @@ final class PreGenConfig {
     final int threads;
     final boolean threadsFromCpuCount;
     final boolean parallelSteps;
+    final boolean alwaysParallelFeatures;
     final boolean releaseMemoryEachBatch;
     final boolean skipExistingChunks;
+    final boolean lodExport;
     final TerrainPipeline terrainPipeline;
 
     private PreGenConfig(int batchSizeBlocks, int threads, boolean threadsFromCpuCount, boolean parallelSteps,
-                         boolean releaseMemoryEachBatch, boolean skipExistingChunks, TerrainPipeline terrainPipeline) {
+                         boolean alwaysParallelFeatures,
+                         boolean releaseMemoryEachBatch, boolean skipExistingChunks, boolean lodExport,
+                         TerrainPipeline terrainPipeline) {
         this.batchSizeBlocks = batchSizeBlocks;
         this.threads = threads;
         this.threadsFromCpuCount = threadsFromCpuCount;
         this.parallelSteps = parallelSteps;
+        this.alwaysParallelFeatures = alwaysParallelFeatures;
         this.releaseMemoryEachBatch = releaseMemoryEachBatch;
         this.skipExistingChunks = skipExistingChunks;
+        this.lodExport = lodExport;
         this.terrainPipeline = terrainPipeline;
     }
 
@@ -218,8 +242,14 @@ final class PreGenConfig {
         }
 
         boolean parallelSteps = readBoolean(properties, "parallel_steps", true, file, warn);
+        String featuresValue = properties.getProperty("parallel_features", "auto").trim().toLowerCase(Locale.ROOT);
+        boolean alwaysParallelFeatures = featuresValue.equals("always");
+        if (!alwaysParallelFeatures && !featuresValue.equals("auto")) {
+            warn.accept("parallel_features='" + featuresValue + "' in " + file + " is not auto or always; using auto");
+        }
         boolean releaseMemoryEachBatch = readBoolean(properties, "release_memory_each_batch", true, file, warn);
         boolean skipExistingChunks = readBoolean(properties, "skip_existing_chunks", true, file, warn);
+        boolean lodExport = readBoolean(properties, "lod_export", true, file, warn);
 
         String pipelineValue = properties.getProperty("terrain_pipeline", "auto").trim().toUpperCase(Locale.ROOT);
         TerrainPipeline pipeline;
@@ -229,8 +259,8 @@ final class PreGenConfig {
             warn.accept("Unknown terrain_pipeline '" + pipelineValue + "' in " + file + "; using auto");
             pipeline = TerrainPipeline.AUTO;
         }
-        return new PreGenConfig(batch, threads, fromCpuCount, parallelSteps, releaseMemoryEachBatch,
-                skipExistingChunks, pipeline);
+        return new PreGenConfig(batch, threads, fromCpuCount, parallelSteps, alwaysParallelFeatures, releaseMemoryEachBatch,
+                skipExistingChunks, lodExport, pipeline);
     }
 
     /**

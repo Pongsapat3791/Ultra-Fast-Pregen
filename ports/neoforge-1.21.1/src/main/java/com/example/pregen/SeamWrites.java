@@ -332,6 +332,13 @@ final class SeamWrites {
         return finals.size();
     }
 
+    /** Writes taken for a batch that is generated again (see DynamicBatchPreGen#generateWithFallback). */
+    synchronized void putBack(long chunk, List<Write> writes) {
+        if (writes.isEmpty()) return;
+        pending.computeIfAbsent(chunk, key -> new ArrayList<>()).addAll(0, writes);
+        carried -= writes.size();
+    }
+
     /** Removes and returns the writes waiting for this chunk (empty when none). */
     synchronized List<Write> take(long chunk) {
         List<Write> writes = pending.remove(chunk);

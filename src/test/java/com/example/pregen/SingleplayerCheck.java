@@ -23,8 +23,9 @@ public final class SingleplayerCheck {
         String result;
         try {
             Thread.sleep(5_000);
-            command(server, "pregen center 300000 300000");
-            command(server, "pregen start 1");
+            int centerBlock = Integer.getInteger("pregen.singleplayerCenter", 300000);
+            command(server, "pregen center " + centerBlock + " " + centerBlock);
+            command(server, "pregen start " + Integer.getInteger("pregen.singleplayerArea", 1));
             DynamicBatchPreGen task = null;
             long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(15);
             while (System.nanoTime() < deadline) {
@@ -35,7 +36,7 @@ public final class SingleplayerCheck {
             if (task == null || task.isRunning()) throw new AssertionError("/pregen did not finish in singleplayer");
             if (!"Completed".equals(task.getCurrentStageName())) throw new AssertionError("Run ended as " + task.getCurrentStageName());
             var io = ((com.example.pregen.mixin.ChunkStorageAccessor) server.overworld().getChunkSource().chunkMap).pregen$getWorker();
-            ChunkPos center = new ChunkPos(300000 >> 4, 300000 >> 4);
+            ChunkPos center = new ChunkPos(centerBlock >> 4, centerBlock >> 4);
             var stored = io.loadAsync(center).get(30, TimeUnit.SECONDS).orElseThrow(
                     () -> new AssertionError("The area's center chunk must be stored"));
             if (!"minecraft:full".equals(stored.getString("Status"))) throw new AssertionError("Center chunk not full");

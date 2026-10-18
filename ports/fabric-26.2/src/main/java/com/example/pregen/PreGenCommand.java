@@ -13,7 +13,6 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ColumnPos;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
 
 /**
@@ -22,7 +21,7 @@ import net.minecraft.world.level.Level;
  *   Example: /pregen start 20
  *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) come from
  *   config/ultrafastpregen.conf. "profile" saves a JFR recording of the run to the server directory.
- * - /pregen set [batch_size|threads|skip_existing_chunks] [value]
+ * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|lod_export] [value]
  *   writes one setting into that file (without a value: shows the settings)
  * - /pregen world [dimension]   select the world for the next start, e.g. minecraft:the_nether
  * - /pregen center [x z]         center of the square for the next start (accepts ~ ~)
@@ -95,11 +94,27 @@ public class PreGenCommand {
                                 Integer.toString(IntegerArgumentType.getInteger(ctx, "count"))))
                     )
                 )
+                .then(Commands.literal("parallel_features")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.literal("auto")
+                        .executes(ctx -> setConfig(ctx.getSource(), "parallel_features", "auto"))
+                    )
+                    .then(Commands.literal("always")
+                        .executes(ctx -> setConfig(ctx.getSource(), "parallel_features", "always"))
+                    )
+                )
                 .then(Commands.literal("skip_existing_chunks")
                     .executes(ctx -> showConfig(ctx.getSource()))
                     .then(Commands.argument("keep", BoolArgumentType.bool())
                         .executes(ctx -> setConfig(ctx.getSource(), "skip_existing_chunks",
                                 Boolean.toString(BoolArgumentType.getBool(ctx, "keep"))))
+                    )
+                )
+                .then(Commands.literal("lod_export")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.argument("send", BoolArgumentType.bool())
+                        .executes(ctx -> setConfig(ctx.getSource(), "lod_export",
+                                Boolean.toString(BoolArgumentType.getBool(ctx, "send"))))
                     )
                 )
             )
@@ -127,8 +142,8 @@ public class PreGenCommand {
         PreGenConfig config = PreGenConfig.load();
         String threads = config.threadsFromCpuCount ? "max (" + config.threads + ")" : Integer.toString(config.threads);
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[PreGen] batch_size=%d | threads=%s | skip_existing_chunks=%b §7(change with /pregen set <key> <value>; config/%s)",
-                config.batchSizeBlocks, threads, config.skipExistingChunks, PreGenConfig.FILE_NAME)), false);
+                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | lod_export=%b §7(change with /pregen set <key> <value>; config/%s)",
+                config.batchSizeBlocks, threads, config.alwaysParallelFeatures ? "always" : "auto", config.skipExistingChunks, config.lodExport, PreGenConfig.FILE_NAME)), false);
         return 1;
     }
 
@@ -204,6 +219,16 @@ public class PreGenCommand {
                 source.sendFailure(Component.literal("§c[PreGen] A pre-generation task is already currently running!"));
                 return 0;
             }
+            String replacedBy = WorldgenCompat.chunkSystemReplacement();
+            if (replacedBy != null) {
+                String reason = replacedBy + " replaces Minecraft's chunk system (chunk storage, chunk holders and the light engine),"
+                        + " which Ultra Fast Pregen generates and saves through, and Ultra Fast Pregen does not support it yet."
+                        + " Nothing was started. Pre-generate without " + replacedBy
+                        + ", or with a pregenerator that asks the server for chunks (such as Chunky).";
+                PreGenMod.LOGGER.warn("[PreGen] " + reason);
+                source.sendFailure(Component.literal("§c[PreGen] " + reason));
+                return 0;
+            }
             // Tiles also generate a structure ring of InMemoryChunkGrid.PADDING chunks around the area.
             long reach = worldK * 500L + (InMemoryChunkGrid.PADDING + 1) * 16L;
             if (Math.abs((long) x) + reach > MAX_WORLD_COORDINATE || Math.abs((long) z) + reach > MAX_WORLD_COORDINATE) {
@@ -220,26 +245,24 @@ public class PreGenCommand {
                 String warning = String.format(
                         "§e[PreGen] Only %.1f GB of heap is free, too little for batch_size=%d; using %d (a little slower). Give Minecraft more memory (-Xmx on a server, the launcher's memory setting in singleplayer) to use the configured size.",
                         freeHeap / 1073741824.0, config.batchSizeBlocks, batch);
-                source.sendSuccess(() -> Component.literal(warning), true);
+                PreGenMod.LOGGER.warn(warning.replaceAll("§.", ""));
             }
-            source.sendSuccess(() -> Component.literal(String.format(
-                "§a[PreGen] Starting generation for %dk x %dk in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s §7(change in config/%s)",
+            // Players see the boss bar; the settings go to the server log and console.
+            PreGenMod.LOGGER.info(String.format(
+                "[PreGen] Starting generation for %dk x %dk in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s §7(change in config/%s)",
                 worldK, worldK, level.dimension().identifier(), x, z, batch, batch,
                 config.threads, config.threadsFromCpuCount ? " (max)" : "",
                 config.skipExistingChunks ? "kept" : "overwritten", PreGenConfig.FILE_NAME
-            )), true);
+            ).replaceAll("§.", ""));
 
-            DynamicBatchPreGen task = new DynamicBatchPreGen(level, worldK, batch, config.threads, x, z, msg -> {
-                // The engine already logs each event. Sending it to a console source
-                // logs the same event a second time; players receive it directly.
-                if (source.getEntity() instanceof ServerPlayer player) {
-                    source.getServer().execute(() -> player.sendSystemMessage(Component.literal("§7" + msg)));
-                }
-            });
+            // The engine logs each event; players follow the run on the boss bar, not in chat.
+            DynamicBatchPreGen task = new DynamicBatchPreGen(level, worldK, batch, config.threads, x, z, msg -> {});
             task.setTerrainPipeline(config.terrainPipeline);
             task.setParallelSteps(config.parallelSteps);
+            task.setAlwaysParallelFeatures(config.alwaysParallelFeatures);
             task.setReleaseMemoryEachBatch(config.releaseMemoryEachBatch);
             task.setSkipExistingChunks(config.skipExistingChunks);
+            task.setLodExport(config.lodExport);
             if (!PreGenConfig.overlapFits(batch, freeHeap)) task.setOverlapBatches(false);
             if (profile) task.enableProfiling();
             activeTask = task;

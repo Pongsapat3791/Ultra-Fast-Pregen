@@ -458,7 +458,7 @@ public class InMemoryChunkGrid {
                                 long partStart = System.nanoTime();
                                 List<ChunkAccess> cache = getNeighborhoodCache(x, z, ChunkStatus.SURFACE.getRange());
                                 WorldGenRegion region = new WorldGenRegion(level, cache, ChunkStatus.SURFACE, 0);
-                                TerrainRegion terrain = new TerrainRegion(region, Blender.of(region),
+                                TerrainRegion terrain = new TerrainRegion(Blender.of(region),
                                         structureManager.forWorldGenRegion(region));
                                 regions[ix][iz] = terrain;
                                 terrainSetupNanos.add(System.nanoTime() - partStart);
@@ -502,10 +502,12 @@ public class InMemoryChunkGrid {
                                 chunk.setStatus(ChunkStatus.NOISE);
                                 noiseNanos.add(System.nanoTime() - partStart);
 
-                                // 3. Surface Rules
+                                // 3. Surface Rules: Minecraft's own step (the same region as above; it
+                                // sets the status), so mods hooking it apply here too.
                                 partStart = System.nanoTime();
-                                noiseGen.buildSurface(terrain.region(), terrain.structureManager(), randomState, chunk);
-                                chunk.setStatus(ChunkStatus.SURFACE);
+                                ChunkStatus.SURFACE.generate(workerPool, level, generator, templateManager, lightEngine,
+                                        fullChunkGetter, getNeighborhoodCache(chunk.getPos().x, chunk.getPos().z,
+                                                ChunkStatus.SURFACE.getRange())).join();
                                 surfaceNanos.add(System.nanoTime() - partStart);
                                 terrainChunks.increment();
                             }
@@ -811,7 +813,7 @@ public class InMemoryChunkGrid {
                     workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
                 ));
             }
-            CompletableFuture.allOf(initFutures.toArray(new CompletableFuture[0])).join();
+            awaitLight(initFutures);
             for (int phase = 0; phase < 4; phase++) {
                 List<CompletableFuture<?>> phaseFutures = new ArrayList<>();
                 for (ProtoChunk chunk : lit) {
@@ -822,10 +824,46 @@ public class InMemoryChunkGrid {
                     if (onChunkDone != null && isCore(pos.x, pos.z)) f = f.thenRun(onChunkDone);
                     phaseFutures.add(f);
                 }
-                CompletableFuture.allOf(phaseFutures.toArray(new CompletableFuture[0])).join();
+                awaitLight(phaseFutures);
             }
         } finally {
             lighting = false;
+        }
+    }
+
+    /** No chunk's light finishing for this long means the light engine stopped (see awaitLight). */
+    private static final long LIGHT_STALL_NANOS = java.util.concurrent.TimeUnit.MINUTES.toNanos(3);
+
+    /**
+     * Waits for light steps, which complete on the light engine's own thread. When that thread
+     * fails (another mod's light engine meeting data it does not expect, say) their futures never
+     * complete, so a batch in which no chunk's light finished for three minutes fails with a
+     * message instead of waiting forever.
+     */
+    private static void awaitLight(List<CompletableFuture<?>> futures) {
+        CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        long done = -1;
+        long progressAt = System.nanoTime();
+        while (true) {
+            try {
+                all.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                return;
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                long now = 0;
+                for (CompletableFuture<?> future : futures) if (future.isDone()) now++;
+                if (now != done) {
+                    done = now;
+                    progressAt = System.nanoTime();
+                } else if (System.nanoTime() - progressAt > LIGHT_STALL_NANOS) {
+                    throw new IllegalStateException("Lighting stalled: no chunk's light finished for 3 minutes (" + done + " of "
+                            + futures.size() + " done). The light engine may have failed; see the errors earlier in the log.");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while lighting", interrupted);
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new java.util.concurrent.CompletionException(failure.getCause());
+            }
         }
     }
 
@@ -976,8 +1014,8 @@ public class InMemoryChunkGrid {
     static volatile boolean biomesBeforeSurface =
             Boolean.parseBoolean(System.getProperty("fastpregen.biomesBeforeSurface", "true"));
 
-    /** One chunk's generation view, shared by its biome, noise and surface steps. */
-    private record TerrainRegion(WorldGenRegion region, Blender blender, StructureManager structureManager) {}
+    /** One chunk's blender and structure view, shared by its biome and noise steps. */
+    private record TerrainRegion(Blender blender, StructureManager structureManager) {}
 
     /** Checkerboard phase in [0, spacing^2): chunks sharing a phase are at least spacing apart on some axis. */
     static int phaseOf(int chunkX, int chunkZ, int spacing) {

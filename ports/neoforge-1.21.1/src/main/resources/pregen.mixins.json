@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "WorldGenRegionMixin",
+    "WorldGenRegionChunkCacheMixin",
     "NoiseBasedChunkGeneratorInvoker",
     "NoiseBasedChunkGeneratorMixin",
     "NoiseChunkAccessor",
@@ -39,7 +40,8 @@
     "ProtoChunkMixin",
     "ChunkStepMixin",
     "ServerChunkCacheMixin",
-    "BlockMixin"
+    "BlockMixin",
+    "MatchingBlocksPredicateMixin"
   ],
   "injectors": {
     "defaultRequire": 1

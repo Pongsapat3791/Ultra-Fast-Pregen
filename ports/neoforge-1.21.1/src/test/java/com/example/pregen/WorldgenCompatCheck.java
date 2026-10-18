@@ -9,6 +9,7 @@ import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.DebugLevelSource;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
 
 /** Mixin-target detection and terrain-path selection, against the live Mixin environment. */
 public final class WorldgenCompatCheck {
@@ -24,12 +25,43 @@ public final class WorldgenCompatCheck {
         List<String> generatorForeign = WorldgenCompat.foreignMixinConfigs(NoiseBasedChunkGenerator.class);
         List<String> statusForeign = WorldgenCompat.foreignMixinConfigs(ChunkStatusTasks.class);
         require(!generatorForeign.contains("pregen.mixins.json"), "This mod's config is never foreign.");
+        // Only mixins that change the target's code count: this mod's invoker only adds methods,
+        // its generator mixin injects into doFill, which the fused path runs as well.
+        java.util.Set<String> skipped = WorldgenCompat.FUSED_SKIPPED_GENERATOR_METHODS;
+        require(!changes("com.example.pregen.mixin.NoiseBasedChunkGeneratorInvoker", NoiseBasedChunkGenerator.class, null),
+                "An invoker mixin leaves the generator's code unchanged.");
+        require(changes("com.example.pregen.mixin.NoiseBasedChunkGeneratorMixin", NoiseBasedChunkGenerator.class, null),
+                "A mixin injecting into the generator changes it.");
+        require(!changes("com.example.pregen.mixin.NoiseBasedChunkGeneratorMixin", NoiseBasedChunkGenerator.class, skipped),
+                "A mixin into doFill leaves what the fused path skips unchanged.");
+        require(changes("com.example.pregen.mixin.NoiseBasedAquiferMixin", Aquifer.NoiseBasedAquifer.class, null),
+                "A mixin injecting into the aquifer changes it.");
+        require(WorldgenCompat.lambdaOf("lambda$fillFromNoise$4", java.util.Set.of("fillFromNoise"))
+                && !WorldgenCompat.lambdaOf("lambda$doFill$1", java.util.Set.of("fillFromNoise")),
+                "A replaced lambda of a skipped method must count (Noisium replaces fillFromNoise's)");
+        require(WorldgenCompat.selectorNames("fillFromNoise", skipped)
+                        && WorldgenCompat.selectorNames("Lnet/minecraft/world/level/levelgen/NoiseBasedChunkGenerator;fillFromNoise(I)V", skipped)
+                        && WorldgenCompat.selectorNames("lambda$createBiomes$4", skipped)
+                        && WorldgenCompat.selectorNames("*", skipped)
+                        && WorldgenCompat.selectorNames("fillFromNoise+", skipped)
+                        && WorldgenCompat.selectorNames("fillFromNoise{1,2}", skipped)
+                        && WorldgenCompat.selectorNames("name=/fill.*/", skipped),
+                "Selectors naming a skipped method, a lambda inside one, or any method must count.");
+        require(!WorldgenCompat.selectorNames("doFill", skipped)
+                        && !WorldgenCompat.selectorNames("doCreateBiomes(I)V", skipped)
+                        && !WorldgenCompat.selectorNames("buildSurface", skipped)
+                        && !WorldgenCompat.selectorNames("doFill+", skipped),
+                "Selectors naming methods the fused path runs must not count.");
+        java.util.Set<String> terrainForeign = WorldgenCompat.terrainMixinConfigs();
+        java.util.Set<String> strict = new java.util.HashSet<>(generatorForeign);
+        strict.addAll(statusForeign);
+        require(strict.containsAll(terrainForeign), "The terrain check never counts more than the strict one: "
+                + terrainForeign + " vs " + strict);
 
         // NoiseBasedChunkGenerator is final in 1.20.1; a non-noise generator stands in for custom ones.
         ChunkGenerator other = new DebugLevelSource(lookup.lookupOrThrow(Registries.BIOME).getOrThrow(Biomes.PLAINS));
-        boolean foreign = !generatorForeign.isEmpty() || !statusForeign.isEmpty();
-        require(WorldgenCompat.chooseTerrainPath(vanillaGenerator, PreGenConfig.TerrainPipeline.AUTO).fused() == !foreign,
-                "Auto must use the fused path exactly when no other mod targets the generator or ChunkStatus.");
+        require(WorldgenCompat.chooseTerrainPath(vanillaGenerator, PreGenConfig.TerrainPipeline.AUTO).fused() == terrainForeign.isEmpty(),
+                "Auto must use the fused path exactly when no other mod changes what it skips: " + terrainForeign);
         require(!WorldgenCompat.chooseTerrainPath(other, PreGenConfig.TerrainPipeline.AUTO).fused(),
                 "Auto must use Minecraft's path for a non-noise generator.");
         require(!WorldgenCompat.chooseTerrainPath(other, PreGenConfig.TerrainPipeline.FUSED).fused(),
@@ -40,8 +72,17 @@ public final class WorldgenCompatCheck {
                 "vanilla in config always uses Minecraft's path.");
         System.out.println("WORLDGEN_COMPAT_CHECK PASS own_mixins_detected=true other_generator_fallback=true overrides=true"
                 + " foreign_generator=" + generatorForeign + " foreign_chunk_status=" + statusForeign
+                + " terrain_path_foreign=" + terrainForeign
                 + " foreign_aquifer=" + WorldgenCompat.foreignMixinConfigs(Aquifer.NoiseBasedAquifer.class)
                 + " feature_placement=" + WorldgenCompat.featurePlacementMixins());
+    }
+
+    private static boolean changes(String mixinClass, Class<?> target, java.util.Set<String> methods)
+            throws ReflectiveOperationException {
+        for (IMixinInfo mixin : WorldgenCompat.mixinsTargeting(target)) {
+            if (mixin.getClassName().equals(mixinClass)) return WorldgenCompat.changes(mixin, target, methods);
+        }
+        throw new AssertionError(mixinClass + " must be registered on " + target.getName());
     }
 
     private static void require(boolean condition, String message) {

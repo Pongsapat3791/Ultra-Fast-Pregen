@@ -4,8 +4,8 @@ package com.example.pregen.terrain;
 public interface AquiferAirProof {
     /**
      * True when vanilla's computeSubstance yields air for every block of the box at any
-     * non-positive density: no lava from the global fluid picker, and every block lies far
-     * enough above all candidate aquifer fluid levels (see AquiferCenterCache).
+     * non-positive density (on 26.x: the box lies above skipSamplingAboveY, where only the global
+     * fluid picker answers, and that fluid is air at every y of it).
      */
     boolean pregen$airAtNonPositiveDensity(int minX, int minY, int minZ, int width, int height);
 

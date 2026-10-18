@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1084" viewBox="0 0 1600 1084" role="img" aria-labelledby="ufp-summary-title ufp-summary-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="ufp-summary-title">Ultra Fast Pregen 14: chunk pregeneration speed</title>
+<desc id="ufp-summary-desc">Overworld (Without C2ME): Chunky 107.2 chunks/s, Ultra Fast Pregen 332.8 chunks/s (3.10x); Overworld: Tectonic + WWOO (Without C2ME): Chunky 23.0 chunks/s, Ultra Fast Pregen 121.1 chunks/s (5.25x); Nether (Without C2ME): Chunky 106.0 chunks/s, Ultra Fast Pregen 445.1 chunks/s (4.20x); End (Without C2ME): Chunky 752.1 chunks/s, Ultra Fast Pregen 1079.7 chunks/s (1.44x); Overworld (With C2ME (installed for both)): Chunky 282.5 chunks/s, Ultra Fast Pregen 378.1 chunks/s (1.34x); Overworld: Tectonic + WWOO (With C2ME (installed for both)): Chunky 97.0 chunks/s, Ultra Fast Pregen 156.8 chunks/s (1.62x); Nether (With C2ME (installed for both)): Chunky 394.9 chunks/s, Ultra Fast Pregen 460.6 chunks/s (1.17x); End (With C2ME (installed for both)): Chunky 992.2 chunks/s, Ultra Fast Pregen 1113.8 chunks/s (1.12x)</desc>
+<rect width="1600" height="1084" fill="#ffffff"/>
+<text x="32.0" y="46.0" font-size="26" fill="#1f2328" text-anchor="start" font-weight="700">Ultra Fast Pregen 14: chunk pregeneration speed</text>
+<text x="32.0" y="74.0" font-size="14" fill="#57606a" text-anchor="start" font-weight="normal">Chunks per second (higher is better) | each panel has its own y-axis</text>
+<rect x="32.0" y="93" width="12" height="12" rx="2" fill="#7f8790"/>
+<text x="50.0" y="104.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">Chunky</text>
+<rect x="117.7" y="93" width="12" height="12" rx="2" fill="#2e8b7a"/>
+<text x="135.7" y="104.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">Ultra Fast Pregen</text>
+<text x="32.0" y="150.0" font-size="17" fill="#1f2328" text-anchor="start" font-weight="700">Without C2ME</text>
+<rect x="32.0" y="164.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="48.0" y="188.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Overworld</text>
+<line x1="94.0" y1="476.0" x2="382.0" y2="476.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="480.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="94.0" y1="421.0" x2="382.0" y2="421.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="425.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="94.0" y1="366.0" x2="382.0" y2="366.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="370.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="94.0" y1="311.0" x2="382.0" y2="311.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="315.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="94.0" y1="256.0" x2="382.0" y2="256.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="260.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<text x="174.6" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Overworld, Without C2ME: 107.2 chunks/s (average of 2 runs)</title><path d="M144.6,476.0 V421.0 Q144.6,417.0 148.6,417.0 H200.6 Q204.6,417.0 204.6,421.0 V476.0 Z" fill="#7f8790"/></g>
+<text x="174.6" y="409.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">107.2 CPS</text>
+<text x="301.4" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Overworld, Without C2ME: 332.8 chunks/s (average of 2 runs)</title><path d="M271.4,476.0 V297.0 Q271.4,293.0 275.4,293.0 H327.4 Q331.4,293.0 331.4,297.0 V476.0 Z" fill="#2e8b7a"/></g>
+<text x="301.4" y="285.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">332.8 CPS</text>
+<path d="M174.6,235.0 V228.0 H301.4 V235.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="203.5" y="214.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="238.0" y="233.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">3.10x</text>
+<rect x="422.0" y="164.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="438.0" y="188.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Overworld: Tectonic + WWOO</text>
+<line x1="484.0" y1="476.0" x2="772.0" y2="476.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="480.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="484.0" y1="432.0" x2="772.0" y2="432.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="436.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">25</text>
+<line x1="484.0" y1="388.0" x2="772.0" y2="388.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="392.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">50</text>
+<line x1="484.0" y1="344.0" x2="772.0" y2="344.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="348.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">75</text>
+<line x1="484.0" y1="300.0" x2="772.0" y2="300.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="304.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="484.0" y1="256.0" x2="772.0" y2="256.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="260.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">125</text>
+<text x="564.6" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Overworld: Tectonic + WWOO, Without C2ME: 23.0 chunks/s (average of 2 runs)</title><path d="M534.6,476.0 V439.4 Q534.6,435.4 538.6,435.4 H590.6 Q594.6,435.4 594.6,439.4 V476.0 Z" fill="#7f8790"/></g>
+<text x="564.6" y="427.4" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">23.0 CPS</text>
+<text x="691.4" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Overworld: Tectonic + WWOO, Without C2ME: 121.1 chunks/s (average of 2 runs)</title><path d="M661.4,476.0 V267.0 Q661.4,263.0 665.4,263.0 H717.4 Q721.4,263.0 721.4,267.0 V476.0 Z" fill="#2e8b7a"/></g>
+<text x="691.4" y="255.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">121.1 CPS</text>
+<path d="M564.6,235.0 V228.0 H691.4 V235.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="593.5" y="214.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="628.0" y="233.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">5.25x</text>
+<rect x="812.0" y="164.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="828.0" y="188.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Nether</text>
+<line x1="874.0" y1="476.0" x2="1162.0" y2="476.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="480.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="874.0" y1="432.0" x2="1162.0" y2="432.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="436.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="874.0" y1="388.0" x2="1162.0" y2="388.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="392.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="874.0" y1="344.0" x2="1162.0" y2="344.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="348.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="874.0" y1="300.0" x2="1162.0" y2="300.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="304.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<line x1="874.0" y1="256.0" x2="1162.0" y2="256.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="260.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">500</text>
+<text x="954.6" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Nether, Without C2ME: 106.0 chunks/s (average of 2 runs)</title><path d="M924.6,476.0 V433.3 Q924.6,429.3 928.6,429.3 H980.6 Q984.6,429.3 984.6,433.3 V476.0 Z" fill="#7f8790"/></g>
+<text x="954.6" y="421.3" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">106.0 CPS</text>
+<text x="1081.4" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Nether, Without C2ME: 445.1 chunks/s (average of 2 runs)</title><path d="M1051.4,476.0 V284.1 Q1051.4,280.1 1055.4,280.1 H1107.4 Q1111.4,280.1 1111.4,284.1 V476.0 Z" fill="#2e8b7a"/></g>
+<text x="1081.4" y="272.1" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">445.1 CPS</text>
+<path d="M954.6,235.0 V228.0 H1081.4 V235.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="983.5" y="214.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="1018.0" y="233.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">4.20x</text>
+<rect x="1202.0" y="164.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="1218.0" y="188.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">End</text>
+<line x1="1264.0" y1="476.0" x2="1552.0" y2="476.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="480.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="1264.0" y1="432.0" x2="1552.0" y2="432.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="436.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">250</text>
+<line x1="1264.0" y1="388.0" x2="1552.0" y2="388.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="392.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">500</text>
+<line x1="1264.0" y1="344.0" x2="1552.0" y2="344.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="348.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">750</text>
+<line x1="1264.0" y1="300.0" x2="1552.0" y2="300.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="304.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">1,000</text>
+<line x1="1264.0" y1="256.0" x2="1552.0" y2="256.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="260.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">1,250</text>
+<text x="1344.6" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, End, Without C2ME: 752.1 chunks/s (average of 2 runs)</title><path d="M1314.6,476.0 V347.6 Q1314.6,343.6 1318.6,343.6 H1370.6 Q1374.6,343.6 1374.6,347.6 V476.0 Z" fill="#7f8790"/></g>
+<text x="1344.6" y="335.6" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">752.1 CPS</text>
+<text x="1471.4" y="498.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, End, Without C2ME: 1,079.7 chunks/s (average of 2 runs)</title><path d="M1441.4,476.0 V290.0 Q1441.4,286.0 1445.4,286.0 H1497.4 Q1501.4,286.0 1501.4,290.0 V476.0 Z" fill="#2e8b7a"/></g>
+<text x="1471.4" y="278.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">1,079.7 CPS</text>
+<path d="M1344.6,235.0 V228.0 H1471.4 V235.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="1373.5" y="214.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="1408.0" y="233.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.44x</text>
+<text x="32.0" y="566.0" font-size="17" fill="#1f2328" text-anchor="start" font-weight="700">With C2ME (installed for both)</text>
+<rect x="32.0" y="580.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="48.0" y="604.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Overworld</text>
+<line x1="94.0" y1="892.0" x2="382.0" y2="892.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="896.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="94.0" y1="837.0" x2="382.0" y2="837.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="841.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="94.0" y1="782.0" x2="382.0" y2="782.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="786.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="94.0" y1="727.0" x2="382.0" y2="727.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="731.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="94.0" y1="672.0" x2="382.0" y2="672.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="86.0" y="676.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<text x="174.6" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Overworld, With C2ME (installed for both): 282.5 chunks/s (average of 2 runs)</title><path d="M144.6,892.0 V740.6 Q144.6,736.6 148.6,736.6 H200.6 Q204.6,736.6 204.6,740.6 V892.0 Z" fill="#7f8790"/></g>
+<text x="174.6" y="728.6" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">282.5 CPS</text>
+<text x="301.4" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Overworld, With C2ME (installed for both): 378.1 chunks/s (average of 2 runs)</title><path d="M271.4,892.0 V688.0 Q271.4,684.0 275.4,684.0 H327.4 Q331.4,684.0 331.4,688.0 V892.0 Z" fill="#2e8b7a"/></g>
+<text x="301.4" y="676.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">378.1 CPS</text>
+<path d="M174.6,651.0 V644.0 H301.4 V651.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="203.5" y="630.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="238.0" y="649.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.34x</text>
+<rect x="422.0" y="580.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="438.0" y="604.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Overworld: Tectonic + WWOO</text>
+<line x1="484.0" y1="892.0" x2="772.0" y2="892.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="896.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="484.0" y1="837.0" x2="772.0" y2="837.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="841.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">50</text>
+<line x1="484.0" y1="782.0" x2="772.0" y2="782.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="786.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="484.0" y1="727.0" x2="772.0" y2="727.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="731.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">150</text>
+<line x1="484.0" y1="672.0" x2="772.0" y2="672.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="476.0" y="676.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<text x="564.6" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Overworld: Tectonic + WWOO, With C2ME (installed for both): 97.0 chunks/s (average of 2 runs)</title><path d="M534.6,892.0 V789.3 Q534.6,785.3 538.6,785.3 H590.6 Q594.6,785.3 594.6,789.3 V892.0 Z" fill="#7f8790"/></g>
+<text x="564.6" y="777.3" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">97.0 CPS</text>
+<text x="691.4" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Overworld: Tectonic + WWOO, With C2ME (installed for both): 156.8 chunks/s (average of 2 runs)</title><path d="M661.4,892.0 V723.6 Q661.4,719.6 665.4,719.6 H717.4 Q721.4,719.6 721.4,723.6 V892.0 Z" fill="#2e8b7a"/></g>
+<text x="691.4" y="711.6" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">156.8 CPS</text>
+<path d="M564.6,651.0 V644.0 H691.4 V651.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="593.5" y="630.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="628.0" y="649.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.62x</text>
+<rect x="812.0" y="580.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="828.0" y="604.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Nether</text>
+<line x1="874.0" y1="892.0" x2="1162.0" y2="892.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="896.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="874.0" y1="848.0" x2="1162.0" y2="848.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="852.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="874.0" y1="804.0" x2="1162.0" y2="804.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="808.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="874.0" y1="760.0" x2="1162.0" y2="760.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="764.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="874.0" y1="716.0" x2="1162.0" y2="716.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="720.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<line x1="874.0" y1="672.0" x2="1162.0" y2="672.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="866.0" y="676.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">500</text>
+<text x="954.6" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, Nether, With C2ME (installed for both): 394.9 chunks/s (average of 2 runs)</title><path d="M924.6,892.0 V722.3 Q924.6,718.3 928.6,718.3 H980.6 Q984.6,718.3 984.6,722.3 V892.0 Z" fill="#7f8790"/></g>
+<text x="954.6" y="710.3" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">394.9 CPS</text>
+<text x="1081.4" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, Nether, With C2ME (installed for both): 460.6 chunks/s (average of 2 runs)</title><path d="M1051.4,892.0 V693.3 Q1051.4,689.3 1055.4,689.3 H1107.4 Q1111.4,689.3 1111.4,693.3 V892.0 Z" fill="#2e8b7a"/></g>
+<text x="1081.4" y="681.3" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">460.6 CPS</text>
+<path d="M954.6,651.0 V644.0 H1081.4 V651.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="983.5" y="630.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="1018.0" y="649.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.17x</text>
+<rect x="1202.0" y="580.0" width="366.0" height="356" rx="8" fill="#f6f7f8"/>
+<text x="1218.0" y="604.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">End</text>
+<line x1="1264.0" y1="892.0" x2="1552.0" y2="892.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="896.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="1264.0" y1="848.0" x2="1552.0" y2="848.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="852.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">250</text>
+<line x1="1264.0" y1="804.0" x2="1552.0" y2="804.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="808.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">500</text>
+<line x1="1264.0" y1="760.0" x2="1552.0" y2="760.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="764.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">750</text>
+<line x1="1264.0" y1="716.0" x2="1552.0" y2="716.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="720.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">1,000</text>
+<line x1="1264.0" y1="672.0" x2="1552.0" y2="672.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="1256.0" y="676.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">1,250</text>
+<text x="1344.6" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Chunky</text>
+<g><title>Chunky, End, With C2ME (installed for both): 992.2 chunks/s (average of 2 runs)</title><path d="M1314.6,892.0 V721.4 Q1314.6,717.4 1318.6,717.4 H1370.6 Q1374.6,717.4 1374.6,721.4 V892.0 Z" fill="#7f8790"/></g>
+<text x="1344.6" y="709.4" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">992.2 CPS</text>
+<text x="1471.4" y="914.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">Ultra Fast Pregen</text>
+<g><title>Ultra Fast Pregen, End, With C2ME (installed for both): 1,113.8 chunks/s (average of 2 runs)</title><path d="M1441.4,892.0 V700.0 Q1441.4,696.0 1445.4,696.0 H1497.4 Q1501.4,696.0 1501.4,700.0 V892.0 Z" fill="#2e8b7a"/></g>
+<text x="1471.4" y="688.0" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">1,113.8 CPS</text>
+<path d="M1344.6,651.0 V644.0 H1471.4 V651.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="1373.5" y="630.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="1408.0" y="649.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.12x</text>
+<line x1="32" y1="952" x2="1568" y2="952" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="32.0" y="978.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Each run: fresh world, square of radius 1,500 blocks (3,000 x 3,000 blocks), chunks per run: Chunky 35,721 | Ultra Fast Pregen 35,344; each bar is the average of 2 runs.</text>
+<text x="32.0" y="998.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">System: AMD Ryzen 5 7500F (6C/12T), 32 GB RAM, Windows 11 Pro. Minecraft 26.1.2, NeoForge 26.1.2.122.</text>
+<text x="32.0" y="1018.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Mods: Ultra Fast Pregen 14 | Chunky 1.5.4 | C2ME 0.4.0-alpha.0.100 (density function compiler on) | Tectonic 3.0.28 | Lithostitched 1.8.1 | WWOO 2.7.0 | Cristel Lib 3.1.13 | Cloth Config 26.1.154.</text>
+<text x="32.0" y="1038.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Chunky bars: Minecraft's own generation (with C2ME in the lower row), driven by Chunky, the same method as Bye?Pregen's chart.</text>
+<text x="32.0" y="1058.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Ultra Fast Pregen runs on the CPU only: no OpenCL / GPU acceleration.</text>
+</svg>

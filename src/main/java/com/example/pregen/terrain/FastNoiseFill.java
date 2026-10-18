@@ -49,6 +49,11 @@ public final class FastNoiseFill {
 
     private FastNoiseFill() {}
 
+    /** Air, solid and per-block cell counts so far, for a run's summary. */
+    public static long[] cellCounts() {
+        return new long[]{AIR_CELLS.sum(), SOLID_CELLS.sum(), BLOCK_CELLS.sum()};
+    }
+
     /** Returns null when this NoiseChunk is not the vanilla layout, so vanilla doFill must run. */
     public static ChunkAccess fill(NoiseChunk noiseChunk, RandomState randomState, BlockState defaultBlock,
                                    ChunkAccess chunkAccess, int i, int j) {

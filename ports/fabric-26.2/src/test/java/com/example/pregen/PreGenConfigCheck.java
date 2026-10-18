@@ -41,8 +41,9 @@ public final class PreGenConfigCheck {
         String text = Files.readString(file, StandardCharsets.UTF_8);
         require(config.parallelSteps && config.releaseMemoryEachBatch, "Parallel steps and batch release default to on");
         require(config.skipExistingChunks, "Existing chunks are kept by default");
-        for (String line : new String[]{"batch_size=1000", "threads=max", "parallel_steps=true",
-                "release_memory_each_batch=true", "skip_existing_chunks=true", "terrain_pipeline=auto"}) {
+        require(config.lodExport, "Saved chunks go to LoD mods by default");
+        for (String line : new String[]{"batch_size=1000", "threads=max", "parallel_steps=true", "parallel_features=auto",
+                "release_memory_each_batch=true", "skip_existing_chunks=true", "lod_export=true", "terrain_pipeline=auto"}) {
             require(text.contains(line), "New config must contain " + line);
         }
         long size = Files.size(file);
@@ -75,12 +76,14 @@ public final class PreGenConfigCheck {
     private static void checkCustomAndInvalidValues(Path directory) throws IOException {
         Files.createDirectories(directory);
         Path file = directory.resolve(PreGenConfig.FILE_NAME);
-        Files.writeString(file, "batch_size=2000\nthreads=6\nparallel_steps=FALSE\n"
-                + "release_memory_each_batch=false\nskip_existing_chunks=false\nterrain_pipeline=FUSED\n");
+        Files.writeString(file, "batch_size=2000\nthreads=6\nparallel_steps=FALSE\nparallel_features=ALWAYS\n"
+                + "release_memory_each_batch=false\nskip_existing_chunks=false\nlod_export=false\nterrain_pipeline=FUSED\n");
         PreGenConfig custom = PreGenConfig.load(directory, 4, message -> {});
         require(!custom.parallelSteps, "parallel_steps=false must be honored, in any case");
+        require(custom.alwaysParallelFeatures, "parallel_features=always must be honored, in any case");
         require(!custom.releaseMemoryEachBatch, "release_memory_each_batch=false must be honored");
         require(!custom.skipExistingChunks, "skip_existing_chunks=false must be honored");
+        require(!custom.lodExport, "lod_export=false must be honored");
         require(custom.batchSizeBlocks == 2000 && custom.threads == 6 && !custom.threadsFromCpuCount,
                 "Custom batch and threads must be used");
         require(custom.terrainPipeline == PreGenConfig.TerrainPipeline.FUSED, "Pipeline values are case-insensitive");

@@ -1,0 +1,69 @@
+package com.example.pregen;
+
+import java.lang.reflect.Field;
+import java.util.concurrent.TimeUnit;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.world.level.ChunkPos;
+
+/**
+ * Opt-in check in a real client (runSingleplayerCheck): the integrated server, which shares the
+ * client's heap and pauses while the game window is not focused, runs /pregen to the end; the
+ * area's chunks are stored and the server keeps answering. Then the client quits.
+ */
+public final class SingleplayerCheck {
+    /** The integrated server has started (see fabric.FabricChecks). */
+    public static void onServerStarted(MinecraftServer server) {
+        if (!Boolean.getBoolean("pregen.singleplayerCheck")) return;
+        Thread check = new Thread(() -> run(server), "SingleplayerCheck");
+        check.setDaemon(true);
+        check.start();
+    }
+
+    private static void run(MinecraftServer server) {
+        String result;
+        try {
+            Thread.sleep(5_000);
+            command(server, "pregen center 300000 300000");
+            command(server, "pregen start 1");
+            DynamicBatchPreGen task = null;
+            long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(15);
+            while (System.nanoTime() < deadline) {
+                task = activeTask();
+                if (task != null && !task.isRunning()) break;
+                Thread.sleep(1_000);
+            }
+            if (task == null || task.isRunning()) throw new AssertionError("/pregen did not finish in singleplayer");
+            if (!"Completed".equals(task.getCurrentStageName())) throw new AssertionError("Run ended as " + task.getCurrentStageName());
+            var io = ((com.example.pregen.mixin.ChunkStorageAccessor) server.overworld().getChunkSource().chunkMap).pregen$getWorker();
+            ChunkPos center = new ChunkPos(300000 >> 4, 300000 >> 4);
+            var stored = io.loadAsync(center).get(30, TimeUnit.SECONDS).orElseThrow(
+                    () -> new AssertionError("The area's center chunk must be stored"));
+            if (!"minecraft:full".equals(stored.getStringOr("Status", ""))) throw new AssertionError("Center chunk not full");
+            long answered = server.submit(System::nanoTime).get(10, TimeUnit.SECONDS);
+            result = String.format(java.util.Locale.ROOT, "SINGLEPLAYER_CHECK PASS speed=%.1f chunks/s max_heap=%dMB server_answers=%b",
+                    task.getChunksPerSecond(), Runtime.getRuntime().maxMemory() >> 20, answered > 0);
+        } catch (Throwable failure) {
+            failure.printStackTrace();
+            result = "SINGLEPLAYER_CHECK FAIL " + failure;
+        }
+        System.out.println(result);
+        try {
+            Object minecraft = Class.forName("net.minecraft.client.Minecraft").getMethod("getInstance").invoke(null);
+            minecraft.getClass().getMethod("stop").invoke(minecraft);
+        } catch (ReflectiveOperationException failure) {
+            failure.printStackTrace();
+            System.exit(1);
+        }
+    }
+
+    private static void command(MinecraftServer server, String command) throws Exception {
+        server.submit(() -> server.getCommands().performPrefixedCommand(server.createCommandSourceStack(), command))
+                .get(30, TimeUnit.SECONDS);
+    }
+
+    private static DynamicBatchPreGen activeTask() throws ReflectiveOperationException {
+        Field field = PreGenCommand.class.getDeclaredField("activeTask");
+        field.setAccessible(true);
+        return (DynamicBatchPreGen) field.get(null);
+    }
+}

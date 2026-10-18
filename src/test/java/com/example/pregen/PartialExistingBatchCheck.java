@@ -42,6 +42,11 @@ public final class PartialExistingBatchCheck {
     /** The server has started (on its thread). */
     public static void onServerStarted(MinecraftServer server) {
         if (!requested()) return;
+        // A JVM that ends without the exit below (the server thread died, e.g. out of memory)
+        // must not report success.
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (RESULT.get() != 0) Runtime.getRuntime().halt(1);
+        }, "PartialBatchCheck-Result"));
         Thread coordinator = new Thread(() -> runWithTimeout(server), "PartialBatchCheck-Coordinator");
         coordinator.setDaemon(true);
         coordinator.start();
@@ -128,6 +133,8 @@ public final class PartialExistingBatchCheck {
             if (only.contains("anyGenerator")) checkAnyGenerator(level, io, tasks);
             if (only.contains("light")) checkLightParity(level, io, tasks);
             if (only.contains("spawn")) checkSpawnEdge(server, level, tasks);
+            if (only.contains("held")) checkHeldDuringBatch(server, level, io, tasks);
+            if (only.contains("safe")) checkSafeModeRetry(level, io, tasks);
             return;
         }
         ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(10_000, 10_000, 2, 2);
@@ -181,7 +188,9 @@ public final class PartialExistingBatchCheck {
         ChunkPos livePos = new ChunkPos(existing.x + 1, existing.z + 1);
         io.store(livePos, liveSave).get(10, TimeUnit.SECONDS);
         io.synchronize(true).get(10, TimeUnit.SECONDS);
-        require(io.loadAsync(livePos).get(10, TimeUnit.SECONDS).orElseThrow().equals(liveSave),
+        // The server may save the loaded chunk again meanwhile (when it unloads); only its
+        // game-time fields differ then.
+        require(withoutTimes(io.loadAsync(livePos).get(10, TimeUnit.SECONDS).orElseThrow()).equals(withoutTimes(liveSave)),
                 "Later server saves must retain regenerated loaded terrain");
         for (int x = 0; x < 2; x++) {
             for (int z = 0; z < 2; z++) {
@@ -210,8 +219,10 @@ public final class PartialExistingBatchCheck {
         checkFastFillParity(server, level);
         checkStoredBiomesMatchSampling(level);
         checkSkipExisting(server, level, io, tasks);
+        checkHeldDuringBatch(server, level, io, tasks);
         checkBatchSeams(level, io, tasks);
         checkResumeEdges(level, io, tasks);
+        checkSafeModeRetry(level, io, tasks);
         checkExistingNeighbors(server, level, io, tasks);
         checkOtherDimensions(server, tasks);
         checkLightParity(level, io, tasks);
@@ -442,6 +453,50 @@ public final class PartialExistingBatchCheck {
         // Leaves next to a bee nest that moved can get another distance; nothing else may differ.
         require(differing <= 8, "A resumed run must give the blocks of an uninterrupted one: " + differing + " differ");
         System.out.println("RESUME_EDGE_CHECK PASS differing_blocks=" + differing);
+    }
+
+    /**
+     * A batch that fails on the fast paths (a failure injected before its features, after it
+     * took the writes its neighbors left) is generated again the way Minecraft does, and the run
+     * completes with the blocks of an undisturbed run: the writes it took are put back.
+     */
+    private static void checkSafeModeRetry(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        int center = 820_000;
+        ChunkBatchPlan plan = new ChunkBatchPlan(1000, 512, center, center);
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen normal = new DynamicBatchPreGen(level, 1, 512, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(normal);
+        }
+        normal.setReleaseMemoryEachBatch(false);
+        normal.start();
+        require("Completed".equals(normal.getCurrentStageName()), "The undisturbed run must complete");
+        Map<Long, BlockState[]> reference = readArea(io, plan, 0);
+        erase(io, plan, 1);
+
+        PreGenSaveFile.delete(level);
+        java.util.concurrent.atomic.AtomicBoolean announced = new java.util.concurrent.atomic.AtomicBoolean();
+        DynamicBatchPreGen failing = new DynamicBatchPreGen(level, 1, 512, 4, center, center, message -> {
+            if (message.contains("Batch failed on the fast paths")) announced.set(true);
+        });
+        synchronized (tasks) {
+            tasks.add(failing);
+        }
+        failing.setReleaseMemoryEachBatch(false);
+        DynamicBatchPreGen.testFailureBeforeFeatures = index -> {
+            if (index == 2) throw new IllegalStateException("injected by SAFE_MODE_RETRY_CHECK");
+        };
+        try {
+            failing.start();
+        } finally {
+            DynamicBatchPreGen.testFailureBeforeFeatures = null;
+        }
+        require("Completed".equals(failing.getCurrentStageName()), "The run with a failing batch must complete");
+        require((boolean) field(failing, "safeMode"), "The failing batch must switch the run to Minecraft's way");
+        require(announced.get(), "The switch must be announced");
+        long differing = compareStored(io, reference, "safe mode");
+        require(differing <= 8, "Generating a failed batch again must give the blocks of an undisturbed run: " + differing + " differ");
+        System.out.println("SAFE_MODE_RETRY_CHECK PASS differing_blocks=" + differing + " retried_batch=2");
     }
 
     /**
@@ -855,6 +910,66 @@ public final class PartialExistingBatchCheck {
         } finally {
             server.submit(() -> {
                 level.getChunkSource().removeRegionTicket(net.minecraft.server.level.TicketType.FORCED, held, 0, held);
+                return null;
+            }).get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    /**
+     * Chunks the server finishes while a batch generates (a player exploring, or another mod
+     * generating ahead): when keeping existing chunks they stay the server's, so the batch must
+     * complete without lighting, spawning mobs in or saving them. Minecraft's spawn step reads the
+     * chunk itself only for some chunks (where the corner biome lookup lands, whether a mob is
+     * tried), so a 5x5 area is held.
+     */
+    private static void checkHeldDuringBatch(MinecraftServer server, ServerLevel level, IOWorker io,
+                                             List<DynamicBatchPreGen> tasks) throws Exception {
+        PreGenSaveFile.delete(level);
+        int center = -400_000;
+        int minChunk = Math.floorDiv(center - 500, 16);
+        ChunkPos held = new ChunkPos(minChunk + 31, minChunk + 31);
+        int heldRadius = 2;
+        int heldChunks = (2 * heldRadius + 1) * (2 * heldRadius + 1);
+        BlockPos build = new BlockPos(held.getMinBlockX() + 8, 300, held.getMinBlockZ() + 8);
+        require(io.loadAsync(held).get(10, TimeUnit.SECONDS).isEmpty(), "The held-during-batch chunk must not exist yet");
+        DynamicBatchPreGen task = new DynamicBatchPreGen(level, 1, 1000, 4, center, center, System.out::println);
+        synchronized (tasks) {
+            tasks.add(task);
+        }
+        task.setSkipExistingChunks(true);
+        task.setReleaseMemoryEachBatch(false);
+        java.util.concurrent.CompletableFuture<Void> run = java.util.concurrent.CompletableFuture.runAsync(task::start);
+        try {
+            long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(2);
+            while (!String.valueOf(task.getCurrentStageName()).startsWith("Stage 2")) {
+                require(System.nanoTime() < deadline && !run.isDone(), "The batch must reach its terrain stage");
+                Thread.sleep(10);
+            }
+            server.submit(() -> {
+                level.getChunkSource().addRegionTicket(net.minecraft.server.level.TicketType.FORCED, held, heldRadius, held);
+                for (int x = -heldRadius; x <= heldRadius; x++) {
+                    for (int z = -heldRadius; z <= heldRadius; z++) level.getChunk(held.x + x, held.z + z);
+                }
+                level.setBlock(build, Blocks.DIAMOND_BLOCK.defaultBlockState(), 3);
+                return null;
+            }).get(120, TimeUnit.SECONDS);
+            String stageWhenHeld = task.getCurrentStageName();
+            require(stageWhenHeld.startsWith("Stage 2") || stageWhenHeld.startsWith("Stage 3") || stageWhenHeld.startsWith("Stage 4"),
+                    "The server must finish the chunk before the batch lights it (inconclusive otherwise): " + stageWhenHeld);
+            run.get(10, TimeUnit.MINUTES);
+            int total = task.getTotalWorldChunks();
+            require("Completed".equals(task.getCurrentStageName()), "A run with a chunk finished by the server meanwhile must complete");
+            int written = ((AtomicInteger) field(task, "writtenChunks")).get();
+            require(written == total - heldChunks, "All chunks but those the server finished must be written: " + written + "/" + total);
+            int kept = ((AtomicInteger) field(task, "keptExistingChunks")).get();
+            require(kept == heldChunks, "The chunks the server finished must count as kept: " + kept);
+            require(server.submit(() -> level.getBlockState(build).is(Blocks.DIAMOND_BLOCK)).get(10, TimeUnit.SECONDS),
+                    "A chunk the server finished must keep its blocks");
+            System.out.printf(java.util.Locale.ROOT, "HELD_DURING_BATCH_CHECK PASS chunks=%d written=%d held_at=%s%n",
+                    total, written, stageWhenHeld);
+        } finally {
+            server.submit(() -> {
+                level.getChunkSource().removeRegionTicket(net.minecraft.server.level.TicketType.FORCED, held, heldRadius, held);
                 return null;
             }).get(10, TimeUnit.SECONDS);
         }
@@ -1310,6 +1425,13 @@ public final class PartialExistingBatchCheck {
             if (cause instanceof Error error) throw error;
             throw failure;
         }
+    }
+
+    /** A stored chunk without the fields that change with game time alone. */
+    private static CompoundTag withoutTimes(CompoundTag chunk) {
+        CompoundTag copy = chunk.copy();
+        for (String key : new String[]{"LastUpdate", "InhabitedTime", "block_ticks", "fluid_ticks"}) copy.remove(key);
+        return copy;
     }
 
     private static void require(boolean condition, String message) {

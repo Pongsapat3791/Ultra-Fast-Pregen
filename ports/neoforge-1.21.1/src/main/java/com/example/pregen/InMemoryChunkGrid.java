@@ -186,6 +186,7 @@ public class InMemoryChunkGrid {
     private volatile LongSet lightReplaced = LongSets.EMPTY_SET;
     private GridHolder[][] holders;
     private final Map<Long, ProtoChunk> fallbackChunks = new ConcurrentHashMap<>();
+    private final Map<Long, GridHolder> fallbackHolders = new ConcurrentHashMap<>();
     private final LongAdder skippedBlendingScans = new LongAdder();
     private final LongAdder terrainSetupNanos = new LongAdder();
     private final LongAdder biomeNanos = new LongAdder();
@@ -283,6 +284,21 @@ public class InMemoryChunkGrid {
                 "Stage 2 worker time/chunk: setup=%.2fms, biomes=%.2fms, noise=%.2fms, surface=%.2fms | Skipped disk blending queries: %d",
                 terrainSetupNanos.sum() / divisor, biomeNanos.sum() / divisor,
                 noiseNanos.sum() / divisor, surfaceNanos.sum() / divisor, skippedBlendingScans.sum());
+    }
+
+    /**
+     * The holder of a grid chunk, or of its fallback past the grid's edge, for a region whose
+     * cache does not reach it (see WorldGenRegionMixin).
+     */
+    public GenerationChunkHolder holderOrFallback(int worldChunkX, int worldChunkZ) {
+        GridHolder[][] all = holders;
+        int gx = worldChunkX - gridMinChunkX;
+        int gz = worldChunkZ - gridMinChunkZ;
+        if (all != null && gx >= 0 && gx < gridChunksX && gz >= 0 && gz < gridChunksZ) {
+            return all[gx][gz];
+        }
+        return fallbackHolders.computeIfAbsent(ChunkPos.asLong(worldChunkX, worldChunkZ),
+                k -> new GridHolder(this, (ProtoChunk) getChunkOrFallback(worldChunkX, worldChunkZ)));
     }
 
     public ChunkAccess getChunkOrFallback(int worldChunkX, int worldChunkZ) {
@@ -493,7 +509,8 @@ public class InMemoryChunkGrid {
                 // biomes, including a ring just outside the terrain area, and its noise and
                 // surface wait for the 3x3 neighbors' biomes. Each part reads the grid through a
                 // region of its own step, as vanilla's tasks do; the noise chunk, blender and
-                // structure view made for biomes serve all three, as in vanilla.
+                // structure view made for biomes serve biomes and noise, as in vanilla, and the
+                // surface is Minecraft's own step.
                 int sizeX = maxX - minX + 3;
                 int sizeZ = maxZ - minZ + 3;
                 TerrainRegion[][] regions = new TerrainRegion[sizeX][sizeZ];
@@ -552,10 +569,8 @@ public class InMemoryChunkGrid {
 
                                 // 3. Surface Rules
                                 partStart = System.nanoTime();
-                                WorldGenRegion surfaceRegion = new WorldGenRegion(level, getNeighborhoodCache(chunk.getPos().x,
-                                        chunk.getPos().z, 1), ChunkPyramid.GENERATION_PYRAMID.getStepTo(ChunkStatus.SURFACE), chunk);
-                                noiseGen.buildSurface(surfaceRegion, terrain.structureManager(), randomState, chunk);
-                                chunk.setPersistedStatus(ChunkStatus.SURFACE);
+                                // Minecraft's own step (it sets the status): mods hooking it apply here too.
+                                generate(ChunkStatus.SURFACE, chunk, 1).join();
                                 surfaceNanos.add(System.nanoTime() - partStart);
                                 terrainChunks.increment();
                             }
@@ -871,7 +886,7 @@ public class InMemoryChunkGrid {
         try {
             List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size());
             for (ProtoChunk chunk : lit) initFutures.add(generate(ChunkStatus.INITIALIZE_LIGHT, chunk, 0));
-            CompletableFuture.allOf(initFutures.toArray(new CompletableFuture[0])).join();
+            awaitLight(initFutures);
             for (int phase = 0; phase < 4; phase++) {
                 List<CompletableFuture<?>> phaseFutures = new ArrayList<>();
                 for (ProtoChunk chunk : lit) {
@@ -881,10 +896,46 @@ public class InMemoryChunkGrid {
                     if (onChunkDone != null && isCore(pos.x, pos.z)) f = f.thenRun(onChunkDone);
                     phaseFutures.add(f);
                 }
-                CompletableFuture.allOf(phaseFutures.toArray(new CompletableFuture[0])).join();
+                awaitLight(phaseFutures);
             }
         } finally {
             lighting = false;
+        }
+    }
+
+    /** No chunk's light finishing for this long means the light engine stopped (see awaitLight). */
+    private static final long LIGHT_STALL_NANOS = java.util.concurrent.TimeUnit.MINUTES.toNanos(3);
+
+    /**
+     * Waits for light steps, which complete on the light engine's own thread. When that thread
+     * fails (another mod's light engine meeting data it does not expect, say) their futures never
+     * complete, so a batch in which no chunk's light finished for three minutes fails with a
+     * message instead of waiting forever.
+     */
+    private static void awaitLight(List<CompletableFuture<?>> futures) {
+        CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        long done = -1;
+        long progressAt = System.nanoTime();
+        while (true) {
+            try {
+                all.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                return;
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                long now = 0;
+                for (CompletableFuture<?> future : futures) if (future.isDone()) now++;
+                if (now != done) {
+                    done = now;
+                    progressAt = System.nanoTime();
+                } else if (System.nanoTime() - progressAt > LIGHT_STALL_NANOS) {
+                    throw new IllegalStateException("Lighting stalled: no chunk's light finished for 3 minutes (" + done + " of "
+                            + futures.size() + " done). The light engine may have failed; see the errors earlier in the log.");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while lighting", interrupted);
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new java.util.concurrent.CompletionException(failure.getCause());
+            }
         }
     }
 
@@ -1029,7 +1080,7 @@ public class InMemoryChunkGrid {
         workerThreads = threads;
     }
 
-    /** One chunk's blender and structure view, shared by its biome, noise and surface steps. */
+    /** One chunk's blender and structure view, shared by its biome and noise steps. */
     private record TerrainRegion(Blender blender, StructureManager structureManager) {}
 
     /** Checkerboard phase in [0, spacing^2): chunks sharing a phase are at least spacing apart on some axis. */
@@ -1155,8 +1206,11 @@ public class InMemoryChunkGrid {
      * encodeForSaving before this runs. Positions the server holds keep their light at any
      * status: the server lit its partly generated chunks already, and replaced ones were lit
      * from this grid, so dropping it would leave them dark.
+     *
+     * Completes once the light engine has dropped the data: the next batch's features read light
+     * (snow and ice need it dark) next to this grid, and must not see this grid's.
      */
-    private void releaseLightData() {
+    private CompletableFuture<Void> releaseLightData() {
         long[] positions = new long[gridChunksX * gridChunksZ];
         int index = 0;
         for (int gx = 0; gx < gridChunksX; gx++) {
@@ -1167,28 +1221,41 @@ public class InMemoryChunkGrid {
         ServerLevel target = level;
         ThreadedLevelLightEngine engine = lightEngine;
         ThreadedLevelLightEngineInvoker invoker = (ThreadedLevelLightEngineInvoker) (Object) engine;
+        CompletableFuture<Void> released = new CompletableFuture<>();
         target.getServer().execute(() -> {
-            var map = (com.example.pregen.mixin.ChunkMapAccessor) target.getChunkSource().chunkMap;
-            for (long packed : positions) {
-                if (map.pregen$getVisibleChunk(packed) != null || map.pregen$getUpdatingChunk(packed) != null) continue;
-                invoker.callUpdateChunkStatus(new ChunkPos(ChunkPos.getX(packed), ChunkPos.getZ(packed)));
+            try {
+                var map = (com.example.pregen.mixin.ChunkMapAccessor) target.getChunkSource().chunkMap;
+                for (long packed : positions) {
+                    if (map.pregen$getVisibleChunk(packed) != null || map.pregen$getUpdatingChunk(packed) != null) continue;
+                    invoker.callUpdateChunkStatus(new ChunkPos(ChunkPos.getX(packed), ChunkPos.getZ(packed)));
+                }
+                // Runs after the removals above (they are queued at the highest priority).
+                engine.waitForPendingTasks(gridMinChunkX, gridMinChunkZ)
+                        .whenComplete((ignored, failure) -> released.complete(null));
+                engine.tryScheduleUpdate();
+            } catch (Throwable failure) {
+                released.completeExceptionally(failure);
+                throw failure;
             }
-            engine.tryScheduleUpdate();
         });
+        return released;
     }
 
     /**
      * Clears internal references to allow JVM garbage collector to reclaim heap immediately.
+     * Returns when the grid's light is out of the light engine (see releaseLightData).
      */
-    public void dispose() {
+    public CompletableFuture<Void> dispose() {
         activeGrids.remove(this);
         if (currentGrid == this) {
             currentGrid = null;
         }
+        CompletableFuture<Void> lightReleased = CompletableFuture.completedFuture(null);
         if (chunks != null) {
-            releaseLightData();
+            lightReleased = releaseLightData();
         }
         fallbackChunks.clear();
+        fallbackHolders.clear();
         holders = null;
         if (chunks != null) {
             for (int gx = 0; gx < gridChunksX; gx++) {
@@ -1198,5 +1265,6 @@ public class InMemoryChunkGrid {
             }
             chunks = null;
         }
+        return lightReleased;
     }
 }

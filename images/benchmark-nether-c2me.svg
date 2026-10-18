@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="672" viewBox="0 0 960 672" role="img" aria-labelledby="ufp-c2me-title ufp-c2me-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
+<title id="ufp-c2me-title">Chunk pregeneration speed with C2ME in the Nether</title>
+<desc id="ufp-c2me-desc">Vanilla worldgen + C2ME: C2ME 394.9 chunks/s, C2ME + Ultra Fast Pregen 460.6 chunks/s (1.17x)</desc>
+<rect width="960" height="672" fill="#ffffff"/>
+<text x="32.0" y="44.0" font-size="22" fill="#1f2328" text-anchor="start" font-weight="700">Chunk pregeneration speed with C2ME in the Nether</text>
+<text x="32.0" y="68.0" font-size="13" fill="#57606a" text-anchor="start" font-weight="normal">Bar height = chunks per second (higher is better) | independent y-axes</text>
+<rect x="32.0" y="87" width="12" height="12" rx="2" fill="#7f8790"/>
+<text x="50.0" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">C2ME</text>
+<rect x="103.1" y="87" width="12" height="12" rx="2" fill="#2e8b7a"/>
+<text x="121.1" y="98.0" font-size="13" fill="#1f2328" text-anchor="start" font-weight="normal">C2ME + Ultra Fast Pregen</text>
+<rect x="250.0" y="120" width="460.0" height="386" rx="8" fill="#f6f7f8"/>
+<text x="266.0" y="144.0" font-size="15" fill="#1f2328" text-anchor="start" font-weight="600">Vanilla worldgen + C2ME</text>
+<line x1="312.0" y1="462.0" x2="694.0" y2="462.0" stroke="#c4c9ce" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="466.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">0</text>
+<line x1="312.0" y1="412.0" x2="694.0" y2="412.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="416.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">100</text>
+<line x1="312.0" y1="362.0" x2="694.0" y2="362.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="366.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">200</text>
+<line x1="312.0" y1="312.0" x2="694.0" y2="312.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="316.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">300</text>
+<line x1="312.0" y1="262.0" x2="694.0" y2="262.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="266.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">400</text>
+<line x1="312.0" y1="212.0" x2="694.0" y2="212.0" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="304.0" y="216.0" font-size="11" fill="#8c959f" text-anchor="end" font-weight="normal">500</text>
+<text x="426.6" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME</text>
+<g><title>C2ME, Vanilla worldgen + C2ME: 394.9 chunks/s (average of 2 runs)</title><path d="M394.6,462.0 V268.6 Q394.6,264.6 398.6,264.6 H454.6 Q458.6,264.6 458.6,268.6 V462.0 Z" fill="#7f8790"/></g>
+<text x="426.6" y="256.6" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">394.9 CPS</text>
+<text x="579.4" y="484.0" font-size="13" fill="#57606a" text-anchor="middle" font-weight="normal">C2ME + Ultra Fast Pregen</text>
+<g><title>C2ME + Ultra Fast Pregen, Vanilla worldgen + C2ME: 460.6 chunks/s (average of 2 runs)</title><path d="M547.4,462.0 V235.7 Q547.4,231.7 551.4,231.7 H607.4 Q611.4,231.7 611.4,235.7 V462.0 Z" fill="#2e8b7a"/></g>
+<text x="579.4" y="223.7" font-size="13" fill="#1f2328" text-anchor="middle" font-weight="600" stroke="#f6f7f8" stroke-width="4" stroke-linejoin="round" paint-order="stroke">460.6 CPS</text>
+<path d="M426.6,191.0 V184.0 H579.4 V191.0" fill="none" stroke="#8c959f" stroke-width="1"/>
+<rect x="468.5" y="170.0" width="69.0" height="26" rx="13" fill="#ffffff" stroke="#c4c9ce" stroke-width="1"/>
+<text x="503.0" y="189.0" font-size="17" fill="#1f2328" text-anchor="middle" font-weight="700">1.17x</text>
+<line x1="32" y1="522" x2="928" y2="522" stroke="#e3e6e9" stroke-width="1" shape-rendering="crispEdges"/>
+<text x="32.0" y="540.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each run: fresh world, square of radius 1,500 blocks (3,000 x 3,000 blocks); chunks per run: C2ME 35,721 | C2ME + Ultra Fast Pregen 35,344.</text>
+<text x="32.0" y="558.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Each bar is the average of 2 runs.</text>
+<text x="32.0" y="576.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">System: AMD Ryzen 5 7500F (6C/12T), 32 GB RAM, Windows 11 Pro.</text>
+<text x="32.0" y="594.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Minecraft 26.1.2, NeoForge 26.1.2.122, the Nether.</text>
+<text x="32.0" y="612.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Mods: Ultra Fast Pregen 14 | Chunky 1.5.4 | C2ME 0.4.0-alpha.0.100 (density function compiler on).</text>
+<text x="32.0" y="630.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">C2ME: Minecraft's generation with C2ME, driven by Chunky (same method as Bye?Pregen's chart).</text>
+<text x="32.0" y="648.0" font-size="12" fill="#57606a" text-anchor="start" font-weight="normal">Ultra Fast Pregen runs on the CPU only: no OpenCL / GPU acceleration.</text>
+</svg>

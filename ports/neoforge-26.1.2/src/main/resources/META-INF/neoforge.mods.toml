@@ -1,0 +1,28 @@
+modLoader="javafml"
+loaderVersion="[4,)"
+license="LGPL-3.0"
+
+[[mods]]
+modId="ultrafastpregen"
+version="${version}"
+displayName="Ultra Fast Pregen"
+description='''Pre-generates the world with every CPU core: /pregen start <size in thousands of blocks>'''
+logoFile="assets/pregen/icon.png"
+authors="Developer"
+
+[[mixins]]
+config="pregen.mixins.json"
+
+[[dependencies.ultrafastpregen]]
+modId="neoforge"
+type="required"
+versionRange="${neo_version_range}"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.ultrafastpregen]]
+modId="minecraft"
+type="required"
+versionRange="[${minecraft_version}]"
+ordering="NONE"
+side="BOTH"

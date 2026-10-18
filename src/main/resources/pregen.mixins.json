@@ -6,6 +6,7 @@
 	"mixins": [
 		"CommandsMixin",
 		"WorldGenRegionMixin",
+		"WorldGenRegionChunkCacheMixin",
 		"NoiseBasedChunkGeneratorInvoker",
 		"NoiseBasedChunkGeneratorMixin",
 		"NoiseChunkAccessor",
@@ -38,7 +39,8 @@
 		"RegionFileStorageAccessor",
 		"RegionFileInvoker",
 		"ServerChunkCacheMixin",
-		"BlockMixin"
+		"BlockMixin",
+		"MatchingBlocksPredicateMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

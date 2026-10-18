@@ -13,7 +13,8 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 /** The surface step's block writes on this mod's terrain workers (see FastBlockWrites). */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceSystem$1")
 public abstract class SurfaceBlockColumnMixin {
-    @Redirect(method = "setBlock", at = @At(value = "INVOKE",
+    // Only a shortcut: a mod that replaces setBlock leaves Minecraft's own write in place.
+    @Redirect(method = "setBlock", require = 0, at = @At(value = "INVOKE",
             target = "Lnet/minecraft/world/level/chunk/ChunkAccess;setBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/state/BlockState;"))
     private BlockState pregen$setUnlocked(ChunkAccess chunk, BlockPos pos, BlockState state) {
         if (FastBlockWrites.enabled && chunk instanceof ProtoChunk proto && TerrainGenerationContext.isActive()) {

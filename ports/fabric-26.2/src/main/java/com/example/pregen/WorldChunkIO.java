@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
@@ -47,7 +48,7 @@ import net.minecraft.nbt.NbtIo;
  * The server caches open RegionFile objects, each with its own in-memory sector table and
  * header. Writing the same .mca through a second, concurrently open RegionFile lets whichever
  * writes last erase the other's chunk offsets. Every task here therefore runs on the
- * dimension's IO worker thread, which is the only thread that touches its region files.
+ * dimension's storage thread (see StorageThread), the only thread that touches its region files.
  */
 final class WorldChunkIO {
     /** Chunk payload in the [length][compression id][compressed NBT] layout of a region sector. */
@@ -77,7 +78,8 @@ final class WorldChunkIO {
     /** RegionFileStorage's own limit on open region files. */
     private static final int MAX_OPEN_REGIONS = 256;
 
-    private final IOWorkerAccessor worker;
+    private final IOWorker worker;
+    private final StorageThread thread;
     private final int writeBatch;
     /** Region files we opened without DSYNC; touched only on the IO thread. */
     private final Map<Long, RegionFile> fastHandles = new HashMap<>();
@@ -87,12 +89,76 @@ final class WorldChunkIO {
     }
 
     WorldChunkIO(IOWorker worker, int writeBatch) {
-        this.worker = (IOWorkerAccessor) worker;
+        this(worker, StorageThread.of(worker), writeBatch);
+    }
+
+    /** Tests: a storage thread given directly (see C2meStorage). */
+    WorldChunkIO(IOWorker worker, StorageThread thread, int writeBatch) {
+        this.worker = worker;
+        this.thread = thread;
         this.writeBatch = writeBatch;
     }
 
     static WorldChunkIO forLevel(ServerLevel level) {
         return new WorldChunkIO(((ChunkStorageAccessor) level.getChunkSource().chunkMap).pregen$getWorker());
+    }
+
+    /**
+     * The thread that owns a dimension's region files. Its RegionFileStorage and the saves it has
+     * queued but not written yet are touched only by tasks it runs. Minecraft's IOWorker, or the
+     * storage thread C2ME replaces it with (see C2meStorage).
+     */
+    interface StorageThread {
+        <T> CompletableFuture<T> submit(Supplier<T> task);
+
+        /** Only from a task this thread runs. */
+        RegionFileStorageAccessor storage();
+
+        /** The save queued for this chunk, or null. Only from a task this thread runs. */
+        QueuedSave queued(ChunkPos pos);
+
+        static StorageThread of(IOWorker worker) {
+            IOWorkerAccessor vanilla = (IOWorkerAccessor) worker;
+            return vanilla.pregen$getStorage() != null ? new VanillaStorage(vanilla) : C2meStorage.of(worker);
+        }
+    }
+
+    /** A chunk save queued on the storage thread, not written to its region file yet. */
+    interface QueuedSave {
+        /** Whether it stores a fully generated chunk; unknown counts as generated. */
+        boolean isFullyGenerated();
+
+        /** Makes it store {@code data} instead, so it cannot restore an older chunk over a raw region write. */
+        void replaceWith(CompoundTag data);
+    }
+
+    private record VanillaStorage(IOWorkerAccessor worker) implements StorageThread {
+        @Override
+        public <T> CompletableFuture<T> submit(Supplier<T> task) {
+            return worker.pregen$submitTask(task);
+        }
+
+        @Override
+        public RegionFileStorageAccessor storage() {
+            return (RegionFileStorageAccessor) (Object) worker.pregen$getStorage();
+        }
+
+        @Override
+        public QueuedSave queued(ChunkPos pos) {
+            PendingStoreAccessor store = (PendingStoreAccessor) worker.pregen$getPendingWrites().get(pos);
+            if (store == null) return null;
+            return new QueuedSave() {
+                @Override
+                public boolean isFullyGenerated() {
+                    return WorldChunkIO.isFullyGenerated(store.pregen$getData());
+                }
+
+                @Override
+                public void replaceWith(CompoundTag data) {
+                    store.pregen$setData(data);
+                }
+            };
+        }
     }
 
     /**
@@ -130,7 +196,7 @@ final class WorldChunkIO {
         Map<Long, long[]> present = new HashMap<>();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (long regionKey : regionKeys) {
-            chain = chain.thenCompose(ignored -> worker.<Void>pregen$submitTask(() -> {
+            chain = chain.thenCompose(ignored -> thread.<Void>submit(() -> {
                 try {
                     long[][] bits = collectStoredInRegion(regionKey);
                     if (bits != null) {
@@ -148,12 +214,11 @@ final class WorldChunkIO {
 
     /** A stored chunk's data (including a queued save), read on the IO thread. */
     CompletableFuture<java.util.Optional<CompoundTag>> load(long chunk) {
-        return ((IOWorker) (Object) worker).loadAsync(ChunkPos.unpack(chunk));
+        return worker.loadAsync(ChunkPos.unpack(chunk));
     }
 
     private long[][] collectStoredInRegion(long regionKey) throws IOException {
-        Map<ChunkPos, ?> pending = worker.pregen$getPendingWrites();
-        RegionFileStorageAccessor storage = (RegionFileStorageAccessor) (Object) worker.pregen$getStorage();
+        RegionFileStorageAccessor storage = thread.storage();
         int regionX = ChunkPos.getX(regionKey);
         int regionZ = ChunkPos.getZ(regionKey);
         boolean fileExists = Files.exists(storage.pregen$getFolder().resolve("r." + regionX + "." + regionZ + ".mca"));
@@ -164,15 +229,13 @@ final class WorldChunkIO {
         for (int x = 0; x < 32; x++) {
             for (int z = 0; z < 32; z++) {
                 ChunkPos pos = new ChunkPos((regionX << 5) + x, (regionZ << 5) + z);
-                Object queued = pending.get(pos);
+                QueuedSave queued = thread.queued(pos);
                 boolean stored = queued != null || (region != null && region.hasChunk(pos));
                 if (!stored) continue;
                 int index = x * 32 + z;
                 presentBits[index >>> 6] |= 1L << index;
                 any = true;
-                boolean full = queued != null
-                        ? isFullyGenerated(((PendingStoreAccessor) queued).pregen$getData())
-                        : isFullyGenerated(region, pos);
+                boolean full = queued != null ? queued.isFullyGenerated() : isFullyGenerated(region, pos);
                 if (full) fullBits[index >>> 6] |= 1L << index;
             }
         }
@@ -192,17 +255,30 @@ final class WorldChunkIO {
      * Chunks from before 1.18 keep it under Level. Unreadable or unknown counts as generated.
      */
     static boolean isFullyGenerated(RegionFile region, ChunkPos pos) {
+        return isFullyGenerated(() -> region.getChunkDataInputStream(pos));
+    }
+
+    /** The same for a chunk's uncompressed NBT. */
+    static boolean isFullyGenerated(byte[] nbt) {
+        return isFullyGenerated(() -> new DataInputStream(new ByteArrayInputStream(nbt)));
+    }
+
+    private interface ChunkStream {
+        DataInputStream open() throws IOException;
+    }
+
+    private static boolean isFullyGenerated(ChunkStream chunk) {
         try {
-            String status = readStatus(region, pos, new FieldSelector(StringTag.TYPE, "Status"), false);
-            if (status == null) status = readStatus(region, pos, new FieldSelector("Level", StringTag.TYPE, "Status"), true);
+            String status = readStatus(chunk, new FieldSelector(StringTag.TYPE, "Status"), false);
+            if (status == null) status = readStatus(chunk, new FieldSelector("Level", StringTag.TYPE, "Status"), true);
             return status == null || isFullStatus(status);
         } catch (IOException | RuntimeException failure) {
             return true;
         }
     }
 
-    private static String readStatus(RegionFile region, ChunkPos pos, FieldSelector selector, boolean nested) throws IOException {
-        try (DataInputStream in = region.getChunkDataInputStream(pos)) {
+    private static String readStatus(ChunkStream chunk, FieldSelector selector, boolean nested) throws IOException {
+        try (DataInputStream in = chunk.open()) {
             if (in == null) return null;
             CollectFields fields = new CollectFields(selector);
             NbtIo.parse(in, fields, NbtAccounter.unlimitedHeap());
@@ -252,7 +328,7 @@ final class WorldChunkIO {
 
     /** Chunks stored in any generation status, or queued to be stored. Runs on the IO thread. */
     CompletableFuture<LongSet> findStored(LongCollection positions) {
-        return worker.pregen$submitTask(() -> {
+        return thread.submit(() -> {
             try {
                 return collectStored(positions);
             } catch (IOException | RuntimeException failure) {
@@ -262,14 +338,13 @@ final class WorldChunkIO {
     }
 
     private LongSet collectStored(LongCollection positions) throws IOException {
-        Map<ChunkPos, ?> pending = worker.pregen$getPendingWrites();
-        RegionFileStorageAccessor storage = (RegionFileStorageAccessor) (Object) worker.pregen$getStorage();
+        RegionFileStorageAccessor storage = thread.storage();
         Path folder = storage.pregen$getFolder();
         Map<Long, Boolean> regionExists = new HashMap<>();
         LongSet stored = new LongOpenHashSet();
         for (long packed : positions) {
             ChunkPos pos = ChunkPos.unpack(packed);
-            if (pending.containsKey(pos)) {
+            if (thread.queued(pos) != null) {
                 stored.add(packed);
                 continue;
             }
@@ -308,7 +383,7 @@ final class WorldChunkIO {
         int[] merged = new int[1];
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (Map.Entry<Long, List<Long>> region : byRegion.entrySet()) {
-            chain = chain.thenCompose(ignored -> worker.<Void>pregen$submitTask(() -> {
+            chain = chain.thenCompose(ignored -> thread.<Void>submit(() -> {
                 try {
                     merged[0] += mergeRegion(region.getKey(), region.getValue(), writes);
                     return null;
@@ -321,14 +396,13 @@ final class WorldChunkIO {
     }
 
     private int mergeRegion(long regionKey, List<Long> chunks, Map<Long, List<SeamWrites.Write>> writes) throws IOException {
-        Map<ChunkPos, ?> pending = worker.pregen$getPendingWrites();
-        RegionFileStorageAccessor storage = (RegionFileStorageAccessor) (Object) worker.pregen$getStorage();
+        RegionFileStorageAccessor storage = thread.storage();
         int merged = 0;
         try {
             RegionFile region = fastHandle(storage, regionKey);
             for (long packed : chunks) {
                 ChunkPos pos = ChunkPos.unpack(packed);
-                if (pending.containsKey(pos)) continue;
+                if (thread.queued(pos) != null) continue;
                 CompoundTag tag;
                 try (DataInputStream in = region.getChunkDataInputStream(pos)) {
                     if (in == null) continue;
@@ -369,7 +443,7 @@ final class WorldChunkIO {
             for (int start = 0; start < regionChunks.size(); start += writeBatch) {
                 List<EncodedChunk> batch = regionChunks.subList(start, Math.min(regionChunks.size(), start + writeBatch));
                 boolean lastOfRegion = start + writeBatch >= regionChunks.size();
-                chain = chain.thenCompose(ignored -> worker.<WriteResult>pregen$submitTask(() -> {
+                chain = chain.thenCompose(ignored -> thread.<WriteResult>submit(() -> {
                     try {
                         writeBatch(region.getKey(), batch, lastOfRegion, result, overwrite);
                         return result;
@@ -393,19 +467,18 @@ final class WorldChunkIO {
     private void writeBatch(long regionKey, List<EncodedChunk> chunks, boolean lastOfRegion, WriteResult result,
                             boolean overwrite) throws IOException {
         long started = System.nanoTime();
-        Map<ChunkPos, ?> pending = worker.pregen$getPendingWrites();
-        RegionFileStorageAccessor storage = (RegionFileStorageAccessor) (Object) worker.pregen$getStorage();
+        RegionFileStorageAccessor storage = thread.storage();
         int written = 0;
         int skipped = 0;
         try {
             RegionFile region = fastHandle(storage, regionKey);
             for (EncodedChunk chunk : chunks) {
-                Object queued = pending.get(chunk.pos());
+                QueuedSave queued = thread.queued(chunk.pos());
                 if (!overwrite) {
                     // Keep a chunk saved since the run's check only if it is fully generated (a
                     // player's); the server's saves of part-way generated chunks are replaced.
                     boolean keep = queued != null
-                            ? isFullyGenerated(((PendingStoreAccessor) queued).pregen$getData())
+                            ? queued.isFullyGenerated()
                             : region.hasChunk(chunk.pos()) && isFullyGenerated(region, chunk.pos());
                     if (keep) {
                         skipped++;
@@ -415,7 +488,7 @@ final class WorldChunkIO {
                 if (queued != null) {
                     // Its completion stays intact, but a stale queued save can no longer
                     // restore the old chunk after our raw region write.
-                    ((PendingStoreAccessor) queued).pregen$setData(decode(chunk));
+                    queued.replaceWith(decode(chunk));
                 }
                 ((RegionFileInvoker) region).pregen$write(chunk.pos(), chunk.frame().duplicate());
                 written++;
