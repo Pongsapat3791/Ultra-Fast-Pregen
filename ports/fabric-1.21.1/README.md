@@ -2,10 +2,10 @@
 
 The Fabric build for Minecraft 1.21.1 shares its code with the NeoForge 1.21.1 build ([ports/neoforge-1.21.1](../neoforge-1.21.1/README.md));
 only the loader entrypoint differs. It has the commands (including `/pregen set` and the boss bar), the config file, the save file and every
-change of round 14: see the [main README](../../README.md).
+change up to round 15: see the [main README](../../README.md).
 
 - **Requires:** Fabric Loader 0.14 or newer and Java 21 (Fabric API is not needed)
-- **File:** `build/libs/ultrafastpregen-fabric-1.21.1-14.1.jar`; `14.1` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-fabric-1.21.1-15.jar`; `15` is the update round, the same for every build
 - **Install:** on the server only; players do not need it (in singleplayer it runs in the integrated server)
 
 ## Differences from the NeoForge 1.21.1 build
@@ -30,5 +30,5 @@ set a new `level-name` before every run).
 
 ## Test results
 
-- **Full test suite, round 14 (Fabric Loader 0.19.5):** every check passes, with the same block hashes as the NeoForge 1.21.1 build.
+- **Full test suite, round 15 (Fabric Loader 0.19.5):** every check passes, with the same block hashes as the NeoForge 1.21.1 build.
 - **With other mods and modpacks:** see [COMPATIBILITY.md](../../COMPATIBILITY.md).

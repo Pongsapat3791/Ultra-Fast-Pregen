@@ -1,5 +1,28 @@
 # Changelog
 
+## 15 (in development)
+
+### New
+- **Any radius, square or circle:** `/pregen radius <blocks>`, `/pregen shape square|circle` and `/pregen start` without a size;
+  `/pregen worldborder` takes the center and size from the world border, `/pregen spawn` centers on the world spawn.
+  A circle generates every chunk whose center lies within the radius; the chunks just outside it are left part-generated
+  like any area's edge, so trees along the circle are not cut off.
+- **Continues after a restart:** a run cut short by a server stop or crash (not by `/pregen stop`) continues by itself once
+  the server has started again (`resume_after_restart`, on by default). After 3 restarts in a row without a saved batch it
+  stops trying, so a crash cannot loop.
+- **API for other mods** ([API.md](API.md)): start, resume and stop runs and read their status; listen to a run's start,
+  progress, every batch of saved chunks and its end; declare their own mixins compatible with the fast paths, or ask for
+  Minecraft's terrain steps, in code or in fabric.mod.json / mods.toml.
+
+### Safer
+- **Stopping the server during a run:** the server waits for the batch being saved (up to 20 s) and drops the one being
+  generated, so the run continues from its last saved batch. In singleplayer, leaving the world now stops the run; before,
+  it kept running in the background after the world closed.
+- **Light engine:** a batch dropped before its lighting (server stop) or generated again by the safety net no longer
+  removes light data that the batch before it is still computing; that could break Minecraft's light engine and hang
+  the server.
+- Includes the fix of 14.1.
+
 ## 14.1
 
 ### Fixed
@@ -17,6 +40,8 @@
 - A new check in the test suite looks for sky light inside solid blocks underground after a batch that covers chunks
   the server holds full and partly generated: with 14, 175 of its 256 chunks were lit as if empty; with 14.1, none.
   It passes on all six builds, and the light of every block still matches Minecraft's light engine.
+- On dedicated servers pregenerating 2k around spawn, 14 left a ring of 1,584 (1.20.1) or 760 (1.21.1) chunks with
+  bright caves around the spawn chunks; 14.1 left none (Fabric and Forge 1.20.1, Fabric and NeoForge 1.21.1).
 
 ## 14
 

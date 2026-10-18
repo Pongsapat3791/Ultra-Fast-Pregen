@@ -104,6 +104,13 @@ final class PreGenConfig {
                 #   (on hosting panels, the plan's CPU limit). Or a number 1..%d. Default: max.
                 threads=max
                 """.formatted(MAX_THREADS));
+        SECTIONS.put("resume_after_restart", """
+
+                # resume_after_restart: when a run was cut short by a server stop or crash (not by /pregen stop),
+                #   continue it once the server has started again. After 3 restarts in a row without a
+                #   saved batch it stops trying (/pregen resume still works). Default: true.
+                resume_after_restart=true
+                """);
         SECTIONS.put("parallel_steps", """
 
                 # parallel_steps: run structure starts/references, caves (carvers) and features on all
@@ -150,18 +157,21 @@ final class PreGenConfig {
     final int batchSizeBlocks;
     final int threads;
     final boolean threadsFromCpuCount;
+    final boolean resumeAfterRestart;
     final boolean parallelSteps;
     final boolean alwaysParallelFeatures;
     final boolean releaseMemoryEachBatch;
     final boolean skipExistingChunks;
     final TerrainPipeline terrainPipeline;
 
-    private PreGenConfig(int batchSizeBlocks, int threads, boolean threadsFromCpuCount, boolean parallelSteps,
+    private PreGenConfig(int batchSizeBlocks, int threads, boolean threadsFromCpuCount, boolean resumeAfterRestart,
+                         boolean parallelSteps,
                          boolean alwaysParallelFeatures,
                          boolean releaseMemoryEachBatch, boolean skipExistingChunks, TerrainPipeline terrainPipeline) {
         this.batchSizeBlocks = batchSizeBlocks;
         this.threads = threads;
         this.threadsFromCpuCount = threadsFromCpuCount;
+        this.resumeAfterRestart = resumeAfterRestart;
         this.parallelSteps = parallelSteps;
         this.alwaysParallelFeatures = alwaysParallelFeatures;
         this.releaseMemoryEachBatch = releaseMemoryEachBatch;
@@ -230,6 +240,7 @@ final class PreGenConfig {
             }
         }
 
+        boolean resumeAfterRestart = readBoolean(properties, "resume_after_restart", true, file, warn);
         boolean parallelSteps = readBoolean(properties, "parallel_steps", true, file, warn);
         String featuresValue = properties.getProperty("parallel_features", "auto").trim().toLowerCase(Locale.ROOT);
         boolean alwaysParallelFeatures = featuresValue.equals("always");
@@ -247,7 +258,7 @@ final class PreGenConfig {
             warn.accept("Unknown terrain_pipeline '" + pipelineValue + "' in " + file + "; using auto");
             pipeline = TerrainPipeline.AUTO;
         }
-        return new PreGenConfig(batch, threads, fromCpuCount, parallelSteps, alwaysParallelFeatures, releaseMemoryEachBatch,
+        return new PreGenConfig(batch, threads, fromCpuCount, resumeAfterRestart, parallelSteps, alwaysParallelFeatures, releaseMemoryEachBatch,
                 skipExistingChunks, pipeline);
     }
 

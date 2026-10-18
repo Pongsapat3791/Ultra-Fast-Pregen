@@ -41,7 +41,13 @@ final class PreGenSaveFile {
     private final Long2ObjectMap<long[]> regions = new Long2ObjectOpenHashMap<>();
     private final boolean seedChanged;
     private boolean hasLastRun;
-    private int lastWorldK;
+    /** Side of the last run's square (diameter of its circle) in blocks. */
+    private int lastSizeBlocks;
+    private ChunkBatchPlan.Shape lastShape = ChunkBatchPlan.Shape.SQUARE;
+    /** The last run ended by /pregen stop (or the API) or by an error, rather than by a server stop or crash. */
+    private boolean lastStopped;
+    /** Times the last run was continued after a restart without saving a batch since (see resume_after_restart). */
+    private int autoResumes;
     private int lastCenterX;
     private int lastCenterZ;
     private boolean lastCompleted;
@@ -87,10 +93,16 @@ final class PreGenSaveFile {
         if (tag.contains("last_run", Tag.TAG_COMPOUND)) {
             CompoundTag last = tag.getCompound("last_run");
             record.hasLastRun = true;
-            record.lastWorldK = last.getInt("world_k");
+            // Round 14 and earlier recorded the size in thousands of blocks only.
+            record.lastSizeBlocks = last.contains("size_blocks", Tag.TAG_INT)
+                    ? last.getInt("size_blocks") : last.getInt("world_k") * 1000;
             record.lastCenterX = last.getInt("center_x");
             record.lastCenterZ = last.getInt("center_z");
             record.lastCompleted = last.getBoolean("completed");
+            // Round 14 and earlier generated squares only.
+            record.lastShape = "circle".equals(last.getString("shape")) ? ChunkBatchPlan.Shape.CIRCLE : ChunkBatchPlan.Shape.SQUARE;
+            record.lastStopped = last.getBoolean("stopped");
+            record.autoResumes = last.getInt("auto_resumes");
         }
         return record;
     }
@@ -141,9 +153,10 @@ final class PreGenSaveFile {
         return count;
     }
 
-    synchronized void setLastRun(int worldK, int centerX, int centerZ, boolean completed) {
+    synchronized void setLastRun(int sizeBlocks, int centerX, int centerZ, ChunkBatchPlan.Shape shape, boolean completed) {
         hasLastRun = true;
-        lastWorldK = worldK;
+        lastSizeBlocks = sizeBlocks;
+        lastShape = shape;
         lastCenterX = centerX;
         lastCenterZ = centerZ;
         lastCompleted = completed;
@@ -153,8 +166,34 @@ final class PreGenSaveFile {
         return hasLastRun;
     }
 
-    synchronized int lastWorldK() {
-        return lastWorldK;
+    synchronized int lastSizeBlocks() {
+        return lastSizeBlocks;
+    }
+
+    synchronized ChunkBatchPlan.Shape lastShape() {
+        return lastShape;
+    }
+
+    synchronized boolean lastStopped() {
+        return lastStopped;
+    }
+
+    synchronized void setLastStopped(boolean stopped) {
+        lastStopped = stopped;
+    }
+
+    synchronized int autoResumes() {
+        return autoResumes;
+    }
+
+    /** Counts one more automatic continuation after a restart. */
+    synchronized void countAutoResume() {
+        autoResumes++;
+    }
+
+    /** A batch reached the disk: the run is making progress again. */
+    synchronized void clearAutoResumes() {
+        autoResumes = 0;
     }
 
     synchronized int lastCenterX() {
@@ -191,10 +230,15 @@ final class PreGenSaveFile {
         tag.put("partial", partial);
         if (hasLastRun) {
             CompoundTag last = new CompoundTag();
-            last.putInt("world_k", lastWorldK);
+            last.putInt("size_blocks", lastSizeBlocks);
+            // For round 14 and earlier, which resume from this: the size rounded up to whole thousands.
+            last.putInt("world_k", (lastSizeBlocks + 999) / 1000);
             last.putInt("center_x", lastCenterX);
             last.putInt("center_z", lastCenterZ);
             last.putBoolean("completed", lastCompleted);
+            last.putString("shape", lastShape == ChunkBatchPlan.Shape.CIRCLE ? "circle" : "square");
+            last.putBoolean("stopped", lastStopped);
+            last.putInt("auto_resumes", autoResumes);
             tag.put("last_run", last);
         }
         Files.createDirectories(file.getParent());

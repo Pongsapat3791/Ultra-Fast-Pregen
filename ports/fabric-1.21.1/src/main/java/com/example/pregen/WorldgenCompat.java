@@ -4,8 +4,10 @@ import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.levelgen.Aquifer;
@@ -96,7 +98,31 @@ public final class WorldgenCompat {
             // instead of Minecraft's worker pool; the fused path runs it on its own pool.
             "com.ishland.c2me.rewrites.chunksystem.mixin.MixinNoiseChunkGenerator");
 
+    /** Mixins their own mods declared compatible (API or mod metadata): mixin class -> where it was declared. */
+    private static final Map<String, String> DECLARED_COMPATIBLE = new ConcurrentHashMap<>();
+    /** Mods that asked for Minecraft's terrain steps: mod id -> their reason. */
+    private static final Map<String, String> MINECRAFT_TERRAIN_REQUESTS = new ConcurrentHashMap<>();
+
     public record TerrainChoice(boolean fused, String reason) {}
+
+    /**
+     * A mixin that its mod declares compatible with every shortcut (see PregenApi): it no
+     * longer turns the fast terrain path, the cell-skipping fill, the aquifer shortcut or parallel
+     * features off. Declarations count for runs that start afterwards.
+     */
+    static void declareCompatibleMixin(String mixinClassName, String declaredBy) {
+        if (mixinClassName != null && !mixinClassName.isBlank()) DECLARED_COMPATIBLE.put(mixinClassName.trim(), declaredBy);
+    }
+
+    /** A mod that wants Minecraft's own terrain steps while it is loaded (see PregenApi). */
+    static void requireMinecraftTerrain(String modId, String reason) {
+        if (modId != null && !modId.isBlank()) MINECRAFT_TERRAIN_REQUESTS.put(modId.trim(), reason == null ? "" : reason);
+    }
+
+    /** This mod's own exceptions and the mixins other mods declared compatible. */
+    private static boolean neutral(String mixinClassName) {
+        return NEUTRAL_MIXINS.contains(mixinClassName) || DECLARED_COMPATIBLE.containsKey(mixinClassName);
+    }
 
     private WorldgenCompat() {}
 
@@ -118,6 +144,12 @@ public final class WorldgenCompat {
         }
         if (generator.getClass() != NoiseBasedChunkGenerator.class) {
             return new TerrainChoice(false, "custom generator " + generator.getClass().getName());
+        }
+        if (!MINECRAFT_TERRAIN_REQUESTS.isEmpty()) {
+            return new TerrainChoice(false, "requested by " + new java.util.TreeMap<>(MINECRAFT_TERRAIN_REQUESTS));
+        }
+        if (!DECLARED_COMPATIBLE.isEmpty()) {
+            PreGenMod.LOGGER.info("[PreGen] Mixins their mods declare compatible: {}", new java.util.TreeMap<>(DECLARED_COMPATIBLE));
         }
         List<String> details = new ArrayList<>();
         Set<String> foreign = terrainMixinConfigs(details);
@@ -220,7 +252,8 @@ public final class WorldgenCompat {
                     for (Object registered : (Set<?>) registeredMixins().get(info)) {
                         IMixinInfo mixin = (IMixinInfo) registered;
                         String config = mixin.getConfig().getName();
-                        if (OWN_MIXIN_CONFIG.equals(config) || PARALLEL_SAFE_FEATURE_MIXINS.contains(mixin.getClassName())) continue;
+                        if (OWN_MIXIN_CONFIG.equals(config) || PARALLEL_SAFE_FEATURE_MIXINS.contains(mixin.getClassName())
+                                || DECLARED_COMPATIBLE.containsKey(mixin.getClassName())) continue;
                         if (touchesFeaturePlacement(mixin)) configs.add(config);
                     }
                 } catch (Throwable failure) {
@@ -283,7 +316,7 @@ public final class WorldgenCompat {
         try {
             for (IMixinInfo mixin : mixinsTargeting(target)) {
                 String config = mixin.getConfig().getName();
-                if (OWN_MIXIN_CONFIG.equals(config) || NEUTRAL_MIXINS.contains(mixin.getClassName())
+                if (OWN_MIXIN_CONFIG.equals(config) || neutral(mixin.getClassName())
                         || alsoNeutral.contains(mixin.getClassName())) continue;
                 if (!configs.contains(config)) configs.add(config);
             }
@@ -307,7 +340,7 @@ public final class WorldgenCompat {
         try {
             for (IMixinInfo mixin : mixinsTargeting(target)) {
                 String config = mixin.getConfig().getName();
-                if (OWN_MIXIN_CONFIG.equals(config) || NEUTRAL_MIXINS.contains(mixin.getClassName())
+                if (OWN_MIXIN_CONFIG.equals(config) || neutral(mixin.getClassName())
                         || FUSED_COMPATIBLE_MIXINS.contains(mixin.getClassName())) continue;
                 if (configs.contains(config) && details == null) continue;
                 String reason = changeReason(mixin, target, methods);

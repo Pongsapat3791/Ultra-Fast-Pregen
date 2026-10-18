@@ -41,8 +41,10 @@
     "ProtoChunkMixin",
     "ChunkStepMixin",
     "ServerChunkCacheMixin",
+    "ServerLevelMixin",
     "BlockMixin",
-    "MatchingBlocksPredicateMixin"
+    "MatchingBlocksPredicateMixin",
+		"MinecraftServerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

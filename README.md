@@ -6,14 +6,14 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 
 | Loader | Minecraft | Java | File |
 |---|---|---|---|
-| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-14.1.jar` |
-| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-14.1.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
-| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-14.1.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
-| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-14.1.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
-| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-14.1.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
-| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-14.1.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
+| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-15.jar` |
+| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-15.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
+| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-15.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
+| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-15.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
+| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-15.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
+| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-15.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
 
-`14.1` is the update round, the same for every build. Install it on the server only: players do not need it
+`15` is the update round, the same for every build. Install it on the server only: players do not need it
 (it has no packets of its own). In singleplayer it runs in the integrated server.
 
 ## Speed
@@ -51,14 +51,29 @@ Prominence II 32.4 → 36.9 (the fast terrain path now stays on in all three).
 /pregen status
 ```
 
+Or any radius, as a square or a circle:
+
+```
+/pregen radius 2500
+/pregen shape circle
+/pregen start          # the chunks within 2500 blocks of the center
+```
+
 Operators (level 2) see the progress, speed and ETA on a boss bar. `/pregen stop` stops after the current batch;
-`/pregen resume` continues the last run of the selected world, even after a server restart.
+`/pregen resume` continues the last run of the selected world. When the server stops during a run, it first waits for the
+batch being saved (up to 20 s). A run cut short this way, or by a crash, continues by itself once the server has started
+again (`resume_after_restart`).
 
 ## Commands (operator level 2)
 
 | Command | What it does |
 |---|---|
-| `/pregen start <world_k> [profile]` | Generates a square of `world_k × 1000` blocks per side around the center (`profile` records a JFR profile in the server folder) |
+| `/pregen start` | Generates the area chosen with `/pregen radius` (or `/pregen worldborder`) around the center |
+| `/pregen start <world_k> [profile]` | Generates an area `world_k × 1000` blocks across around the center, in the chosen shape (`profile` records a JFR profile in the server folder) |
+| `/pregen radius <blocks>` | The radius of the next `/pregen start` (1..50,000) |
+| `/pregen shape <square\|circle>` | The shape: a square, or a circle (every chunk whose center lies within the radius) |
+| `/pregen worldborder` | Center and radius from the selected world's border (a square) |
+| `/pregen spawn` | The world spawn as the center |
 | `/pregen resume` | Continues the last run of the selected world with its size and center from the save file |
 | `/pregen reset` | Forgets which chunks Ultra Fast Pregen generated in the selected world |
 | `/pregen stop` | Stops after the current batch |
@@ -68,9 +83,10 @@ Operators (level 2) see the progress, speed and ETA on a boss bar. `/pregen stop
 | `/pregen set batch_size <512..10000>` | Batch size, saved in the config file for the next `start` |
 | `/pregen set threads <max\|1..128>` | Number of workers |
 | `/pregen set skip_existing_chunks <true\|false>` | Keep chunks that already exist, or regenerate them |
-| `/pregen set` | Shows the three values |
+| `/pregen set resume_after_restart <true\|false>` | Continue a run cut short by a server stop or crash once the server has started |
+| `/pregen set` | Shows the values |
 
-`world` and `center` last until the server restarts; a running job keeps its own.
+`world`, `center`, `radius` and `shape` last until the server restarts; a running job keeps its own.
 The console shows `Progress / Speed / ETA` every 3 seconds and, after each batch, a `Step times` line with the time of every stage.
 
 ## Configuration: `config/ultrafastpregen.conf`
@@ -85,6 +101,7 @@ Read again on every `start`. Missing keys are added automatically.
 | `parallel_steps` | `true` | Structures, carvers and features on all threads; set `false` if a worldgen mod crashes when they run in parallel |
 | `release_memory_each_batch` | `true` | Runs a GC after each batch to give RAM back (pauses about 0.1–0.2 s); `false` if players notice it |
 | `terrain_pipeline` | `auto` | `auto` uses the fast path with Minecraft's noise generator; `vanilla` always uses Minecraft's own steps; `fused` forces the fast path |
+| `resume_after_restart` | `true` | Continue a run cut short by a server stop or crash (not by `/pregen stop`) once the server has started; after 3 restarts in a row without a saved batch it stops trying |
 
 **Not enough RAM:** when the free heap cannot hold `batch_size`, the batch shrinks by itself (down to 256) and the chat says so,
 instead of running out of memory. With room for two batches (about 3.8 GB for batch 1000), each batch is lit and saved while the next one generates.
@@ -152,9 +169,13 @@ The test suite (`runPartialBatchCheck`, `runTerrainBenchmark`) runs on a real se
 - **Not supported yet: Moonrise.** It replaces Minecraft's chunk system (chunk storage, chunk holders and the light engine),
   which this mod generates and saves through; `/pregen start` says so and does nothing.
 
+## For mod developers
+
+Other mods can start and stop runs, follow them, receive every chunk they save, and declare how their own
+world generation changes interact with the fast paths: see [API.md](API.md).
+
 ## Limitations
 
-- The area is a square around the center.
 - Moonrise is not supported yet (see Compatibility).
 - It uses every core: with players online, lower `threads` by 1–2.
 - Chunks the server is holding (players nearby) and chunks of old Minecraft versions not yet upgraded do not receive features that reach into them.

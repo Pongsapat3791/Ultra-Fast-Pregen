@@ -1,10 +1,10 @@
 # Ultra Fast Pregen for Fabric 26.2
 
-The port of Ultra Fast Pregen 14 to Minecraft 26.2 (Fabric), with the commands (including `/pregen set` and the boss bar),
-the config file, the save file and every change of round 14: see the [main README](../../README.md).
+The port of Ultra Fast Pregen 15 to Minecraft 26.2 (Fabric), with the commands (including `/pregen set` and the boss bar),
+the config file, the save file and every change up to round 15: see the [main README](../../README.md).
 
 - **Requires:** Fabric Loader 0.16 or newer and Java 25 (Fabric API is not needed)
-- **File:** `build/libs/ultrafastpregen-fabric-26.2-14.1.jar`; `14.1` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-fabric-26.2-15.jar`; `15` is the update round, the same for every build
 - **Install:** on the server only; players do not need it
 
 ## Differences from the 1.20.1 builds

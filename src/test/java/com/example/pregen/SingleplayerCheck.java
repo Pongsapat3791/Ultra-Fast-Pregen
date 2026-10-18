@@ -1,6 +1,5 @@
 package com.example.pregen;
 
-import java.lang.reflect.Field;
 import java.util.concurrent.TimeUnit;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.ChunkPos;
@@ -62,9 +61,7 @@ public final class SingleplayerCheck {
                 .get(30, TimeUnit.SECONDS);
     }
 
-    private static DynamicBatchPreGen activeTask() throws ReflectiveOperationException {
-        Field field = PreGenCommand.class.getDeclaredField("activeTask");
-        field.setAccessible(true);
-        return (DynamicBatchPreGen) field.get(null);
+    private static DynamicBatchPreGen activeTask() {
+        return PregenRuns.current();
     }
 }

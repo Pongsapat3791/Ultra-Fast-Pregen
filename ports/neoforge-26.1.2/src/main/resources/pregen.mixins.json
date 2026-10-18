@@ -37,8 +37,10 @@
     "ProtoChunkMixin",
     "ChunkStepMixin",
     "ServerChunkCacheMixin",
+    "ServerLevelMixin",
     "BlockMixin",
     "MatchingBlocksPredicateMixin",
+		"MinecraftServerMixin",
     "NoiseBasedAquiferMixin"
   ],
   "injectors": {

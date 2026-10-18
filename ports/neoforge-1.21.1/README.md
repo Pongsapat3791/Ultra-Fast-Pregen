@@ -1,12 +1,12 @@
 # Ultra Fast Pregen for NeoForge 1.21.1
 
 The NeoForge 1.21.1 port of Ultra Fast Pregen: the same in-RAM batch generator, with the commands (including `/pregen set` and the boss bar),
-the config file, the save file and every change of round 14. See the [main README](../../README.md) for the details.
+the config file, the save file and every change up to round 15. See the [main README](../../README.md) for the details.
 
 - **Requires:** NeoForge 21.1.1 or newer (tested with 21.1.259) and Java 21
-- **File:** `build/libs/ultrafastpregen-neoforge-1.21.1-14.1.jar`, into the server's `mods/` folder; `14.1` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-neoforge-1.21.1-15.jar`, into the server's `mods/` folder; `15` is the update round, the same for every build
 - **Install:** on the server only; players do not need it, as the mod has no packets of its own
-- **Commands:** `/pregen start|resume|reset|stop|status|world|center|set`, operator level 2
+- **Commands:** `/pregen start|resume|reset|stop|status|world|center|radius|shape|worldborder|spawn|set`, operator level 2
 - **Config:** `config/ultrafastpregen.conf`, with the same keys as the other builds (`skip_existing_chunks=true` by default).
   Round 9's `inmemory-pregen.conf` and `fastpregen.dat` are taken over automatically.
 
@@ -56,7 +56,7 @@ Minecraft 1.21 changed how chunks are generated (`ChunkStatus` → `ChunkStep` /
   - Mods that act only on new chunks through these events (retrogen, for example) do not see the chunks Ultra Fast Pregen generated.
 - **Data attachments:** attachments a mod adds to a chunk during worldgen are saved with it, since NeoForge's `ChunkSerializer` is used.
 
-## Correctness (round 14, NeoForge 21.1.259)
+## Correctness (round 15, NeoForge 21.1.259)
 
 - **Terrain checksum:** `runTerrainBenchmark` compares vanilla and the fast path in the same JVM: the block, biome, heightmap and fluid
   checksums match for all 3 seeds, and vanilla's other presets (large biomes, amplified, nether, end, caves, floating islands) match

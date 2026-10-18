@@ -21,35 +21,59 @@ import net.minecraft.world.level.Level;
  *   Example: /pregen start 20
  *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) come from
  *   config/ultrafastpregen.conf. "profile" saves a JFR recording of the run to the server directory.
- * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|lod_export] [value]
+ * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|resume_after_restart|lod_export] [value]
  *   writes one setting into that file (without a value: shows the settings)
+ * - /pregen start               the area chosen with /pregen radius (or /pregen worldborder)
+ * - /pregen radius <blocks>      radius of the next start's area; /pregen shape square|circle its shape
+ * - /pregen worldborder          center and radius from the selected world's border; /pregen spawn: center at the world spawn
  * - /pregen world [dimension]   select the world for the next start, e.g. minecraft:the_nether
- * - /pregen center [x z]         center of the square for the next start (accepts ~ ~)
+ * - /pregen center [x z]         center of the area for the next start (accepts ~ ~)
  * - /pregen resume             continue the selected world's last run (size and center) from its save file
  * - /pregen reset              forget which chunks Ultra Fast Pregen generated in the selected world
  * - /pregen stop
  * - /pregen status
  */
 public class PreGenCommand {
-    /** The vanilla world border's largest position; generated chunks must stay inside it. */
-    private static final long MAX_WORLD_COORDINATE = 29_999_984L;
-
-    private static volatile DynamicBatchPreGen activeTask = null;
     // Settings for the next /pregen start; a running task keeps the values it started with.
     private static volatile ResourceKey<Level> selectedWorld = null; // null: the world of the command source
     private static volatile int centerX = 0;
     private static volatile int centerZ = 0;
+    /** Radius in blocks for /pregen start without a size; 0 until chosen. /pregen start <world_k> gives the size itself. */
+    private static volatile int radius = 0;
+    private static volatile ChunkBatchPlan.Shape shape = ChunkBatchPlan.Shape.SQUARE;
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext buildContext, Commands.CommandSelection selection) {
         dispatcher.register(Commands.literal("pregen")
             .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
             .then(Commands.literal("start")
+                .executes(ctx -> startPreGen(ctx.getSource()))
                 .then(Commands.argument("world_k", IntegerArgumentType.integer(1, 100))
                     .executes(ctx -> startPreGen(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "world_k"), false))
                     .then(Commands.literal("profile")
                         .executes(ctx -> startPreGen(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "world_k"), true))
                     )
                 )
+            )
+            .then(Commands.literal("radius")
+                .executes(ctx -> showSettings(ctx.getSource()))
+                .then(Commands.argument("blocks", IntegerArgumentType.integer(1, io.github.pongsapat3791.ultrafastpregen.api.PregenRequest.MAX_RADIUS))
+                    .executes(ctx -> setRadius(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "blocks")))
+                )
+            )
+            .then(Commands.literal("shape")
+                .executes(ctx -> showSettings(ctx.getSource()))
+                .then(Commands.literal("square")
+                    .executes(ctx -> setShape(ctx.getSource(), ChunkBatchPlan.Shape.SQUARE))
+                )
+                .then(Commands.literal("circle")
+                    .executes(ctx -> setShape(ctx.getSource(), ChunkBatchPlan.Shape.CIRCLE))
+                )
+            )
+            .then(Commands.literal("worldborder")
+                .executes(ctx -> fromWorldBorder(ctx.getSource()))
+            )
+            .then(Commands.literal("spawn")
+                .executes(ctx -> fromSpawn(ctx.getSource()))
             )
             .then(Commands.literal("world")
                 .executes(ctx -> showSettings(ctx.getSource()))
@@ -110,6 +134,13 @@ public class PreGenCommand {
                                 Boolean.toString(BoolArgumentType.getBool(ctx, "keep"))))
                     )
                 )
+                .then(Commands.literal("resume_after_restart")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.argument("resume", BoolArgumentType.bool())
+                        .executes(ctx -> setConfig(ctx.getSource(), "resume_after_restart",
+                                Boolean.toString(BoolArgumentType.getBool(ctx, "resume"))))
+                    )
+                )
                 .then(Commands.literal("lod_export")
                     .executes(ctx -> showConfig(ctx.getSource()))
                     .then(Commands.argument("send", BoolArgumentType.bool())
@@ -129,8 +160,7 @@ public class PreGenCommand {
             source.sendFailure(Component.literal("§c[PreGen] Could not write config/" + PreGenConfig.FILE_NAME + ": " + failure.getMessage()));
             return 0;
         }
-        DynamicBatchPreGen running = activeTask;
-        String when = running != null && running.isRunning()
+        String when = PregenRuns.isRunning()
                 ? "the running task keeps its settings; the next /pregen start uses it"
                 : "used from the next /pregen start";
         source.sendSuccess(() -> Component.literal("§a[PreGen] " + key + "=" + value + " saved in config/"
@@ -142,16 +172,73 @@ public class PreGenCommand {
         PreGenConfig config = PreGenConfig.load();
         String threads = config.threadsFromCpuCount ? "max (" + config.threads + ")" : Integer.toString(config.threads);
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | lod_export=%b §7(change with /pregen set <key> <value>; config/%s)",
-                config.batchSizeBlocks, threads, config.alwaysParallelFeatures ? "always" : "auto", config.skipExistingChunks, config.lodExport, PreGenConfig.FILE_NAME)), false);
+                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | resume_after_restart=%b | lod_export=%b §7(change with /pregen set <key> <value>; config/%s)",
+                config.batchSizeBlocks, threads, config.alwaysParallelFeatures ? "always" : "auto",
+                config.skipExistingChunks, config.resumeAfterRestart, config.lodExport, PreGenConfig.FILE_NAME)), false);
         return 1;
     }
 
-    private static int startPreGen(CommandSourceStack source, int worldK, boolean profile) {
-        synchronized (PreGenCommand.class) {
-            ServerLevel level = selectedLevel(source);
-            return level == null ? 0 : startPreGen(source, level, worldK, centerX, centerZ, profile);
+    /** /pregen start without a size: the area chosen with /pregen radius or /pregen worldborder. */
+    private static int startPreGen(CommandSourceStack source) {
+        int chosen = radius;
+        if (chosen <= 0) {
+            source.sendFailure(Component.literal("§e[PreGen] Choose the size first with /pregen radius <blocks> (or /pregen worldborder),"
+                    + " or give it: /pregen start <world_k>."));
+            return 0;
         }
+        ServerLevel level = selectedLevel(source);
+        return level == null ? 0 : report(source, PregenRuns.start(level, chosen * 2, shape, centerX, centerZ, false));
+    }
+
+    /** /pregen start <world_k>: an area world_k thousand blocks across, in the chosen shape. */
+    private static int startPreGen(CommandSourceStack source, int worldK, boolean profile) {
+        ServerLevel level = selectedLevel(source);
+        return level == null ? 0 : report(source, PregenRuns.start(level, worldK * 1000, shape, centerX, centerZ, profile));
+    }
+
+    private static int setRadius(CommandSourceStack source, int blocks) {
+        radius = blocks;
+        source.sendSuccess(() -> Component.literal("§a[PreGen] Next /pregen start generates §f"
+                + PregenRuns.areaText(blocks * 2, shape) + "§a" + runningNote()), true);
+        return 1;
+    }
+
+    private static int setShape(CommandSourceStack source, ChunkBatchPlan.Shape chosen) {
+        shape = chosen;
+        source.sendSuccess(() -> Component.literal("§a[PreGen] Next /pregen start generates a §f"
+                + (chosen == ChunkBatchPlan.Shape.CIRCLE ? "circle" : "square") + "§a" + runningNote()), true);
+        return 1;
+    }
+
+    /** Center and radius from the selected world's border (a square), up to /pregen's largest area. */
+    private static int fromWorldBorder(CommandSourceStack source) {
+        ServerLevel level = selectedLevel(source);
+        if (level == null) return 0;
+        net.minecraft.world.level.border.WorldBorder border = level.getWorldBorder();
+        int maxRadius = io.github.pongsapat3791.ultrafastpregen.api.PregenRequest.MAX_RADIUS;
+        double half = border.getSize() / 2;
+        int chosen = (int) Math.max(1, Math.min(maxRadius, Math.floor(half)));
+        centerX = (int) Math.floor(border.getCenterX());
+        centerZ = (int) Math.floor(border.getCenterZ());
+        radius = chosen;
+        shape = ChunkBatchPlan.Shape.SQUARE;
+        String limited = half > maxRadius ? " §7(the border is larger; this is /pregen's largest area)" : "";
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§a[PreGen] From the world border: center §f[%d, %d]§a, %s%s§a. /pregen start generates it.",
+                centerX, centerZ, PregenRuns.areaText(chosen * 2, ChunkBatchPlan.Shape.SQUARE), limited)), true);
+        return 1;
+    }
+
+    /** The selected world's spawn as the center. */
+    private static int fromSpawn(CommandSourceStack source) {
+        ServerLevel level = selectedLevel(source);
+        if (level == null) return 0;
+        net.minecraft.core.BlockPos spawn = level.getRespawnData().pos();
+        centerX = spawn.getX();
+        centerZ = spawn.getZ();
+        source.sendSuccess(() -> Component.literal(String.format(
+                "§a[PreGen] Next /pregen start is centered on the world spawn §f[%d, %d]§a%s", centerX, centerZ, runningNote())), true);
+        return 1;
     }
 
     /** The world chosen with /pregen world, or the command source's world; null after reporting. */
@@ -166,36 +253,27 @@ public class PreGenCommand {
     }
 
     private static int resumePreGen(CommandSourceStack source) {
-        synchronized (PreGenCommand.class) {
-            ServerLevel level = selectedLevel(source);
-            if (level == null) return 0;
-            PreGenSaveFile record;
-            try {
-                record = PreGenSaveFile.load(level);
-            } catch (IOException | RuntimeException failure) {
-                source.sendFailure(Component.literal("§c[PreGen] Could not read the save file: " + failure.getMessage()));
-                return 0;
-            }
-            if (record.seedChanged() || !record.hasLastRun()) {
-                source.sendFailure(Component.literal("§e[PreGen] No earlier Ultra Fast Pregen run is recorded in "
-                        + level.dimension().identifier() + ". Use /pregen start <world_k>."));
-                return 0;
-            }
-            if (record.lastCompleted()) {
-                source.sendSuccess(() -> Component.literal(String.format(
-                        "§7[PreGen] The last run (%dk centered on [%d, %d]) already completed; every finished tile is skipped.",
-                        record.lastWorldK(), record.lastCenterX(), record.lastCenterZ())), false);
-            }
-            return startPreGen(source, level, record.lastWorldK(), record.lastCenterX(), record.lastCenterZ(), false);
+        ServerLevel level = selectedLevel(source);
+        return level == null ? 0 : report(source, PregenRuns.resume(level));
+    }
+
+    /** Sends why a start or resume did nothing, or its note; players follow a started run on the boss bar. */
+    private static int report(CommandSourceStack source, PregenRuns.Result result) {
+        if (!result.started()) {
+            source.sendFailure(Component.literal((result.warning() ? "§e" : "§c") + "[PreGen] " + result.message()));
+            return 0;
         }
+        if (!result.message().isEmpty()) {
+            source.sendSuccess(() -> Component.literal("§7[PreGen] " + result.message()), false);
+        }
+        return 1;
     }
 
     private static int resetSaveFile(CommandSourceStack source) {
-        synchronized (PreGenCommand.class) {
+        synchronized (PregenRuns.class) {
             ServerLevel level = selectedLevel(source);
             if (level == null) return 0;
-            DynamicBatchPreGen task = activeTask;
-            if (task != null && task.isRunning()) {
+            if (PregenRuns.isRunning()) {
                 source.sendFailure(Component.literal("§c[PreGen] Stop the running task before resetting its save file."));
                 return 0;
             }
@@ -210,68 +288,6 @@ public class PreGenCommand {
                 source.sendFailure(Component.literal("§c[PreGen] Could not delete the save file: " + failure.getMessage()));
                 return 0;
             }
-        }
-    }
-
-    private static int startPreGen(CommandSourceStack source, ServerLevel level, int worldK, int x, int z, boolean profile) {
-        synchronized (PreGenCommand.class) {
-            if (activeTask != null && activeTask.isRunning()) {
-                source.sendFailure(Component.literal("§c[PreGen] A pre-generation task is already currently running!"));
-                return 0;
-            }
-            String replacedBy = WorldgenCompat.chunkSystemReplacement();
-            if (replacedBy != null) {
-                String reason = replacedBy + " replaces Minecraft's chunk system (chunk storage, chunk holders and the light engine),"
-                        + " which Ultra Fast Pregen generates and saves through, and Ultra Fast Pregen does not support it yet."
-                        + " Nothing was started. Pre-generate without " + replacedBy
-                        + ", or with a pregenerator that asks the server for chunks (such as Chunky).";
-                PreGenMod.LOGGER.warn("[PreGen] " + reason);
-                source.sendFailure(Component.literal("§c[PreGen] " + reason));
-                return 0;
-            }
-            // Tiles also generate a structure ring of InMemoryChunkGrid.PADDING chunks around the area.
-            long reach = worldK * 500L + (InMemoryChunkGrid.PADDING + 1) * 16L;
-            if (Math.abs((long) x) + reach > MAX_WORLD_COORDINATE || Math.abs((long) z) + reach > MAX_WORLD_COORDINATE) {
-                source.sendFailure(Component.literal(String.format(
-                        "§c[PreGen] A %dk area centered on [%d, %d] reaches past the world limit of ±%d.",
-                        worldK, x, z, MAX_WORLD_COORDINATE)));
-                return 0;
-            }
-            // Batch size and threads come only from config/ultrafastpregen.conf, re-read on every start.
-            PreGenConfig config = PreGenConfig.load();
-            long freeHeap = PreGenConfig.freeHeapBytes();
-            int batch = PreGenConfig.fitBatchToHeap(config.batchSizeBlocks, freeHeap);
-            if (batch != config.batchSizeBlocks) {
-                String warning = String.format(
-                        "§e[PreGen] Only %.1f GB of heap is free, too little for batch_size=%d; using %d (a little slower). Give Minecraft more memory (-Xmx on a server, the launcher's memory setting in singleplayer) to use the configured size.",
-                        freeHeap / 1073741824.0, config.batchSizeBlocks, batch);
-                PreGenMod.LOGGER.warn(warning.replaceAll("§.", ""));
-            }
-            // Players see the boss bar; the settings go to the server log and console.
-            PreGenMod.LOGGER.info(String.format(
-                "[PreGen] Starting generation for %dk x %dk in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s §7(change in config/%s)",
-                worldK, worldK, level.dimension().identifier(), x, z, batch, batch,
-                config.threads, config.threadsFromCpuCount ? " (max)" : "",
-                config.skipExistingChunks ? "kept" : "overwritten", PreGenConfig.FILE_NAME
-            ).replaceAll("§.", ""));
-
-            // The engine logs each event; players follow the run on the boss bar, not in chat.
-            DynamicBatchPreGen task = new DynamicBatchPreGen(level, worldK, batch, config.threads, x, z, msg -> {});
-            task.setTerrainPipeline(config.terrainPipeline);
-            task.setParallelSteps(config.parallelSteps);
-            task.setAlwaysParallelFeatures(config.alwaysParallelFeatures);
-            task.setReleaseMemoryEachBatch(config.releaseMemoryEachBatch);
-            task.setSkipExistingChunks(config.skipExistingChunks);
-            task.setLodExport(config.lodExport);
-            if (!PreGenConfig.overlapFits(batch, freeHeap)) task.setOverlapBatches(false);
-            if (profile) task.enableProfiling();
-            activeTask = task;
-            Thread coordinator = new Thread(task::start, "PreGen-Worker");
-            // Never keep the JVM alive after the server stops (for example while waiting on disk writes).
-            coordinator.setDaemon(true);
-            coordinator.start();
-
-            return 1;
         }
     }
 
@@ -292,8 +308,7 @@ public class PreGenCommand {
     }
 
     private static String runningNote() {
-        DynamicBatchPreGen task = activeTask;
-        return task != null && task.isRunning() ? " §7(the running task keeps its current settings)" : ".";
+        return PregenRuns.isRunning() ? " §7(the running task keeps its current settings)" : ".";
     }
 
     private static int showSettings(CommandSourceStack source) {
@@ -303,26 +318,25 @@ public class PreGenCommand {
 
     private static String settingsLine() {
         ResourceKey<Level> worldKey = selectedWorld;
-        return String.format("§7[PreGen] Next start: world §f%s§7, center §f[%d, %d]§7. "
-                        + "Change with /pregen world <dimension> and /pregen center <x> <z>.",
-                worldKey != null ? worldKey.identifier().toString() : "your current world", centerX, centerZ);
+        int chosen = radius;
+        String area = chosen > 0 ? PregenRuns.areaText(chosen * 2, shape)
+                : "a " + (shape == ChunkBatchPlan.Shape.CIRCLE ? "circle" : "square") + " of the size given to /pregen start";
+        return String.format("§7[PreGen] Next start: world §f%s§7, center §f[%d, %d]§7, §f%s§7. "
+                        + "Change with /pregen world, center, radius, shape, worldborder or spawn.",
+                worldKey != null ? worldKey.identifier().toString() : "your current world", centerX, centerZ, area);
     }
 
     private static int stopPreGen(CommandSourceStack source) {
-        synchronized (PreGenCommand.class) {
-            if (activeTask == null || !activeTask.isRunning()) {
-                source.sendFailure(Component.literal("§e[PreGen] No active pre-generation task is running."));
-                return 0;
-            }
-
-            activeTask.cancel();
-            source.sendSuccess(() -> Component.literal("§6[PreGen] Cancellation request sent. Task will stop after finishing current batch."), true);
-            return 1;
+        if (!PregenRuns.stop()) {
+            source.sendFailure(Component.literal("§e[PreGen] No active pre-generation task is running."));
+            return 0;
         }
+        source.sendSuccess(() -> Component.literal("§6[PreGen] Cancellation request sent. Task will stop after finishing current batch."), true);
+        return 1;
     }
 
     private static int statusPreGen(CommandSourceStack source) {
-        DynamicBatchPreGen task = activeTask;
+        DynamicBatchPreGen task = PregenRuns.current();
         if (task == null) {
             source.sendSuccess(() -> Component.literal(
                     "§7[PreGen] Status: §eIdle §7(No active pre-generation task).\n" + settingsLine()), false);

@@ -168,6 +168,18 @@ public class InMemoryChunkGrid {
     private final int coreMinChunkZ;
     private final int coreChunksX;
     private final int coreChunksZ;
+    /**
+     * Which chunks of the core rectangle belong to the run's area (all of them for a square; see
+     * setArea): the others are treated like chunks outside the area, as halo.
+     */
+    private ChunkAreaFilter area = (chunkX, chunkZ) -> true;
+    private long[] corePositions;
+
+    /** Which chunks belong to the run's area. */
+    @FunctionalInterface
+    interface ChunkAreaFilter {
+        boolean contains(int chunkX, int chunkZ);
+    }
 
     private final int gridMinChunkX;
     private final int gridMinChunkZ;
@@ -177,6 +189,8 @@ public class InMemoryChunkGrid {
     private ProtoChunk[][] chunks;
     /** While lighting runs (see chunkForLighting). */
     private volatile boolean lighting;
+    /** Set once this grid's lighting started; before that the light engine holds none of its light (see dispose). */
+    private volatile boolean lightStarted;
     /** Terrain positions the server held when lighting started, and those of them this batch replaces. */
     private volatile LongSet lightHeld = LongSets.EMPTY_SET;
     private volatile LongSet lightReplaced = LongSets.EMPTY_SET;
@@ -344,19 +358,33 @@ public class InMemoryChunkGrid {
     }
 
     public int getCoreTotalChunks() {
-        return coreChunksX * coreChunksZ;
+        long[] positions = corePositions;
+        return positions != null ? positions.length : getCorePositions().length;
+    }
+
+    /**
+     * Limits the core to the chunks of the tile that lie in the run's area (a circle's); call
+     * before the first layer runs.
+     */
+    void setArea(ChunkAreaFilter filter) {
+        area = filter;
+        corePositions = null;
     }
 
     /** Packed positions of the core chunks, i.e. the chunks this tile may save. */
     public long[] getCorePositions() {
-        long[] positions = new long[coreChunksX * coreChunksZ];
-        int index = 0;
-        for (int cx = coreMinChunkX; cx < coreMinChunkX + coreChunksX; cx++) {
-            for (int cz = coreMinChunkZ; cz < coreMinChunkZ + coreChunksZ; cz++) {
-                positions[index++] = ChunkPos.asLong(cx, cz);
+        long[] positions = corePositions;
+        if (positions == null) {
+            it.unimi.dsi.fastutil.longs.LongArrayList inArea = new it.unimi.dsi.fastutil.longs.LongArrayList(coreChunksX * coreChunksZ);
+            for (int cx = coreMinChunkX; cx < coreMinChunkX + coreChunksX; cx++) {
+                for (int cz = coreMinChunkZ; cz < coreMinChunkZ + coreChunksZ; cz++) {
+                    if (area.contains(cx, cz)) inArea.add(ChunkPos.asLong(cx, cz));
+                }
             }
+            positions = inArea.toLongArray();
+            corePositions = positions;
         }
-        return positions;
+        return positions.clone();
     }
 
     /**
@@ -559,7 +587,7 @@ public class InMemoryChunkGrid {
 
     private boolean isCore(int chunkX, int chunkZ) {
         return chunkX >= coreMinChunkX && chunkX < coreMinChunkX + coreChunksX
-                && chunkZ >= coreMinChunkZ && chunkZ < coreMinChunkZ + coreChunksZ;
+                && chunkZ >= coreMinChunkZ && chunkZ < coreMinChunkZ + coreChunksZ && area.contains(chunkX, chunkZ);
     }
 
     /**
@@ -766,7 +794,7 @@ public class InMemoryChunkGrid {
 
                     List<ChunkAccess> cache = getNeighborhoodCache(cx, cz, layer == ChunkLayer.FEATURES ? ChunkStatus.FEATURES.getRange() : ChunkStatus.LIGHT.getRange());
                     if (layer == ChunkLayer.FEATURES) {
-                        if (featureSkip.contains(ChunkPos.asLong(cx, cz))) continue;
+                        if (featureSkip.contains(ChunkPos.asLong(cx, cz)) || !area.contains(cx, cz)) continue;
                         CompletableFuture<?> f = generateOnPool(ChunkStatus.FEATURES, workerPool, cache, parallelFeatures);
                         if (onChunkDone != null) f = f.thenRun(onChunkDone);
                         phaseFutures.add(f);
@@ -808,6 +836,7 @@ public class InMemoryChunkGrid {
                 if (chunk != null) lit.add(chunk);
             }
         }
+        lightStarted = true;
         lighting = true;
         try {
             List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size());
@@ -922,7 +951,8 @@ public class InMemoryChunkGrid {
                     if (phaseOf(cx, cz, spacing) != phase) continue;
                     ProtoChunk chunk = getChunk(cx, cz);
                     if (chunk == null) continue;
-                    if (featureSkip.contains(ChunkPos.asLong(cx, cz))) {
+                    // Chunks generated before, and chunks outside the area (halo), get no features here.
+                    if (featureSkip.contains(ChunkPos.asLong(cx, cz)) || !area.contains(cx, cz)) {
                         done[x][z] = CompletableFuture.completedFuture(null);
                         continue;
                     }
@@ -1174,7 +1204,9 @@ public class InMemoryChunkGrid {
         if (currentGrid == this) {
             currentGrid = null;
         }
-        if (chunks != null) {
+        // A grid dropped before its lighting holds no light of its own, and the light engine may be
+        // lighting the previous batch meanwhile, which shares edge chunks with it.
+        if (chunks != null && lightStarted) {
             releaseLightData();
         }
         fallbackChunks.clear();

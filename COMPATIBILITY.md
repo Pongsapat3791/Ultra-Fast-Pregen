@@ -4,6 +4,11 @@ Ultra Fast Pregen 14, tested with the released jars (their SHA-1 is at the end o
 
 > **14.1** changes only how chunks the server is still generating are lit (see the [changelog](CHANGELOG.md#141)); the
 > results on this page were measured with the 14 jars.
+>
+> **Version 15 (in development, branch `dev`):** these results are for version 14. Version 15 passes the automated
+> test suite on all six builds, including its new checks (the API, circle areas, continuing after a restart, stopping
+> the server during a run, caves next to chunks the server holds); the runs with other mods and the modpacks below
+> have not been repeated for it yet.
 
 - [Automated test suite](#automated-test-suite): every build, block for block against Minecraft's own generation
 - [Together with other mods](#together-with-other-mods): performance, LoD and worldgen mods on dedicated servers

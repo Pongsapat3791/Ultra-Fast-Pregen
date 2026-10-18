@@ -1,6 +1,12 @@
 package com.example.pregen;
 
 import com.example.pregen.mixin.ChunkStorageAccessor;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenApi;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenListener;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenRequest;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenStatus;
+import io.github.pongsapat3791.ultrafastpregen.api.StartResult;
+import io.github.pongsapat3791.ultrafastpregen.api.UltraFastPregenApi;
 import net.minecraft.SharedConstants;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.core.BlockPos;
@@ -85,9 +91,9 @@ public final class PartialExistingBatchCheck {
             }
         });
         try {
-            // Benchmarks generate whole areas; the regression itself must finish within ten minutes.
+            // Benchmarks generate whole areas; the regression itself must finish within twenty minutes.
             boolean benchmark = Boolean.getBoolean("pregen.pipelineBenchmark") || System.getProperty("pregen.batchBenchmark") != null;
-            completion.get(benchmark ? 3600 : 600, TimeUnit.SECONDS);
+            completion.get(benchmark ? 3600 : 1200, TimeUnit.SECONDS);
             RESULT.set(0);
             System.out.println("PARTIAL_EXISTING_BATCH_CHECK PASS: fast_fill_parity=true feature_order_parity=true vanilla_pipeline_parity=true stored_biomes_match=true skip_existing=true batch_seams=true resume_edges=true existing_neighbors=true other_dimensions=true overwritten=4 loaded_terrain_replaced=true later_server_save_keeps_new_terrain=true no_prescan=true repeat_overwritten=4");
         } catch (Throwable failure) {
@@ -135,6 +141,9 @@ public final class PartialExistingBatchCheck {
             if (only.contains("spawn")) checkSpawnEdge(server, level, tasks);
             if (only.contains("held")) checkHeldDuringBatch(server, level, io, tasks);
             if (only.contains("safe")) checkSafeModeRetry(level, io, tasks);
+            if (only.contains("api")) checkApi(level, tasks);
+            if (only.contains("circle")) checkCircle(level, io, tasks);
+            if (only.contains("restart")) checkAutoResume(server, level, tasks);
             return;
         }
         ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(10_000, 10_000, 2, 2);
@@ -216,6 +225,9 @@ public final class PartialExistingBatchCheck {
 
         checkSpawnEdge(server, level, tasks);
         checkSaveFileResume(server, level, io, tasks);
+        checkApi(level, tasks);
+        checkCircle(level, io, tasks);
+        checkAutoResume(server, level, tasks);
         checkFastFillParity(server, level);
         checkStoredBiomesMatchSampling(level);
         checkSkipExisting(server, level, io, tasks);
@@ -497,6 +509,273 @@ public final class PartialExistingBatchCheck {
         long differing = compareStored(io, reference, "safe mode");
         require(differing <= 8, "Generating a failed batch again must give the blocks of an undisturbed run: " + differing + " differ");
         System.out.println("SAFE_MODE_RETRY_CHECK PASS differing_blocks=" + differing + " retried_batch=2");
+    }
+
+    /**
+     * resume_after_restart: a run recorded as cut short (neither completed nor stopped) is continued
+     * and completes, which clears its count of continuations; a run stopped on purpose is not
+     * continued, nor one continued MAX_AUTO_RESUMES times in a row without saving a batch.
+     */
+    private static void checkAutoResume(MinecraftServer server, ServerLevel level, List<DynamicBatchPreGen> tasks) throws Exception {
+        // The server's own check on its first tick (resume_after_restart) must not race this one.
+        long ticked = System.nanoTime() + TimeUnit.MINUTES.toNanos(1);
+        while (!PregenRuns.checkedForResume(server) && System.nanoTime() - ticked < 0) Thread.sleep(50);
+        require(PregenRuns.checkedForResume(server), "The server's first tick must check for a run to continue");
+        int center = 940_000;
+        PreGenSaveFile.delete(level);
+        PreGenSaveFile record = PreGenSaveFile.load(level);
+        record.setLastRun(512, center, center, ChunkBatchPlan.Shape.SQUARE, false);
+        record.setLastStopped(true);
+        record.save();
+        require(PregenRuns.resumeAfterRestart(server) == null && !PregenRuns.isRunning(),
+                "A run stopped on purpose must not be continued");
+
+        record.setLastStopped(false);
+        for (int i = 0; i < PregenRuns.MAX_AUTO_RESUMES; i++) record.countAutoResume();
+        record.save();
+        String gaveUp = PregenRuns.resumeAfterRestart(server);
+        require(gaveUp != null && gaveUp.startsWith("Not continuing") && !PregenRuns.isRunning(),
+                "A run continued " + PregenRuns.MAX_AUTO_RESUMES + " times without progress must not be continued again: " + gaveUp);
+
+        record.clearAutoResumes();
+        record.save();
+        String continued = PregenRuns.resumeAfterRestart(server);
+        require(continued != null && continued.startsWith("Continuing"), "A run cut short must be continued: " + continued);
+        DynamicBatchPreGen task = PregenRuns.current();
+        synchronized (tasks) {
+            tasks.add(task);
+        }
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        while (task.isRunning() && System.nanoTime() < deadline) Thread.sleep(200);
+        require("Completed".equals(task.getCurrentStageName()), "The continued run must complete: " + task.getCurrentStageName());
+        PreGenSaveFile after = PreGenSaveFile.load(level);
+        require(after.lastCompleted() && !after.lastStopped() && after.autoResumes() == 0,
+                "A completed run must clear its continuations: completed=" + after.lastCompleted() + " continuations="
+                        + after.autoResumes());
+        System.out.println("AUTO_RESUME_CHECK PASS stopped_not_continued=true gave_up_after=" + PregenRuns.MAX_AUTO_RESUMES
+                + " continued_and_completed=true chunks=" + task.getTotalWorldChunks());
+        checkServerStop(server, level, tasks);
+    }
+
+    /**
+     * The server stops while a batch generates and the one before it is being lit
+     * (PregenRuns#stopForServer, as MinecraftServerMixin calls it): the generating batch is
+     * dropped without touching the light the other one is computing, that one is saved, the run
+     * is not marked as stopped, and the next server start continues it.
+     */
+    private static void checkServerStop(MinecraftServer server, ServerLevel level, List<DynamicBatchPreGen> tasks) throws Exception {
+        int center = 960_000;
+        ChunkBatchPlan plan = new ChunkBatchPlan(1000, 512, center, center);
+        PreGenSaveFile.delete(level);
+        java.util.concurrent.atomic.AtomicReference<DynamicBatchPreGen> cut = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.CountDownLatch secondBatch = new java.util.concurrent.CountDownLatch(1);
+        DynamicBatchPreGen stopped = new DynamicBatchPreGen(level, 1, 512, 4, center, center, message -> {
+            if (message.startsWith("[2/4]") && message.contains("Starting Tile")) secondBatch.countDown();
+        });
+        cut.set(stopped);
+        synchronized (tasks) {
+            tasks.add(stopped);
+        }
+        stopped.setReleaseMemoryEachBatch(false);
+        Thread runner = new Thread(stopped::start, "PartialBatchCheck-ServerStop");
+        runner.setDaemon(true);
+        runner.start();
+        require(secondBatch.await(5, TimeUnit.MINUTES), "The run must reach its second batch");
+        // The first batch lights beside the second one's generation: stop then.
+        Field gridsField = InMemoryChunkGrid.class.getDeclaredField("activeGrids");
+        gridsField.setAccessible(true);
+        java.util.Set<?> grids = (java.util.Set<?>) gridsField.get(null);
+        long lightDeadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(2);
+        boolean firstLighting = false;
+        while (!firstLighting && System.nanoTime() < lightDeadline) {
+            for (Object grid : grids) firstLighting |= (Boolean) field(grid, "lighting");
+            if (!firstLighting) Thread.sleep(1);
+        }
+        require(firstLighting, "The first batch must be lit while the second one generates");
+        long stopStarted = System.nanoTime();
+        // From this thread: the server keeps answering the run's requests, as a stopping server
+        // answers them on the threads that make them.
+        PregenRuns.stopForServer(server, stopped);
+        long waitedMillis = (System.nanoTime() - stopStarted) / 1_000_000;
+        require(stopped.awaitEnd(0), "The stopping server must wait until the run has ended");
+        require(!stopped.hasFailed() && !stopped.isCompleted()
+                        && "Stopped by the server stop".equals(stopped.getCurrentStageName()),
+                "A server stop must stop the run without failing it: " + stopped.getCurrentStageName());
+        PreGenSaveFile cutShort = PreGenSaveFile.load(level);
+        int firstBatch = plan.areaChunks(plan.tile(0, 0));
+        require(cutShort.hasLastRun() && !cutShort.lastCompleted() && !cutShort.lastStopped()
+                        && cutShort.doneChunks() == firstBatch,
+                "A run cut short by a server stop must keep its saved batch and stay continuable: completed="
+                        + cutShort.lastCompleted() + " stopped=" + cutShort.lastStopped() + " saved=" + cutShort.doneChunks()
+                        + " first batch=" + firstBatch);
+
+        String continued = PregenRuns.resumeAfterRestart(server);
+        require(continued != null && continued.startsWith("Continuing"),
+                "A run cut short by a server stop must be continued: " + continued);
+        DynamicBatchPreGen rest = PregenRuns.current();
+        synchronized (tasks) {
+            tasks.add(rest);
+        }
+        long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+        while (rest.isRunning() && System.nanoTime() < deadline) Thread.sleep(200);
+        require("Completed".equals(rest.getCurrentStageName()) && rest.getKeptChunksCount() >= firstBatch,
+                "The continued run must complete and keep the saved batch: " + rest.getCurrentStageName() + ", kept "
+                        + rest.getKeptChunksCount());
+        System.out.println("SERVER_STOP_CHECK PASS saved_batch_kept=" + firstBatch + " continued_and_completed=true wait_ms="
+                + waitedMillis);
+    }
+
+    /**
+     * A circle: every chunk whose center lies within the radius is stored fully generated and no
+     * other chunk of the square around it is; the circle's inner chunks (every chunk within four of
+     * them in the circle too) have the blocks of the same chunks generated as part of the whole
+     * square. Features that read their neighbors carry the edge's different order a few chunks in
+     * (26.x's leaf litter, around trees, reached four), as in Minecraft whenever chunks generate in
+     * another order: a few dozen blocks may differ, where a broken circle differs in thousands.
+     */
+    private static void checkCircle(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        int center = 900_000;
+        int size = 600;
+        ChunkBatchPlan square = new ChunkBatchPlan(size, 512, center, center);
+        ChunkBatchPlan circle = new ChunkBatchPlan(size, 512, center, center, ChunkBatchPlan.Shape.CIRCLE);
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen whole = DynamicBatchPreGen.area(level, size, ChunkBatchPlan.Shape.SQUARE, 512, 4, center, center,
+                message -> {});
+        synchronized (tasks) {
+            tasks.add(whole);
+        }
+        whole.setReleaseMemoryEachBatch(false);
+        whole.start();
+        require("Completed".equals(whole.getCurrentStageName()), "The square run must complete");
+        Map<Long, BlockState[]> squareBlocks = readArea(io, square, 0);
+        erase(io, square, 1);
+
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen round = DynamicBatchPreGen.area(level, size, ChunkBatchPlan.Shape.CIRCLE, 512, 4, center, center,
+                message -> {});
+        synchronized (tasks) {
+            tasks.add(round);
+        }
+        round.setReleaseMemoryEachBatch(false);
+        round.start();
+        require("Completed".equals(round.getCurrentStageName()), "The circle run must complete: " + round.getCurrentStageName());
+        require(round.getTotalWorldChunks() == circle.totalChunks() && round.getCompletedChunksCount() == circle.totalChunks(),
+                "The circle run must count the circle's chunks: " + round.getCompletedChunksCount() + "/" + round.getTotalWorldChunks()
+                        + " of " + circle.totalChunks());
+        int minX = Math.floorDiv(square.minBlockX(), 16);
+        int minZ = Math.floorDiv(square.minBlockZ(), 16);
+        int full = 0;
+        int outsideFull = 0;
+        Map<Long, BlockState[]> inner = new java.util.HashMap<>();
+        for (int x = minX - 1; x <= minX + square.chunksX(); x++) {
+            for (int z = minZ - 1; z <= minZ + square.chunksZ(); z++) {
+                CompoundTag tag = io.loadAsync(new ChunkPos(x, z)).get(10, TimeUnit.SECONDS).orElse(null);
+                boolean isFull = tag != null && "minecraft:full".equals(tag.getString("Status"));
+                if (!circle.containsChunk(x, z)) {
+                    if (isFull) outsideFull++;
+                    continue;
+                }
+                require(isFull, "Every chunk of the circle must be stored fully generated: " + x + ", " + z);
+                full++;
+                boolean innerChunk = true;
+                for (int dx = -4; dx <= 4 && innerChunk; dx++) {
+                    for (int dz = -4; dz <= 4; dz++) {
+                        if (!circle.containsChunk(x + dx, z + dz)) {
+                            innerChunk = false;
+                            break;
+                        }
+                    }
+                }
+                if (innerChunk) inner.put(ChunkPos.asLong(x, z), squareBlocks.get(ChunkPos.asLong(x, z)));
+            }
+        }
+        require(outsideFull == 0, "No chunk outside the circle may be stored fully generated: " + outsideFull);
+        require(inner.size() > full / 3, "The circle must have inner chunks to compare: " + inner.size());
+        long differing = compareStored(io, inner, "circle");
+        require(differing <= 64, "The circle's inner chunks must have the square run's blocks: " + differing + " differ");
+        PreGenSaveFile record = PreGenSaveFile.load(level);
+        require(record.lastShape() == ChunkBatchPlan.Shape.CIRCLE && record.lastSizeBlocks() == size,
+                "The save file must record the circle for /pregen resume");
+        System.out.println("CIRCLE_CHECK PASS chunks=" + full + " inner_compared=" + inner.size() + " differing_blocks="
+                + differing + " outside_full=0");
+    }
+
+    /**
+     * The API: a run started through it, with a radius that is no multiple of 500, completes; its
+     * listener sees the start, every saved chunk once (all inside the area) and the completed end;
+     * a second start while it runs is refused.
+     */
+    private static void checkApi(ServerLevel level, List<DynamicBatchPreGen> tasks) throws Exception {
+        PregenApi api = UltraFastPregenApi.get();
+        require(api.apiVersion() == UltraFastPregenApi.VERSION, "The API must report its version");
+        String dimension = level.dimension().location().toString();
+        int center = 860_000;
+        int radius = 300;
+        ChunkBatchPlan plan = new ChunkBatchPlan(2 * radius, 1000, center, center);
+        PreGenSaveFile.delete(level);
+        List<PregenStatus> starts = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<PregenStatus> finishes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AtomicInteger progress = new AtomicInteger();
+        AtomicInteger duplicates = new AtomicInteger();
+        AtomicInteger outside = new AtomicInteger();
+        it.unimi.dsi.fastutil.longs.LongSet saved = it.unimi.dsi.fastutil.longs.LongSets.synchronize(
+                new it.unimi.dsi.fastutil.longs.LongOpenHashSet());
+        PregenListener listener = new PregenListener() {
+            @Override
+            public void onStart(PregenStatus status) {
+                starts.add(status);
+            }
+
+            @Override
+            public void onProgress(PregenStatus status) {
+                progress.incrementAndGet();
+            }
+
+            @Override
+            public void onChunksSaved(String savedIn, long[] chunks) {
+                for (long chunk : chunks) {
+                    if (!savedIn.equals(dimension) || !plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))) {
+                        outside.incrementAndGet();
+                    }
+                    if (!saved.add(chunk)) duplicates.incrementAndGet();
+                }
+            }
+
+            @Override
+            public void onFinish(PregenStatus status) {
+                finishes.add(status);
+            }
+        };
+        api.addListener(listener);
+        try {
+            StartResult result = api.start(PregenRequest.square(dimension, center, center, radius));
+            require(result.started(), "A start through the API must start: " + result.message());
+            synchronized (tasks) {
+                tasks.add(PregenRuns.current());
+            }
+            StartResult second = api.start(PregenRequest.square(dimension, -center, -center, radius));
+            require(!second.started(), "A second start while a run is active must be refused");
+            long deadline = System.nanoTime() + TimeUnit.MINUTES.toNanos(5);
+            while (api.isRunning() && System.nanoTime() < deadline) Thread.sleep(200);
+            PregenStatus status = api.status().orElseThrow();
+            require(status.state() == PregenStatus.State.COMPLETED, "The API run must complete: " + status.state());
+            require(status.totalChunks() == plan.totalChunks() && status.doneChunks() == plan.totalChunks(),
+                    "The run must cover the requested square: " + status.doneChunks() + "/" + status.totalChunks()
+                            + " of " + plan.totalChunks());
+            require(status.request().radius() == radius && status.request().dimension().equals(dimension),
+                    "The status must describe the request");
+            require(starts.size() == 1 && starts.get(0).state() == PregenStatus.State.RUNNING, "onStart must come once");
+            require(finishes.size() == 1 && finishes.get(0).state() == PregenStatus.State.COMPLETED,
+                    "onFinish must come once, completed");
+            require(saved.size() == plan.totalChunks() && duplicates.get() == 0 && outside.get() == 0,
+                    "onChunksSaved must report every saved chunk once: " + saved.size() + "/" + plan.totalChunks()
+                            + ", duplicates " + duplicates.get() + ", outside " + outside.get());
+            require(progress.get() > 0, "onProgress must be called");
+        } finally {
+            api.removeListener(listener);
+        }
+        System.out.println("API_CHECK PASS chunks=" + plan.totalChunks() + " radius=" + radius + " saved_events="
+                + saved.size() + " progress_events=" + progress.get() + " second_start_refused=true");
     }
 
     /**
@@ -1128,7 +1407,7 @@ public final class PartialExistingBatchCheck {
 
         PreGenSaveFile record = PreGenSaveFile.load(level);
         require(record.doneChunks() == total, "Save file must record every saved chunk: " + record.doneChunks());
-        require(record.hasLastRun() && record.lastCompleted() && record.lastWorldK() == 1
+        require(record.hasLastRun() && record.lastCompleted() && record.lastSizeBlocks() == 1000
                 && record.lastCenterX() == centerX && record.lastCenterZ() == centerZ, "Save file must record the last run");
 
         DynamicBatchPreGen second = new DynamicBatchPreGen(level, 1, 1000, 4, centerX, centerZ, System.out::println);

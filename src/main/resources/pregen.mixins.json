@@ -39,8 +39,10 @@
 		"RegionFileStorageAccessor",
 		"RegionFileInvoker",
 		"ServerChunkCacheMixin",
+		"ServerLevelMixin",
 		"BlockMixin",
-		"MatchingBlocksPredicateMixin"
+		"MatchingBlocksPredicateMixin",
+		"MinecraftServerMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

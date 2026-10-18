@@ -41,8 +41,58 @@ public final class ChunkBatchPlanCheck {
                 plans++;
             }
         }
+        int circles = 0;
+        for (int[] center : CENTERS) {
+            for (int[] sizes : new int[][]{{1000, 1000}, {1000, 512}, {600, 512}, {3000, 1000}, {4001, 1000}, {17, 16},
+                    {33, 16}, {100, 1000}, {20_000, 7_000}}) {
+                checkCircle(sizes[0], sizes[1], center[0], center[1]);
+                circles++;
+            }
+        }
         System.out.println("CHUNK_BATCH_PLAN_CHECK plans=" + plans + " tiles=" + tiles + " centers=" + CENTERS.length
-                + " requested_blocks_covered=true no_gaps=true no_overlaps=true one_k_chunks=4096");
+                + " requested_blocks_covered=true no_gaps=true no_overlaps=true one_k_chunks=4096 circles=" + circles);
+    }
+
+    /**
+     * A circle plan: exactly the chunks whose center lies within the radius belong to it, every
+     * one in one tile only, and the plan's batches are the tiles holding any of them.
+     */
+    private static void checkCircle(int worldBlocks, int batchBlocks, int centerX, int centerZ) {
+        ChunkBatchPlan square = new ChunkBatchPlan(worldBlocks, batchBlocks, centerX, centerZ);
+        ChunkBatchPlan circle = new ChunkBatchPlan(worldBlocks, batchBlocks, centerX, centerZ, ChunkBatchPlan.Shape.CIRCLE);
+        long radius = worldBlocks / 2;
+        int minX = Math.floorDiv(square.minBlockX(), 16);
+        int minZ = Math.floorDiv(square.minBlockZ(), 16);
+        long expected = 0;
+        for (int x = minX - 2; x < minX + square.chunksX() + 2; x++) {
+            for (int z = minZ - 2; z < minZ + square.chunksZ() + 2; z++) {
+                long dx = 16L * x + 8 - centerX;
+                long dz = 16L * z + 8 - centerZ;
+                boolean inside = dx * dx + dz * dz <= radius * radius;
+                require(circle.containsChunk(x, z) == inside, "Circle membership of chunk " + x + ", " + z);
+                require(!inside || square.containsChunk(x, z), "A circle's chunk must lie in its square");
+                if (inside) expected++;
+            }
+        }
+        require(circle.totalChunks() == expected, "Circle chunk count " + circle.totalChunks() + " != " + expected);
+        long counted = 0;
+        int batches = 0;
+        for (int tx = 0; tx < circle.tilesPerAxis(); tx++) {
+            for (int tz = 0; tz < circle.tilesPerAxis(); tz++) {
+                ChunkBatchPlan.Tile tile = circle.tile(tx, tz);
+                int inTile = 0;
+                for (int x = tile.minChunkX(); x < tile.minChunkX() + tile.chunksX(); x++) {
+                    for (int z = tile.minChunkZ(); z < tile.minChunkZ() + tile.chunksZ(); z++) {
+                        if (circle.containsChunk(x, z)) inTile++;
+                    }
+                }
+                require(circle.areaChunks(tile) == inTile, "A tile's circle chunks must be counted exactly");
+                counted += inTile;
+                if (inTile > 0) batches++;
+            }
+        }
+        require(counted == expected, "Every circle chunk must lie in exactly one tile");
+        require(circle.totalBatches() == batches, "The circle's batches are its non-empty tiles");
     }
 
     private static long checkPlan(int worldBlocks, int batchBlocks, int centerX, int centerZ) {

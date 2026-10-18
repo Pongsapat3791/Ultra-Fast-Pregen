@@ -18,7 +18,9 @@ import java.util.HashMap;
 import net.minecraft.nbt.CompoundTag;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -84,6 +86,11 @@ public class DynamicBatchPreGen {
     // the coordinator thread enters start(). A task owns its pool for one run only.
     private volatile boolean isRunning = true;
     private volatile boolean isCancelled;
+    /** The server is stopping (see stopForServer): the batch being generated is dropped. */
+    private volatile boolean serverStopping;
+    /** The stopping server no longer waits for this run (see detach): it writes nothing more. */
+    private volatile boolean detached;
+    private final CountDownLatch ended = new CountDownLatch(1);
     /**
      * After a batch failed on the fast paths: the rest of the run generates like Minecraft
      * (per-status terrain, one chunk at a time), see generateWithFallback.
@@ -215,13 +222,36 @@ public class DynamicBatchPreGen {
      */
     public DynamicBatchPreGen(ServerLevel level, int worldK, int batchSizeBlocks, int parallelThreads,
                               int centerX, int centerZ, Consumer<String> progressCallback) {
+        this(level, new Area(Math.multiplyExact(worldK, 1000), centerX, centerZ, ChunkBatchPlan.Shape.SQUARE),
+                batchSizeBlocks, parallelThreads, progressCallback);
+    }
+
+    /** As above, for a square of any side in blocks. */
+    static DynamicBatchPreGen square(ServerLevel level, int sizeBlocks, int batchSizeBlocks, int parallelThreads,
+                                     int centerX, int centerZ, Consumer<String> progressCallback) {
+        return area(level, sizeBlocks, ChunkBatchPlan.Shape.SQUARE, batchSizeBlocks, parallelThreads, centerX, centerZ,
+                progressCallback);
+    }
+
+    /** The square of that side, or the circle of that diameter, centered on block (centerX, centerZ). */
+    static DynamicBatchPreGen area(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int batchSizeBlocks,
+                                   int parallelThreads, int centerX, int centerZ, Consumer<String> progressCallback) {
+        return new DynamicBatchPreGen(level, new Area(sizeBlocks, centerX, centerZ, shape), batchSizeBlocks,
+                parallelThreads, progressCallback);
+    }
+
+    /** The area to generate: the side (or diameter) in blocks, the center block and the shape. */
+    private record Area(int sizeBlocks, int centerX, int centerZ, ChunkBatchPlan.Shape shape) {}
+
+    private DynamicBatchPreGen(ServerLevel level, Area area, int batchSizeBlocks, int parallelThreads,
+                               Consumer<String> progressCallback) {
         this.level = level;
-        this.centerX = centerX;
-        this.centerZ = centerZ;
-        this.worldSizeBlocks = Math.multiplyExact(worldK, 1000);
+        this.centerX = area.centerX();
+        this.centerZ = area.centerZ();
+        this.worldSizeBlocks = area.sizeBlocks();
         this.batchSizeBlocks = batchSizeBlocks;
         this.parallelThreads = parallelThreads;
-        this.batchPlan = new ChunkBatchPlan(worldSizeBlocks, batchSizeBlocks, centerX, centerZ);
+        this.batchPlan = new ChunkBatchPlan(worldSizeBlocks, batchSizeBlocks, this.centerX, this.centerZ, area.shape());
         this.workerPool = new PriorityWorkerPool(parallelThreads, new ThreadFactory() {
             private final AtomicInteger count = new AtomicInteger(1);
 
@@ -242,6 +272,27 @@ public class DynamicBatchPreGen {
 
     public void cancel() {
         isCancelled = true;
+    }
+
+    /**
+     * The server is stopping (PregenRuns#stopForServer): the batch being generated is dropped at
+     * its next step and the batch being lit and saved finishes. The run is not marked as stopped,
+     * so it continues from its last saved batch after the restart; the save file already holds
+     * every batch saved so far.
+     */
+    void stopForServer() {
+        serverStopping = true;
+        isCancelled = true;
+    }
+
+    /** The stopping server waits no longer: the batch still being saved is dropped and nothing more is written. */
+    void detach() {
+        detached = true;
+    }
+
+    /** Whether the run has ended (save file written, listeners told) within the time. */
+    boolean awaitEnd(long millis) throws InterruptedException {
+        return ended.await(millis, TimeUnit.MILLISECONDS);
     }
 
     /** Off when the heap cannot hold a batch and the previous one's tail at once (see PreGenConfig#overlapFits). */
@@ -306,6 +357,34 @@ public class DynamicBatchPreGen {
         return centerX;
     }
 
+    /** Side of the square (or diameter of the circle) in blocks. */
+    public int getSizeBlocks() {
+        return worldSizeBlocks;
+    }
+
+    ChunkBatchPlan.Shape getShape() {
+        return batchPlan.shape();
+    }
+
+    ServerLevel getLevel() {
+        return level;
+    }
+
+    /** Chunks kept because they already existed or an earlier run generated them. */
+    public int getKeptChunksCount() {
+        return resumedChunks + keptExistingChunks.get();
+    }
+
+    /** Whether the run generated (or kept) every chunk of the area. */
+    public boolean isCompleted() {
+        return generationCompleted;
+    }
+
+    /** Whether the run stopped because of an error. */
+    public boolean hasFailed() {
+        return failed;
+    }
+
     public int getCenterZ() {
         return centerZ;
     }
@@ -340,7 +419,7 @@ public class DynamicBatchPreGen {
                     (stage.phase + (stage.endedAt != 0 ? 1.0 : stage.percent() / 100.0)) / PROGRESS_PHASES;
             BatchTail tail = stage.overlappedTail;
             // Counted as done in baseChunks; take off what it still has to do.
-            if (tail != null && !tail.finished) inFlight -= tail.tile.totalChunks() * (1.0 - tail.fraction());
+            if (tail != null && !tail.finished) inFlight -= batchPlan.areaChunks(tail.tile) * (1.0 - tail.fraction());
         }
         return Math.min(99.9, Math.max(completedChunksCount, inFlight) * 100.0 / getTotalWorldChunks());
     }
@@ -366,6 +445,7 @@ public class DynamicBatchPreGen {
             if (!lastProgressLogAt.compareAndSet(last, now)) return;
         }
         log(progressMessage());
+        PregenApiImpl.fireProgress(this);
     }
 
     /** Keeps the 3-second cadence while no chunk finishes, e.g. during lighting or saving. */
@@ -440,10 +520,18 @@ public class DynamicBatchPreGen {
     public String getEstimatedRemainingTime() {
         if (completedChunksCount == getTotalWorldChunks()) return "0s";
         if (!isRunning) return "--";
+        long millis = getEstimatedRemainingMillis();
+        return millis < 0 ? "Calculating..." : formatDuration(millis);
+    }
+
+    /** Estimated time left; -1 while unknown (the first seconds) or after the run ended early. */
+    public long getEstimatedRemainingMillis() {
+        if (completedChunksCount == getTotalWorldChunks()) return 0;
+        if (!isRunning) return -1;
         long elapsed = getElapsedMillis();
         double generated = generatedChunks();
-        if (generated <= 0 || elapsed < 3000) return "Calculating...";
-        return formatDuration((long) ((getTotalWorldChunks() - progressedChunks()) * elapsed / generated));
+        if (generated <= 0 || elapsed < 3000) return -1;
+        return (long) ((getTotalWorldChunks() - progressedChunks()) * elapsed / generated);
     }
 
     public double getChunksPerSecond() {
@@ -490,11 +578,15 @@ public class DynamicBatchPreGen {
         try {
             int tilesAxis = batchPlan.tilesPerAxis();
             int totalBatches = getTotalBatchesCount();
-            log(String.format("[PreGen] Target: %dx%d blocks (%d Chunks) in %s centered on [%d, %d] (blocks %d..%d, %d..%d) | Batch: %dx%d blocks | Total Batches: %d | Worker Threads: %d",
-                    worldSizeBlocks, worldSizeBlocks, getTotalWorldChunks(), level.dimension().location(),
+            log(String.format("[PreGen] Target: %s (%d Chunks) in %s centered on [%d, %d] (blocks %d..%d, %d..%d) | Batch: %dx%d blocks | Total Batches: %d | Worker Threads: %d",
+                    batchPlan.shape() == ChunkBatchPlan.Shape.CIRCLE
+                            ? String.format("circle of radius %d blocks", worldSizeBlocks / 2)
+                            : String.format("%dx%d blocks", worldSizeBlocks, worldSizeBlocks),
+                    getTotalWorldChunks(), level.dimension().location(),
                     centerX, centerZ, batchPlan.minBlockX(), batchPlan.minBlockX() + worldSizeBlocks - 1,
                     batchPlan.minBlockZ(), batchPlan.minBlockZ() + worldSizeBlocks - 1, batchSizeBlocks,
                     batchSizeBlocks, totalBatches, parallelThreads));
+            PregenApiImpl.fireStart(this);
             chunkIO = WorldChunkIO.forLevel(level);
             if (EXPLICIT_GC_DISABLED) {
                 log("[PreGen] The JVM runs with -XX:+DisableExplicitGC: memory is returned by its own collections, not after each batch.");
@@ -527,8 +619,10 @@ public class DynamicBatchPreGen {
 
             for (int tx = 0; tx < tilesAxis && !isCancelled; tx++) {
                 for (int tz = 0; tz < tilesAxis && !isCancelled; tz++) {
-                    currentBatchIndex++;
                     ChunkBatchPlan.Tile tile = batchPlan.tile(tx, tz);
+                    // A circle's corner tiles may hold none of its chunks.
+                    if (batchPlan.areaChunks(tile) == 0) continue;
+                    currentBatchIndex++;
                     currentMinX = tile.minBlockX();
                     currentMinZ = tile.minBlockZ();
                     long[] core = corePositions(tile);
@@ -569,7 +663,7 @@ public class DynamicBatchPreGen {
                 logCellSkipping();
                 log(String.format("[PreGen] All %d batches (%d Chunks) completed successfully in %s! Average Speed: %.1f chunks/s",
                         completedBatchesCount, completedChunksCount, formatDuration(getElapsedMillis()), getChunksPerSecond()));
-            } else {
+            } else if (!serverStopping) {
                 finalStatus = "Cancelled";
                 stoppedMessage = String.format("%s: stopped at %.1f%%", PreGenMod.NAME, getProgressPercent());
                 log(String.format("[PreGen] Pre-generation was cancelled after %d/%d completed batches (%d/%d chunks, %s).",
@@ -577,16 +671,25 @@ public class DynamicBatchPreGen {
                         getTotalWorldChunks(), formatDuration(getElapsedMillis())));
             }
         } catch (Throwable failure) {
-            LOGGER.error("[PreGen] Error during world pre-generation", failure);
-            log("[PreGen] Error during pre-generation: " + failure.getMessage());
-            failed = true;
-            stoppedMessage = String.format("%s: stopped by an error at %.1f%% (see the server log)",
-                    PreGenMod.NAME, getProgressPercent());
+            if (serverStopping) {
+                // The batch being generated was dropped (see stopForServer), or failed as the server closed.
+                LOGGER.debug("[PreGen] The batch being generated ended as the server stopped", failure);
+            } else {
+                LOGGER.error("[PreGen] Error during world pre-generation", failure);
+                log("[PreGen] Error during pre-generation: " + failure.getMessage());
+                failed = true;
+                stoppedMessage = String.format("%s: stopped by an error at %.1f%% (see the server log)",
+                        PreGenMod.NAME, getProgressPercent());
+            }
         } finally {
             try {
                 awaitTail();
             } catch (Throwable failure) {
-                LOGGER.error("[PreGen] Finishing the last batch failed", failure);
+                if (serverStopping) {
+                    LOGGER.info("[PreGen] The batch being saved was dropped as the server stopped: {}", failure.getMessage());
+                } else {
+                    LOGGER.error("[PreGen] Finishing the last batch failed", failure);
+                }
             }
             try {
                 awaitPendingWrites();
@@ -594,20 +697,38 @@ public class DynamicBatchPreGen {
                 LOGGER.error("[PreGen] Saving the last tile failed", failure);
             }
             if (totalEndTime == 0) totalEndTime = System.currentTimeMillis();
+            if (serverStopping && !generationCompleted) {
+                finalStatus = "Stopped by the server stop";
+                log(String.format("[PreGen] Stopped by the server stop after %d/%d batches (%d/%d chunks, %s); the run"
+                                + " continues from there with resume_after_restart or /pregen resume.",
+                        completedBatchesCount, getTotalBatchesCount(), completedChunksCount, getTotalWorldChunks(),
+                        formatDuration(getElapsedMillis())));
+            }
             if (saveFile != null) {
-                saveFile.setLastRun(worldSizeBlocks / 1000, centerX, centerZ, generationCompleted);
+                saveFile.setLastRun(worldSizeBlocks, centerX, centerZ, batchPlan.shape(), generationCompleted);
+                // Not continued after a restart: stopped on purpose, or by an error that would likely recur.
+                // A server stop is neither (see stopForServer).
+                saveFile.setLastStopped(!generationCompleted && !serverStopping && (isCancelled || failed));
                 writeSaveFile();
             }
             if (profiler != null) profiler.finish(this::log);
-            currentStageName = "Releasing memory";
-            releaseMemory(true, currentBatchIndex);
+            // A stopping server waits for this run, and its world or JVM closes anyway.
+            if (!serverStopping) {
+                currentStageName = "Releasing memory";
+                releaseMemory(true, currentBatchIndex);
+            }
             currentStageName = finalStatus;
             isRunning = false;
-            if (progressTicker != null) progressTicker.shutdownNow();
-            if (stoppedMessage != null) updateBossBar();
-            hideBossBar();
-            if (tailExecutor != null) tailExecutor.shutdown();
-            workerPool.shutdown();
+            try {
+                PregenApiImpl.fireFinish(this);
+                if (progressTicker != null) progressTicker.shutdownNow();
+                if (stoppedMessage != null) updateBossBar();
+                hideBossBar();
+                if (tailExecutor != null) tailExecutor.shutdown();
+                workerPool.shutdown();
+            } finally {
+                ended.countDown();
+            }
         }
     }
 
@@ -658,7 +779,8 @@ public class DynamicBatchPreGen {
                 log(String.format("[Ultra Fast Pregen] Save file loaded into RAM: %d chunks already generated in this world (%s).",
                         record.doneChunks(), record.file()));
             }
-            record.setLastRun(worldSizeBlocks / 1000, centerX, centerZ, false);
+            record.setLastRun(worldSizeBlocks, centerX, centerZ, batchPlan.shape(), false);
+            record.setLastStopped(false);
             saveFile = record;
             writeSaveFile();
         } catch (IOException | RuntimeException failure) {
@@ -670,7 +792,8 @@ public class DynamicBatchPreGen {
 
     private void writeSaveFile() {
         PreGenSaveFile record = saveFile;
-        if (record == null) return;
+        // Detached: the world is closing, and a singleplayer world opened next may own the file.
+        if (record == null || detached) return;
         try {
             record.save();
         } catch (IOException | RuntimeException failure) {
@@ -681,10 +804,10 @@ public class DynamicBatchPreGen {
     /** A batch whose every core chunk already exists; counted as done without generating. */
     private void skipGeneratedBatch(int index, int total, ChunkBatchPlan.Tile tile, boolean allByFastpregen) {
         synchronized (progressLock) {
-            completedChunksCount += tile.totalChunks();
+            completedChunksCount += batchPlan.areaChunks(tile);
             completedBatchesCount++;
         }
-        resumedChunks += tile.totalChunks();
+        resumedChunks += batchPlan.areaChunks(tile);
         resumedBatches++;
         if (!allByFastpregen) existingBatches++;
         for (long pos : corePositions(tile)) {
@@ -692,7 +815,7 @@ public class DynamicBatchPreGen {
             seams.take(pos);
         }
         log(String.format("[%d/%d] Skipped Tile at Block [%d, %d]: all %d chunks %s.",
-                index, total, tile.minBlockX(), tile.minBlockZ(), tile.totalChunks(),
+                index, total, tile.minBlockX(), tile.minBlockZ(), batchPlan.areaChunks(tile),
                 allByFastpregen ? "were already generated by Ultra Fast Pregen" : "already exist"));
         reportProgress();
     }
@@ -928,6 +1051,16 @@ public class DynamicBatchPreGen {
         }
     }
 
+    /** The server is stopping (see stopForServer): the batch being generated is dropped. */
+    private void dropBatchIfServerStopping() {
+        if (serverStopping) throw new CancellationException("the server is stopping");
+    }
+
+    /** The stopping server waits no longer (see detach): the batch being lit and saved is dropped. */
+    private void dropTailIfDetached() {
+        if (detached) throw new CancellationException("the server stopped");
+    }
+
     /**
      * Structures through features of the tile, and the edge bookkeeping that depends on them;
      * returns what remains (finishBatch). Waits for the previous batch's tail before preparing
@@ -937,7 +1070,7 @@ public class DynamicBatchPreGen {
         long batchStartedAt = System.currentTimeMillis();
         takenThisBatch = new HashMap<>();
         seamsCommitted = false;
-        currentTileChunks = tile.totalChunks();
+        currentTileChunks = batchPlan.areaChunks(tile);
         currentPhase = 0;
         stageTimes.setLength(0);
         currentStageName = "Preparing batch";
@@ -945,7 +1078,7 @@ public class DynamicBatchPreGen {
         updateBossBar();
         log(String.format("[%d/%d] (%.1f%%) Starting Tile at Block [%d, %d] (Core Chunks: %dx%d = %d%s)...",
                 index, total, getProgressPercent(), tile.minBlockX(), tile.minBlockZ(),
-                tile.chunksX(), tile.chunksZ(), tile.totalChunks(),
+                tile.chunksX(), tile.chunksZ(), currentTileChunks,
                 done.isEmpty() ? "" : ", " + done.size() + " that already exist are kept"));
 
         long[] core = corePositions(tile);
@@ -954,21 +1087,25 @@ public class DynamicBatchPreGen {
 
         InMemoryChunkGrid grid = new InMemoryChunkGrid(level, tile.minBlockX(), tile.minBlockZ(),
                 tile.chunksX(), tile.chunksZ(), fusedTerrain && !safeMode, parallelSteps && !safeMode);
+        grid.setArea(batchPlan::containsChunk);
         grid.setParallelFeatures(parallelFeatures && !safeMode);
         grid.setWorkerThreads(parallelThreads);
         InMemoryChunkGrid.setCurrentGrid(grid);
         boolean handedOver = false;
         try {
+            dropBatchIfServerStopping();
             Runnable progress = startStage(index, total, "Stage 1/6: Structure Starts & References",
                     grid.getStructureStageChunks());
             grid.executeLayer(ChunkLayer.STRUCTURES, workerPool, progress);
             endStage();
 
+            dropBatchIfServerStopping();
             progress = startStage(index, total, "Stage 2/6: Biomes, Noise & Surface", grid.getPaddedChunksCount());
             grid.executeLayer(ChunkLayer.TERRAIN_PIPELINE, workerPool, progress);
             endStage();
             terrainDiagnostics = grid.getTerrainDiagnostics();
 
+            dropBatchIfServerStopping();
             progress = startStage(index, total, "Stage 3/6: Caves & Aquifers", grid.getPaddedChunksCount());
             grid.executeLayer(ChunkLayer.CARVERS, workerPool, progress);
             endStage();
@@ -997,10 +1134,12 @@ public class DynamicBatchPreGen {
             if (failureHook != null && !safeMode) {
                 CompletableFuture.runAsync(() -> failureHook.accept(index), workerPool).join();
             }
+            dropBatchIfServerStopping();
             progress = startStage(index, total, "Stage 4/6: Features Decoration", grid.getCoreTotalChunks());
             grid.executePhased(ChunkLayer.FEATURES, workerPool, progress);
             endStage();
             featureDiagnostics = grid.getFeatureDiagnostics();
+            dropBatchIfServerStopping();
             seamsCommitted = true;
             for (long pos : core) seams.markHandled(pos, !done.contains(pos));
             LongSet held = heldByServer;
@@ -1070,19 +1209,24 @@ public class DynamicBatchPreGen {
                 }
             }
             grid.setLightOwnership(heldAtLight, replaced);
+            dropTailIfDetached();
             Runnable progress = startTailStage(tail, overlapped, "Stage 5/6: Lighting", grid.getCoreTotalChunks());
             grid.executePhased(ChunkLayer.LIGHTING, tailPool, progress);
             endTailStage(tail, overlapped, times);
 
-            progress = startTailStage(tail, overlapped, "Stage 6/6: Mob Spawning", tile.totalChunks() - kept.size());
+            int areaChunks = batchPlan.areaChunks(tile);
+            dropTailIfDetached();
+            progress = startTailStage(tail, overlapped, "Stage 6/6: Mob Spawning", areaChunks - kept.size());
             grid.executeSpawn(tailPool, kept, progress);
             endTailStage(tail, overlapped, times);
 
-            progress = startTailStage(tail, overlapped, "Saving: encoding chunks", tile.totalChunks() - kept.size());
+            dropTailIfDetached();
+            progress = startTailStage(tail, overlapped, "Saving: encoding chunks", areaChunks - kept.size());
             List<WorldChunkIO.EncodedChunk> encoded = grid.encodeForSaving(tailPool, kept, progress);
             endTailStage(tail, overlapped, times);
             // Chunks the server holds get the generated terrain too, or its later save would
             // overwrite ours; when keeping existing chunks, only part-way generated ones.
+            dropTailIfDetached();
             LoadedChunkRegeneration.applyLit(level, grid, replaced);
             LOGGER.debug(grid.getEncodeDiagnostics() + String.format(" | Spawned mobs: %d", grid.getSpawnedEntities()));
             keptExistingChunks.addAndGet(kept.size());
@@ -1105,7 +1249,7 @@ public class DynamicBatchPreGen {
             }
 
             synchronized (progressLock) {
-                completedChunksCount += tile.totalChunks();
+                completedChunksCount += areaChunks;
                 completedBatchesCount++;
                 tail.finished = true;
             }
@@ -1130,7 +1274,7 @@ public class DynamicBatchPreGen {
         if (!overlapped) return startStage(tail.index, tail.total, name, totalChunks);
         StageProgress stage = new StageProgress(name, totalChunks);
         StageProgress previous = tail.stage;
-        stage.tileChunks = tail.tile.totalChunks();
+        stage.tileChunks = batchPlan.areaChunks(tail.tile);
         stage.phase = previous == null ? tail.firstPhase : previous.phase + 1;
         tail.stage = stage;
         return stage.done::incrementAndGet;
@@ -1147,14 +1291,15 @@ public class DynamicBatchPreGen {
         stage.done.set(stage.total);
     }
 
-    private static long[] corePositions(ChunkBatchPlan.Tile tile) {
+    /** The tile's chunks that lie in the area. */
+    private long[] corePositions(ChunkBatchPlan.Tile tile) {
         int minX = Math.floorDiv(tile.minBlockX(), 16);
         int minZ = Math.floorDiv(tile.minBlockZ(), 16);
-        long[] positions = new long[tile.chunksX() * tile.chunksZ()];
+        long[] positions = new long[batchPlan.areaChunks(tile)];
         int index = 0;
         for (int cx = minX; cx < minX + tile.chunksX(); cx++) {
             for (int cz = minZ; cz < minZ + tile.chunksZ(); cz++) {
-                positions[index++] = ChunkPos.asLong(cx, cz);
+                if (batchPlan.containsChunk(cx, cz)) positions[index++] = ChunkPos.asLong(cx, cz);
             }
         }
         return positions;
@@ -1178,8 +1323,10 @@ public class DynamicBatchPreGen {
             PreGenSaveFile record = saveFile;
             if (record != null) {
                 record.markDone(positions);
+                record.clearAutoResumes();
                 writeSaveFile();
             }
+            PregenApiImpl.fireChunksSaved(level, positions);
             log(String.format("  [%d/%d] Saved %d chunks to %d region files in %.1fs (disk %.1fs)%s",
                     index, total, result.written, result.regions, (System.nanoTime() - submittedAt) / 1e9, result.ioNanos / 1e9,
                     result.skippedExisting > 0 ? ", kept " + result.skippedExisting + " the server saved meanwhile" : ""));
@@ -1257,7 +1404,7 @@ public class DynamicBatchPreGen {
             BatchTail tail = runningTail;
             stage.overlappedTail = tail != null && !tail.finished ? tail : null;
             stage.baseChunks = completedChunksCount
-                    + (stage.overlappedTail != null ? stage.overlappedTail.tile.totalChunks() : 0);
+                    + (stage.overlappedTail != null ? batchPlan.areaChunks(stage.overlappedTail.tile) : 0);
         }
         stage.tileChunks = currentTileChunks;
         stage.phase = currentPhase++;
@@ -1303,7 +1450,7 @@ public class DynamicBatchPreGen {
      * seconds after the end. Players get no chat messages; the server log has every event.
      */
     private void updateBossBar() {
-        if (level == null) return;
+        if (level == null || serverStopping) return;
         if (!bossBarPending.compareAndSet(false, true)) return;
         level.getServer().execute(() -> {
             try {
@@ -1341,7 +1488,7 @@ public class DynamicBatchPreGen {
 
     /** Removes the boss bar after the run ends: soon when it completed, later when it stopped early. */
     private void hideBossBar() {
-        if (level == null) return;
+        if (level == null || serverStopping) return;
         var server = level.getServer();
         CompletableFuture.delayedExecutor(generationCompleted ? 5 : 15, TimeUnit.SECONDS).execute(() -> server.execute(() -> {
             if (bossBar != null) bossBar.removeAllPlayers();

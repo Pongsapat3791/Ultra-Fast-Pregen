@@ -41,7 +41,8 @@ public final class PreGenConfigCheck {
         String text = Files.readString(file, StandardCharsets.UTF_8);
         require(config.parallelSteps && config.releaseMemoryEachBatch, "Parallel steps and batch release default to on");
         require(config.skipExistingChunks, "Existing chunks are kept by default");
-        for (String line : new String[]{"batch_size=1000", "threads=max", "parallel_steps=true", "parallel_features=auto",
+        require(config.resumeAfterRestart, "Runs cut short by a restart continue by default");
+        for (String line : new String[]{"batch_size=1000", "threads=max", "resume_after_restart=true", "parallel_steps=true", "parallel_features=auto",
                 "release_memory_each_batch=true", "skip_existing_chunks=true", "terrain_pipeline=auto"}) {
             require(text.contains(line), "New config must contain " + line);
         }
@@ -76,8 +77,9 @@ public final class PreGenConfigCheck {
         Files.createDirectories(directory);
         Path file = directory.resolve(PreGenConfig.FILE_NAME);
         Files.writeString(file, "batch_size=2000\nthreads=6\nparallel_steps=FALSE\nparallel_features=ALWAYS\n"
-                + "release_memory_each_batch=false\nskip_existing_chunks=false\nterrain_pipeline=FUSED\n");
+                + "release_memory_each_batch=false\nskip_existing_chunks=false\nterrain_pipeline=FUSED\nresume_after_restart=false\n");
         PreGenConfig custom = PreGenConfig.load(directory, 4, message -> {});
+        require(!custom.resumeAfterRestart, "resume_after_restart=false must be honored");
         require(!custom.parallelSteps, "parallel_steps=false must be honored, in any case");
         require(custom.alwaysParallelFeatures, "parallel_features=always must be honored, in any case");
         require(!custom.releaseMemoryEachBatch, "release_memory_each_batch=false must be honored");
