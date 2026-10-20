@@ -1,5 +1,6 @@
 package com.example.pregen;
 
+import com.example.pregen.terrain.SurfaceRulePruning;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -8,6 +9,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import net.minecraft.server.level.WorldGenRegion;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.levelgen.Aquifer;
@@ -15,6 +19,8 @@ import net.minecraft.world.level.levelgen.Beardifier;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.OreVeinifier;
+import net.minecraft.world.level.levelgen.SurfaceRules;
+import net.minecraft.world.level.levelgen.SurfaceSystem;
 import net.minecraft.world.level.levelgen.material.MaterialRuleList;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
 import org.objectweb.asm.Opcodes;
@@ -97,6 +103,34 @@ public final class WorldgenCompat {
             // C2ME chunk system: runs createBiomes' and fillFromNoise's work on the calling thread
             // instead of Minecraft's worker pool; the fused path runs it on its own pool.
             "com.ishland.c2me.rewrites.chunksystem.mixin.MixinNoiseChunkGenerator");
+
+    /**
+     * Other mods' mixins, by class, into the surface rules and biome lookups that the surface
+     * shortcuts stand in for, that keep their results: the shortcuts give the same blocks with them.
+     */
+    private static final Set<String> SURFACE_EQUIVALENT_MIXINS = Set.of(
+            // ModernFix: the same lookups and biome tests decided for the chunk, sequences,
+            // lazy conditions and the block's biome without iterators or lambdas.
+            "org.embeddedt.modernfix.common.mixin.perf.optimize_surface_rules.SurfaceSystemMixin",
+            "org.embeddedt.modernfix.common.mixin.perf.optimize_surface_rules.BiomeConditionSourceMixin",
+            "org.embeddedt.modernfix.common.mixin.perf.worldgen_allocation.SequenceRuleMixin",
+            "org.embeddedt.modernfix.common.mixin.perf.worldgen_allocation.SurfaceRulesMixin",
+            "org.embeddedt.modernfix.common.mixin.perf.worldgen_allocation.SurfaceRulesContextMixin",
+            // C2ME: sequences over arrays, the block's biome kept without allocations, and
+            // Minecraft's biome lookup in native code.
+            "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRuleContext",
+            "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceBlockStateRule",
+            "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceMaterialRule",
+            "com.ishland.c2me.opts.natives_math.mixin.MixinBiomeAccess");
+    /** The methods the surface shortcuts stand in for, of the classes surfaceShortcutsAllowed reads. */
+    private static final Set<String> SURFACE_CONTEXT_METHODS = Set.of("<init>", "updateY");
+    private static final Set<String> SURFACE_STEP_METHODS = Set.of("buildSurface");
+    private static final Set<String> BIOME_LOOKUP_METHODS = Set.of("getBiome");
+    private static final Set<String> NOISE_BIOME_METHODS = Set.of("getNoiseBiome", "getBiomeManager");
+    /** The condition SurfaceRules.isBiome builds, a local class. */
+    private static final List<String> BIOME_CONDITION_CLASSES = List.of(
+            "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition");
+    private static volatile Boolean surfaceShortcutsAllowed;
 
     /** Mixins their own mods declared compatible (API or mod metadata): mixin class -> where it was declared. */
     private static final Map<String, String> DECLARED_COMPATIBLE = new ConcurrentHashMap<>();
@@ -235,6 +269,47 @@ public final class WorldgenCompat {
     }
 
     /**
+     * The surface shortcuts (SurfaceBiomes, SurfaceRulePruning) stand in for Minecraft's biome
+     * lookup in the surface step and for its rules' biome tests, tests and sequences, so another
+     * mod's change to any of those, or to how the rules' context gets the biome of the block,
+     * turns them off.
+     */
+    public static boolean surfaceShortcutsAllowed() {
+        Boolean allowed = surfaceShortcutsAllowed;
+        if (allowed == null) {
+            List<String> details = new ArrayList<>();
+            Set<String> foreign = new TreeSet<>();
+            List<Class<?>> rules = new ArrayList<>();
+            for (Class<?> member : SurfaceRules.class.getDeclaredClasses()) {
+                if (member != SurfaceRulePruning.contextClass()) rules.add(member);
+            }
+            foreign.addAll(changingMixinConfigs(SurfaceRulePruning.contextClass(), SURFACE_CONTEXT_METHODS, details,
+                    SURFACE_EQUIVALENT_MIXINS));
+            for (String name : BIOME_CONDITION_CLASSES) {
+                try {
+                    rules.add(Class.forName(name, false, SurfaceRules.class.getClassLoader()));
+                } catch (ClassNotFoundException | LinkageError ignored) {
+                    // Named so in other mappings only.
+                }
+            }
+            for (Class<?> target : rules) {
+                foreign.addAll(changingMixinConfigs(target, null, details, SURFACE_EQUIVALENT_MIXINS));
+            }
+            foreign.addAll(changingMixinConfigs(SurfaceSystem.class, SURFACE_STEP_METHODS, details, SURFACE_EQUIVALENT_MIXINS));
+            foreign.addAll(changingMixinConfigs(BiomeManager.class, BIOME_LOOKUP_METHODS, details, SURFACE_EQUIVALENT_MIXINS));
+            foreign.addAll(changingMixinConfigs(LevelReader.class, NOISE_BIOME_METHODS, details, SURFACE_EQUIVALENT_MIXINS));
+            foreign.addAll(changingMixinConfigs(WorldGenRegion.class, NOISE_BIOME_METHODS, details, SURFACE_EQUIVALENT_MIXINS));
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Surface rule shortcuts disabled: other mods modify surface rules or biome lookups {}: {}",
+                        foreign, details);
+            }
+            surfaceShortcutsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
      * Mixin configs of other mods that change feature placement itself: ChunkGenerator's
      * applyBiomeDecoration or WorldgenRandom's feature seed. Minecraft runs features one chunk at
      * a time per generator, and such mixins may rely on it; BCLib, for one, counts features in a
@@ -336,12 +411,18 @@ public final class WorldgenCompat {
 
     /** As above; each counted mixin and why goes into details when given. */
     static List<String> changingMixinConfigs(Class<?> target, Set<String> methods, List<String> details) {
+        return changingMixinConfigs(target, methods, details, FUSED_COMPATIBLE_MIXINS);
+    }
+
+    /** As above, with the given mixin classes known to keep what is asked about. */
+    private static List<String> changingMixinConfigs(Class<?> target, Set<String> methods, List<String> details,
+                                                     Set<String> compatible) {
         List<String> configs = new ArrayList<>();
         try {
             for (IMixinInfo mixin : mixinsTargeting(target)) {
                 String config = mixin.getConfig().getName();
                 if (OWN_MIXIN_CONFIG.equals(config) || neutral(mixin.getClassName())
-                        || FUSED_COMPATIBLE_MIXINS.contains(mixin.getClassName())) continue;
+                        || compatible.contains(mixin.getClassName())) continue;
                 if (configs.contains(config) && details == null) continue;
                 String reason = changeReason(mixin, target, methods);
                 if (reason == null) continue;

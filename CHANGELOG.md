@@ -16,6 +16,14 @@
 - **Singleplayer without cheats:** the world's owner can use `/pregen` without turning cheats on; before, the command
   looked missing in such worlds. Servers and LAN guests still need op level 2.
 
+### Faster
+- **Surface rules:** each chunk's surface step reads the biomes around it once. A block's biome then comes from those
+  (Minecraft's own pick among the eight biome cells around the block), and the chunk's surface rules are built without
+  the biome tests its biomes decide, so the overworld's many rules for biomes that are not in the chunk no longer run for
+  every block. The surface step takes about 16% less CPU time and whole runs are 5% (26.1.2) to 7% (26.2) faster
+  (i9-11900T, 16 threads, 2000 x 2000 blocks), with the same blocks as Minecraft's. It turns itself off when another mod changes surface rules or biome lookups; ModernFix's
+  and C2ME's changes there give the same results and keep it on.
+
 ### Safer
 - **Stopping the server during a run:** the server waits for the batch being saved (up to 20 s) and drops the one being
   generated, so the run continues from its last saved batch. In singleplayer, leaving the world now stops the run; before,

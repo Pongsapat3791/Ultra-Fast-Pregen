@@ -136,7 +136,8 @@ Steps 5–7 run on a separate thread while the next batch runs steps 1–3. Feat
 the next batch (or merged back into the saved chunk), so batches give the same blocks as one run (test `BATCH_SEAM_CHECK`).
 
 **Stage 2 is about 1.8× faster than Minecraft with bit-identical results:** 4×8×4 noise cells proven all air or all stone from the
-interpolation corners skip per-block work; aquifer and biome lookups are cached per column; surface writes without per-block allocation.
+interpolation corners skip per-block work; aquifer and biome lookups are cached per column; surface writes without per-block allocation;
+each chunk's surface step reads the biomes around it once and leaves out the surface-rule tests those biomes decide.
 
 ## Correctness
 

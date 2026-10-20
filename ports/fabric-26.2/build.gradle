@@ -42,7 +42,7 @@ loom {
 			source sourceSets.test
 			runDir "build/terrain-benchmark"
 			vmArgs "-Xmx4G", "-Dpregen.benchmark=true"
-			["chunks", "threads", "seeds", "compare"].each { key ->
+			["chunks", "threads", "seeds", "compare", "iterations", "warmupChunks", "warmupIterations", "ab"].each { key ->
 				def value = providers.gradleProperty("benchmark.${key}").orNull
 				if (value != null) vmArgs "-Dpregen.benchmark.${key}=${value}"
 			}

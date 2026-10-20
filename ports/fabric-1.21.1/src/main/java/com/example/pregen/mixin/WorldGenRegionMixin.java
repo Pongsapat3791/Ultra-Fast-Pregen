@@ -1,12 +1,14 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.InMemoryChunkGrid;
+import com.example.pregen.terrain.BiomeChunkSource;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
@@ -21,7 +23,7 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(WorldGenRegion.class)
-public abstract class WorldGenRegionMixin {
+public abstract class WorldGenRegionMixin implements BiomeChunkSource {
 
     @Shadow @Final private ServerLevel level;
     @Shadow @Final private StaticCache2D<GenerationChunkHolder> cache;
@@ -71,6 +73,12 @@ public abstract class WorldGenRegionMixin {
         if (grid != null) {
             cir.setReturnValue(grid.getChunkOrFallback(x, z));
         }
+    }
+
+    /** The chunk whose biomes the region's getNoiseBiome reads for its cells, found as LevelReader's does. */
+    @Override
+    public ChunkAccess pregen$getBiomeChunk(int chunkX, int chunkZ) {
+        return ((LevelReader) (Object) this).getChunk(chunkX, chunkZ, ChunkStatus.BIOMES, false);
     }
 
     /** The grid whose own region this is, while its center lies inside it, or null. */

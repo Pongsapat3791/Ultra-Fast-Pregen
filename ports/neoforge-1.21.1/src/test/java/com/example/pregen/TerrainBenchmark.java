@@ -276,11 +276,8 @@ public final class TerrainBenchmark {
             chunks.add(chunk);
             byPosition.put(position.toLong(), chunk);
         }
-        BiomeManager biomes = new BiomeManager((x, y, z) -> {
-            ProtoChunk neighbor = byPosition.get(ChunkPos.asLong(Math.floorDiv(x, 4), Math.floorDiv(z, 4)));
-            return neighbor != null ? neighbor.getNoiseBiome(x, y, z)
-                    : generator.getBiomeSource().getNoiseBiome(x, y, z, seed.randomState.sampler());
-        }, BiomeManager.obfuscateSeed(seed.seed));
+        BiomeManager biomes = new BiomeManager(new ChunkBiomes(byPosition, generator, seed.randomState),
+                BiomeManager.obfuscateSeed(seed.seed));
         WorldGenerationContext generationContext = new WorldGenerationContext(generator, height);
         Aquifer.FluidStatus lava = new Aquifer.FluidStatus(-54, Blocks.LAVA.defaultBlockState());
         Aquifer.FluidStatus water = new Aquifer.FluidStatus(settings.seaLevel(), settings.defaultFluid());
@@ -293,12 +290,15 @@ public final class TerrainBenchmark {
         int cellCountY = Mth.floorDiv(noiseSettings.height(), noiseSettings.getCellHeight());
         long start = System.nanoTime();
         dispatch(chunks, workers, chunk -> {
-            // -Dpregen.benchmark.ab=surface: both modes optimized, the surface speedups only in the second.
-            boolean abSurface = "surface".equals(System.getProperty("pregen.benchmark.ab"));
-            if (abSurface) {
+            // -Dpregen.benchmark.ab=surface: both modes optimized, the surface speedups only in the second;
+            // =surfacerules: only the surface rule shortcuts (SurfaceBiomes) in the second.
+            String ab = System.getProperty("pregen.benchmark.ab");
+            boolean abSurface = "surface".equals(ab) || "surfacerules".equals(ab);
+            if ("surface".equals(ab)) {
                 com.example.pregen.terrain.ReusableBiomeSupplier.enabled = optimized;
                 com.example.pregen.terrain.FastBlockWrites.enabled = optimized;
             }
+            if (abSurface) com.example.pregen.terrain.SurfaceBiomes.enabled = optimized;
             try (TerrainGenerationContext ignored = optimized || abSurface ? TerrainGenerationContext.enter() : null) {
             long componentStart = System.nanoTime();
             chunk.getOrCreateNoiseChunk(c -> NoiseChunk.forChunk(c, seed.randomState,
@@ -316,7 +316,8 @@ public final class TerrainBenchmark {
             }
         });
         // Surface biome lookup reads neighboring chunks. Publish all their biomes first.
-        boolean surfaceInContext = optimized || "surface".equals(System.getProperty("pregen.benchmark.ab"));
+        boolean surfaceInContext = optimized || "surface".equals(System.getProperty("pregen.benchmark.ab"))
+                || "surfacerules".equals(System.getProperty("pregen.benchmark.ab"));
         dispatch(chunks, workers, chunk -> {
             // As on the pipeline's fused path, where surface runs inside the terrain context.
             try (TerrainGenerationContext ignored = surfaceInContext ? TerrainGenerationContext.enter() : null) {
@@ -330,6 +331,22 @@ public final class TerrainBenchmark {
         long elapsed = System.nanoTime() - start;
         return new Result(elapsed, setupTime.sum(), biomeTime.sum(), noiseTime.sum(), surfaceTime.sum(),
                 checksum ? checksum(chunks, biomeRegistry) : "warmup");
+    }
+
+    /** The benchmark chunks' biomes, read as a world generation region reads them (see BiomeChunkSource). */
+    private record ChunkBiomes(Map<Long, ProtoChunk> chunks, NoiseBasedChunkGenerator generator, RandomState randomState)
+            implements BiomeManager.NoiseBiomeSource, com.example.pregen.terrain.BiomeChunkSource {
+        @Override
+        public Holder<Biome> getNoiseBiome(int x, int y, int z) {
+            ProtoChunk neighbor = chunks.get(ChunkPos.asLong(Math.floorDiv(x, 4), Math.floorDiv(z, 4)));
+            return neighbor != null ? neighbor.getNoiseBiome(x, y, z)
+                    : generator.getBiomeSource().getNoiseBiome(x, y, z, randomState.sampler());
+        }
+
+        @Override
+        public ChunkAccess pregen$getBiomeChunk(int chunkX, int chunkZ) {
+            return chunks.get(ChunkPos.asLong(chunkX, chunkZ));
+        }
     }
 
     private static void dispatch(List<ProtoChunk> chunks, ExecutorService workers, ChunkTask task) {

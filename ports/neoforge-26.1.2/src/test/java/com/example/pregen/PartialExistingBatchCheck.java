@@ -144,6 +144,7 @@ public final class PartialExistingBatchCheck {
             if (only.contains("api")) checkApi(level, tasks);
             if (only.contains("circle")) checkCircle(level, io, tasks);
             if (only.contains("restart")) checkAutoResume(server, level, tasks);
+            if (only.contains("parity")) checkFastFillParity(server, level);
             return;
         }
         ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(10_000, 10_000, 2, 2);
@@ -1459,7 +1460,9 @@ public final class PartialExistingBatchCheck {
             String perStatus = terrainHash(level, center, pool, true, false);
             require(perStatus.equals(byNeighbors), "Minecraft's per-status terrain tasks differ from the fused path: "
                     + perStatus + " != " + byNeighbors);
-            System.out.println("VANILLA_PIPELINE_PARITY_CHECK PASS hash=" + perStatus);
+            long surfaceChunks = com.example.pregen.terrain.SurfaceBiomes.READ_CHUNKS.sum();
+            require(surfaceChunks > 0, "The fused path must have run the surface rule shortcuts");
+            System.out.println("VANILLA_PIPELINE_PARITY_CHECK PASS hash=" + perStatus + " surface_shortcut_chunks=" + surfaceChunks);
         } finally {
             com.example.pregen.terrain.FastNoiseFill.enabled = true;
             InMemoryChunkGrid.featuresByNeighbors = true;

@@ -620,6 +620,9 @@ public class DynamicBatchPreGen {
             log("[PreGen] Terrain pipeline: " + (terrain.fused() ? "fused fast path" : "Minecraft per-status path")
                     + " (" + terrain.reason() + ") | Cell-skipping noise fill: "
                     + (terrain.fused() && WorldgenCompat.fastNoiseFillAllowed() ? "on" : "off")
+                    + " | Surface rule shortcuts: "
+                    + (terrain.fused() && com.example.pregen.terrain.SurfaceBiomes.enabled
+                        && WorldgenCompat.surfaceShortcutsAllowed() ? "on" : "off")
                     + " | Structures, caves and features: "
                     + (parallelSteps ? parallelThreads + " threads" : "one chunk at a time (parallel_steps=false)")
                     + (parallelSteps && !parallelFeatures

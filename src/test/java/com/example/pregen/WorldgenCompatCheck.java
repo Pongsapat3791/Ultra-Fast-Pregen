@@ -74,10 +74,15 @@ public final class WorldgenCompatCheck {
                 "fused in config forces the fast path for noise generators.");
         require(!WorldgenCompat.chooseTerrainPath(vanillaGenerator, PreGenConfig.TerrainPipeline.VANILLA).fused(),
                 "vanilla in config always uses Minecraft's path.");
+        require(WorldgenCompat.allMixinConfigs(net.minecraft.world.level.levelgen.SurfaceSystem.class).contains("pregen.mixins.json"),
+                "The surface step mixin of this mod must be detected.");
+        require(WorldgenCompat.surfaceShortcutsAllowed(),
+                "With no other mods, the surface rule shortcuts must be on (this mod's own mixins never count).");
         System.out.println("WORLDGEN_COMPAT_CHECK PASS own_mixins_detected=true other_generator_fallback=true overrides=true"
                 + " foreign_generator=" + generatorForeign + " foreign_chunk_status=" + statusForeign
                 + " terrain_path_foreign=" + terrainForeign
                 + " foreign_aquifer=" + WorldgenCompat.foreignMixinConfigs(Aquifer.NoiseBasedAquifer.class)
+                + " surface_shortcuts=" + WorldgenCompat.surfaceShortcutsAllowed()
                 + " feature_placement=" + WorldgenCompat.featurePlacementMixins());
     }
 
