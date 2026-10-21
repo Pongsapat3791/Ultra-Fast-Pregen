@@ -23,6 +23,25 @@
   every block. The surface step takes about 16% less CPU time and whole runs are 5% (26.1.2) to 7% (26.2) faster
   (i9-11900T, 16 threads, 2000 x 2000 blocks), with the same blocks as Minecraft's. It turns itself off when another mod changes surface rules or biome lookups; ModernFix's
   and C2ME's changes there give the same results and keep it on.
+- **Terrain noise shared at chunk edges:** a chunk's terrain is interpolated between 5 x 5 columns of noise values,
+  and the 16 columns on its edges belong to its neighbors too, which each computed them again. Now the first chunk to
+  compute such a column leaves it for the others. This happens only where neither chunk adds anything of its own there
+  (no blending with older terrain, no structure pieces nearby), so the values are the ones Minecraft computes. The
+  terrain step takes about 10% less time.
+- **Noise setup per chunk:** every chunk builds its own copy of the world's noise router, and Minecraft rebuilt each
+  named function and spline wherever it is referenced. Each is now built once per chunk, and parts that need no cache of
+  the chunk skip Minecraft's lookup map. This setup takes about half the time (it was a tenth of all generation time).
+- **Surface, aquifers and feature biomes:** the surface step reads a column of blocks one section at a time; on 26.1.2
+  and 26.2 the aquifer finds its twelve nearest centers once per aquifer cell instead of for every block; features look
+  up each biome cell once per chunk.
+- **Lighting on all threads:** each batch is lit on the worker threads, every tile of 8 x 8 chunks by its own copy of
+  Minecraft's light engine, instead of on the server's single light thread. A batch's light takes 1 to 3 s instead of
+  12 to 23 s while the next batch generates. Lighting already ran alongside the next batch, so whole runs gain little
+  from this alone, but a run of one batch, and the last batch of every run, finish sooner. Batches with chunks the
+  server holds, and servers where another mod changes the light engine, are lit by the server's light engine as before.
+- All together, whole runs are 15% faster on 26.1.2 and 9% faster on 26.2 than with the surface rules alone (same
+  machine and area), with the same blocks and light as Minecraft's. Like the fast paths before them, these steps turn
+  themselves off where another mod changes the code they stand in for; in large mod packs that is often the case.
 
 ### Safer
 - **Stopping the server during a run:** the server waits for the batch being saved (up to 20 s) and drops the one being
@@ -31,6 +50,10 @@
 - **Light engine:** a batch dropped before its lighting (server stop) or generated again by the safety net no longer
   removes light data that the batch before it is still computing; that could break Minecraft's light engine and hang
   the server.
+- **Fast paths no longer turned off at random:** before using a fast path, the mod reads other mods' mixins into the
+  code it replaces. These checks ran on whichever worker thread needed them first, and two threads reading the same
+  mixin at once could make one of them fail; on Fabric with Fabric API this sometimes turned the surface shortcuts off
+  for a whole run. The checks now run one at a time.
 - Includes the fix of 14.1.
 
 ## 14.1

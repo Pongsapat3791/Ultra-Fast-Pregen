@@ -300,6 +300,13 @@ public final class TerrainBenchmark {
         int minCellY = Mth.floorDiv(noiseSettings.minY(), noiseSettings.getCellHeight());
         int cellCountY = Mth.floorDiv(noiseSettings.height(), noiseSettings.getCellHeight());
         long start = System.nanoTime();
+        // Edge corners shared among the chunks, as on the pipeline's fused path (=round16 and =corners:
+        // the second mode only; =corners: both modes otherwise optimized).
+        String abMode = System.getProperty("pregen.benchmark.ab");
+        boolean shareCorners = "round16".equals(abMode) || "corners".equals(abMode) ? optimized
+                : optimized || "surface".equals(abMode) || "surfacerules".equals(abMode);
+        if (shareCorners) com.example.pregen.terrain.SharedCorners.open(seed.randomState);
+        try {
         dispatch(chunks, workers, chunk -> {
             // -Dpregen.benchmark.ab=surface: both modes optimized, the surface speedups only in the second;
             // =surfacerules: only the surface rule shortcuts (SurfaceBiomes) in the second.
@@ -307,7 +314,14 @@ public final class TerrainBenchmark {
             boolean abSurface = "surface".equals(ab) || "surfacerules".equals(ab);
             if ("surface".equals(ab)) com.example.pregen.terrain.FastBlockWrites.enabled = optimized;
             if (abSurface) com.example.pregen.terrain.SurfaceBiomes.enabled = optimized;
-            try (TerrainGenerationContext ignored = optimized || abSurface ? TerrainGenerationContext.enter() : null) {
+            // =round16: only the NoiseChunk wrap shortcut and the surface column cache in the second.
+            if ("round16".equals(ab)) {
+                com.example.pregen.terrain.NoiseChunkWrap.enabled = optimized;
+                com.example.pregen.terrain.SurfaceColumnCache.enabled = optimized;
+                com.example.pregen.terrain.AquiferCenters.enabled = optimized;
+            }
+            try (TerrainGenerationContext ignored = optimized || abSurface || "round16".equals(ab) || "corners".equals(ab)
+                    ? TerrainGenerationContext.enter() : null) {
             long componentStart = System.nanoTime();
             chunk.getOrCreateNoiseChunk(c -> NoiseChunk.forChunk(c, seed.randomState,
                     new Beardifier(List.of(), List.of(), null),
@@ -323,9 +337,14 @@ public final class TerrainBenchmark {
             noiseTime.add(System.nanoTime() - componentStart);
             }
         });
+        } finally {
+            com.example.pregen.terrain.SharedCorners.close(seed.randomState);
+        }
         // Surface biome lookup reads neighboring chunks. Publish all their biomes first.
         boolean surfaceInContext = optimized || "surface".equals(System.getProperty("pregen.benchmark.ab"))
-                || "surfacerules".equals(System.getProperty("pregen.benchmark.ab"));
+                || "surfacerules".equals(System.getProperty("pregen.benchmark.ab"))
+                || "round16".equals(System.getProperty("pregen.benchmark.ab"))
+                || "corners".equals(System.getProperty("pregen.benchmark.ab"));
         dispatch(chunks, workers, chunk -> {
             // As on the pipeline's fused path, where surface runs inside the terrain context.
             try (TerrainGenerationContext ignored = surfaceInContext ? TerrainGenerationContext.enter() : null) {

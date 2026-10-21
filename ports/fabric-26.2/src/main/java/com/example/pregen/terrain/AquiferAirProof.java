@@ -16,4 +16,8 @@ public interface AquiferAirProof {
      * Minecraft's does, and the flag the fill left is corrected to Minecraft's.
      */
     void pregen$endFill();
+
+    /** Minecraft's computeSubstance, with the aquifer centers kept per grid cell (see AquiferCenters). */
+    net.minecraft.world.level.block.state.BlockState pregen$computeSubstance(
+            net.minecraft.world.level.levelgen.DensityFunction.FunctionContext context, double density);
 }

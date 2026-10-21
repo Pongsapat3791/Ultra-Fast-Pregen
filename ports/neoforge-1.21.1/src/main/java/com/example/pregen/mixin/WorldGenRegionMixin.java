@@ -1,7 +1,9 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.InMemoryChunkGrid;
+import com.example.pregen.WorldgenCompat;
 import com.example.pregen.terrain.BiomeChunkSource;
+import com.example.pregen.terrain.FeatureBiomes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -9,17 +11,21 @@ import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.status.ChunkStep;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(WorldGenRegion.class)
@@ -27,6 +33,8 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
 
     @Shadow @Final private ServerLevel level;
     @Shadow @Final private StaticCache2D<GenerationChunkHolder> cache;
+    @Shadow @Final @Mutable private BiomeManager biomeManager;
+    @Shadow @Final private ChunkStep generatingStep;
 
     @Shadow public abstract boolean hasChunk(int x, int z);
 
@@ -72,6 +80,17 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
         InMemoryChunkGrid grid = this.pregen$grid();
         if (grid != null) {
             cir.setReturnValue(grid.getChunkOrFallback(x, z));
+        }
+    }
+
+    /** The features step of this mod's batches looks biomes up with each cell read once (see FeatureBiomes). */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void pregen$featureBiomes(CallbackInfo ci) {
+        if (FeatureBiomes.enabled && generatingStep.targetStatus() == ChunkStatus.FEATURES
+                && biomeManager.getClass() == BiomeManager.class && pregen$grid() != null
+                && WorldgenCompat.surfaceShortcutsAllowed()) {
+            BiomeManagerAccessor access = (BiomeManagerAccessor) biomeManager;
+            biomeManager = new FeatureBiomes(access.pregen$getNoiseBiomeSource(), access.pregen$getBiomeZoomSeed());
         }
     }
 

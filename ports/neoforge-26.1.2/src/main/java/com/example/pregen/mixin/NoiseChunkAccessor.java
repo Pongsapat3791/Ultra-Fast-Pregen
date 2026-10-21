@@ -22,6 +22,9 @@ public interface NoiseChunkAccessor {
     @Accessor("blockStateRule")
     NoiseChunk.BlockStateFiller pregen$getBlockStateRule();
 
+    @Accessor("fullNoiseDensity")
+    DensityFunction pregen$getFullNoiseDensity();
+
     @Accessor("beardifier")
     DensityFunctions.BeardifierOrMarker pregen$getBeardifier();
 

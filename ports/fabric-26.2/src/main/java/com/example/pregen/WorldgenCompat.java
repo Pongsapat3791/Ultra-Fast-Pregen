@@ -16,6 +16,7 @@ import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.status.ChunkStatusTasks;
 import net.minecraft.world.level.levelgen.Aquifer;
 import net.minecraft.world.level.levelgen.Beardifier;
+import net.minecraft.world.level.levelgen.DensityFunctions;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.NoiseChunk;
 import net.minecraft.world.level.levelgen.OreVeinifier;
@@ -132,6 +133,22 @@ public final class WorldgenCompat {
     private static final List<String> BIOME_CONDITION_CLASSES = List.of(
             "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition");
     private static volatile Boolean surfaceShortcutsAllowed;
+    /** How named functions, splines and spline coordinates map, which NoiseChunkWrap's memo stands in for. */
+    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapChildren");
+    /** DensityFunction#mapAll's walk, a local class, whose results the memo keeps. */
+    private static final String RECURSIVE_VISITOR_CLASS = "net.minecraft.world.level.levelgen.DensityFunction$1RecursiveVisitor";
+    private static volatile Boolean noiseChunkWrapAllowed;
+    /** Minecraft's light engine, which GridLight runs on its own and hands to the server's. */
+    private static final List<Class<?>> LIGHT_ENGINE_CLASSES = List.of(
+            net.minecraft.world.level.lighting.LevelLightEngine.class, net.minecraft.world.level.lighting.LightEngine.class,
+            net.minecraft.world.level.lighting.BlockLightEngine.class, net.minecraft.world.level.lighting.SkyLightEngine.class,
+            net.minecraft.world.level.lighting.LayerLightSectionStorage.class,
+            net.minecraft.world.level.lighting.BlockLightSectionStorage.class,
+            net.minecraft.world.level.lighting.SkyLightSectionStorage.class,
+            net.minecraft.world.level.lighting.DataLayerStorageMap.class,
+            net.minecraft.world.level.lighting.ChunkSkyLightSources.class, net.minecraft.world.level.chunk.DataLayer.class,
+            net.minecraft.server.level.ThreadedLevelLightEngine.class);
+    private static volatile Boolean parallelLightAllowed;
 
     /** Mixins their own mods declared compatible (API or mod metadata): mixin class -> where it was declared. */
     private static final Map<String, String> DECLARED_COMPATIBLE = new ConcurrentHashMap<>();
@@ -256,6 +273,57 @@ public final class WorldgenCompat {
                 PreGenMod.LOGGER.info("[PreGen] Cell-skipping terrain fill disabled: other mods modify terrain noise {}", foreign);
             }
             fastNoiseFillAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * The router-building shortcuts (NoiseChunkWrap) change no result but rely on how Minecraft's
+     * NoiseChunk wraps the router (see fastNoiseFillAllowed) and on how mapAll walks named
+     * functions, splines and spline coordinates: another mod's mixin into any of those turns them off.
+     */
+    public static boolean noiseChunkWrapAllowed() {
+        Boolean allowed = noiseChunkWrapAllowed;
+        if (allowed == null) {
+            List<String> details = new ArrayList<>();
+            Set<String> foreign = new TreeSet<>();
+            for (Class<?> target : List.of(DensityFunctions.HolderHolder.class, DensityFunctions.Spline.class,
+                    DensityFunctions.Spline.Coordinate.class)) {
+                foreign.addAll(changingMixinConfigs(target, ROUTER_MAPPING_METHODS, details));
+            }
+            try {
+                foreign.addAll(changingMixinConfigs(Class.forName(RECURSIVE_VISITOR_CLASS, false,
+                        DensityFunctions.class.getClassLoader()), null, details));
+            } catch (ClassNotFoundException | LinkageError missing) {
+                foreign.add("unknown (" + missing.getClass().getSimpleName() + ")");
+            }
+            if (!foreign.isEmpty()) {
+                PreGenMod.LOGGER.info("[PreGen] Faster noise router building disabled: other mods modify density functions {}: {}",
+                        foreign, details);
+            }
+            allowed = foreign.isEmpty() && fastNoiseFillAllowed();
+            noiseChunkWrapAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * Lighting a grid on the workers (GridLight) runs Minecraft's light engine on its own and gives
+     * the result to the server's engine as a loaded chunk's light: another mod's change to the light
+     * engine (the Starlight family replaces it) keeps the server's engine lighting the grid.
+     */
+    public static boolean parallelLightAllowed() {
+        Boolean allowed = parallelLightAllowed;
+        if (allowed == null) {
+            List<String> details = new ArrayList<>();
+            Set<String> foreign = new TreeSet<>();
+            for (Class<?> target : LIGHT_ENGINE_CLASSES) foreign.addAll(changingMixinConfigs(target, null, details));
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Lighting on the worker threads disabled: other mods modify the light engine {}: {}",
+                        foreign, details);
+            }
+            parallelLightAllowed = allowed;
         }
         return allowed;
     }
@@ -451,8 +519,12 @@ public final class WorldgenCompat {
         return changeReason(mixin, target, methods) != null;
     }
 
-    /** What the mixin changes (see changes), or null when nothing. */
-    static String changeReason(IMixinInfo mixin, Class<?> target, Set<String> methods) {
+    /**
+     * What the mixin changes (see changes), or null when nothing. One at a time: the checks run on
+     * whichever worker first needs them, and two reading the same mixin at once made one of them
+     * fail (Fabric API's WorldViewMixin read as unreadable, which turned the surface shortcuts off).
+     */
+    static synchronized String changeReason(IMixinInfo mixin, Class<?> target, Set<String> methods) {
         try {
             ClassNode node = mixin.getClassNode(0);
             // Where the skipped work sits in the target's fields (1.20.1's ChunkStatus keeps each

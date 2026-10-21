@@ -1330,15 +1330,26 @@ public final class PartialExistingBatchCheck {
             require(byNeighbors.equals(repeated), "Neighbor-ordered features must be deterministic");
             require(phased.equals(byNeighbors), "Neighbor-ordered features differ from phases: " + phased + " != " + byNeighbors);
             System.out.println("FEATURE_ORDER_PARITY_CHECK PASS hash=" + byNeighbors);
+            // Features with Minecraft's own biome lookup, against the one reading each cell once.
+            com.example.pregen.terrain.FeatureBiomes.enabled = false;
+            String plainBiomes = terrainHash(level, center, pool, true);
+            com.example.pregen.terrain.FeatureBiomes.enabled = true;
+            require(plainBiomes.equals(byNeighbors), "Features with Minecraft's biome lookup differ from the cached lookup: "
+                    + plainBiomes + " != " + byNeighbors);
+            System.out.println("FEATURE_BIOMES_PARITY_CHECK PASS hash=" + plainBiomes);
             // terrain_pipeline=vanilla: Minecraft's own ChunkStatus tasks on the same grid.
             String perStatus = terrainHash(level, center, pool, true, false);
             require(perStatus.equals(byNeighbors), "Minecraft's per-status terrain tasks differ from the fused path: "
                     + perStatus + " != " + byNeighbors);
             long surfaceChunks = com.example.pregen.terrain.SurfaceBiomes.READ_CHUNKS.sum();
             require(surfaceChunks > 0, "The fused path must have run the surface rule shortcuts");
-            System.out.println("VANILLA_PIPELINE_PARITY_CHECK PASS hash=" + perStatus + " surface_shortcut_chunks=" + surfaceChunks);
+            long sharedCorners = com.example.pregen.terrain.SharedCorners.COPIED.sum();
+            require(sharedCorners > 0, "The fused path must have shared edge corners between chunks");
+            System.out.println("VANILLA_PIPELINE_PARITY_CHECK PASS hash=" + perStatus + " surface_shortcut_chunks=" + surfaceChunks
+                    + " shared_corner_columns=" + sharedCorners);
         } finally {
             com.example.pregen.terrain.FastNoiseFill.enabled = true;
+            com.example.pregen.terrain.FeatureBiomes.enabled = true;
             InMemoryChunkGrid.featuresByNeighbors = true;
             pool.shutdownNow();
         }

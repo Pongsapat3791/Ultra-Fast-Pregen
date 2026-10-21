@@ -1,5 +1,6 @@
 package com.example.pregen.terrain;
 
+import com.example.pregen.WorldgenCompat;
 import com.example.pregen.mixin.CacheAllInCellAccessor;
 import com.example.pregen.mixin.NoiseChunkAccessor;
 import java.util.List;
@@ -68,6 +69,12 @@ public final class FastNoiseFill {
         int l = chunkPos.getMinBlockZ();
         Aquifer aquifer = noiseChunk.aquifer();
         AquiferAirProof airProof = (Object) aquifer instanceof AquiferAirProof proof ? proof : null;
+        // Minecraft's per-block rule, with the aquifer centers kept per grid cell (see AquiferCenters):
+        // the aquifer over the cell's density, then the ore veins.
+        AquiferAirProof centers = plan.aquiferRule && airProof != null && AquiferCenters.enabled
+                && WorldgenCompat.aquiferOptimizationAllowed() ? airProof : null;
+        DensityFunction fullDensity = plan.fullDensity;
+        NoiseChunk.BlockStateFiller veinRule = plan.veinRule;
         boolean voidTerrain = SharedConstants.debugVoidTerrain(chunkPos);
         noiseChunk.initializeForFirstCellX();
         BlockPos.MutableBlockPos mutableBlockPos = new BlockPos.MutableBlockPos();
@@ -157,7 +164,13 @@ public final class FastNoiseFill {
                                 int ad = ac & 15;
                                 double f = (double) ab / m;
                                 noiseChunk.updateForZ(ac, f);
-                                BlockState blockState = access.pregen$getInterpolatedState();
+                                BlockState blockState;
+                                if (centers != null) {
+                                    blockState = centers.pregen$computeSubstance(noiseChunk, fullDensity.compute(noiseChunk));
+                                    if (blockState == null && veinRule != null) blockState = veinRule.calculate(noiseChunk);
+                                } else {
+                                    blockState = access.pregen$getInterpolatedState();
+                                }
                                 if (blockState == null) {
                                     blockState = defaultBlock;
                                 }
@@ -194,8 +207,12 @@ public final class FastNoiseFill {
         return plan.veinToggle.maxAbs() < VEIN_THRESHOLD;
     }
 
-    /** What the per-block rule of a vanilla NoiseChunk consists of, or null if not vanilla. */
-    private record Plan(DensityBounds bounds, boolean veins, DensityBounds veinToggle) {
+    /**
+     * What the per-block rule of a vanilla NoiseChunk consists of, or null if not vanilla:
+     * aquiferRule when its first rule is Minecraft's aquifer over fullDensity, veinRule the second.
+     */
+    private record Plan(DensityBounds bounds, boolean veins, DensityBounds veinToggle, boolean aquiferRule,
+                        DensityFunction fullDensity, NoiseChunk.BlockStateFiller veinRule) {
         static Plan of(NoiseChunkAccessor access, RandomState randomState) {
             // Vanilla's rule: [aquifer over cacheAllInCell(finalDensity + beardifier)], plus the
             // ore veinifier when ore veins are enabled. The cell cache is the last one created.
@@ -219,7 +236,11 @@ public final class FastNoiseFill {
                     veinToggle = DensityBounds.compile(toggle, access.pregen$getBlender());
                 }
             }
-            return new Plan(bounds, fillers == 2, veinToggle);
+            // NoiseChunk's constructor adds its own lambda first: the aquifer over fullNoiseDensity.
+            NoiseChunk.BlockStateFiller first = rules.materialRuleList()[0];
+            boolean aquiferRule = first.getClass().getName().startsWith(NoiseChunk.class.getName() + "$$Lambda");
+            return new Plan(bounds, fillers == 2, veinToggle, aquiferRule, access.pregen$getFullNoiseDensity(),
+                    fillers == 2 ? rules.materialRuleList()[1] : null);
         }
     }
 }

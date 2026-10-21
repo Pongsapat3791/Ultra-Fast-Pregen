@@ -1,7 +1,9 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.InMemoryChunkGrid;
+import com.example.pregen.WorldgenCompat;
 import com.example.pregen.terrain.BiomeChunkSource;
+import com.example.pregen.terrain.FeatureBiomes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -9,16 +11,19 @@ import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.world.DifficultyInstance;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.biome.BiomeManager;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkStatus;
 import java.util.List;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Mutable;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(WorldGenRegion.class)
@@ -26,6 +31,8 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
 
     @Shadow @Final private ServerLevel level;
     @Shadow @Final private List<ChunkAccess> cache;
+    @Shadow @Final @Mutable private BiomeManager biomeManager;
+    @Shadow @Final private ChunkStatus generatingStatus;
 
     @Shadow public abstract boolean hasChunk(int x, int z);
 
@@ -56,6 +63,25 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
                 cir.setReturnValue(grid.getChunkOrFallback(x, z));
             }
         }
+    }
+
+    /** The features step of this mod's batches looks biomes up with each cell read once (see FeatureBiomes). */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void pregen$featureBiomes(CallbackInfo ci) {
+        if (FeatureBiomes.enabled && generatingStatus == ChunkStatus.FEATURES
+                && biomeManager.getClass() == BiomeManager.class && pregen$insideGrid()
+                && WorldgenCompat.surfaceShortcutsAllowed()) {
+            BiomeManagerAccessor access = (BiomeManagerAccessor) biomeManager;
+            biomeManager = new FeatureBiomes(access.pregen$getNoiseBiomeSource(), access.pregen$getBiomeZoomSeed());
+        }
+    }
+
+    /** Whether this is one of the grid's own regions, its center inside the grid. */
+    @Unique
+    private boolean pregen$insideGrid() {
+        InMemoryChunkGrid grid = InMemoryChunkGrid.owning(this.level, this.cache);
+        ChunkPos center = this.getCenter();
+        return grid != null && grid.isInsideGrid(center.x, center.z);
     }
 
     /** The chunk whose biomes the region's getNoiseBiome reads for its cells, found as LevelReader's does. */

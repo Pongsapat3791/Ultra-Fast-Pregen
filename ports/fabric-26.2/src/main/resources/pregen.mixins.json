@@ -25,6 +25,7 @@
     "FlatCacheAccessor",
     "ShiftedNoiseAccessor",
     "NoiseChunkMixin",
+    "RecursiveVisitorMixin",
     "ClimateParameterListMixin",
     "SurfaceBlockColumnMixin",
     "SurfaceRulesContextMixin",

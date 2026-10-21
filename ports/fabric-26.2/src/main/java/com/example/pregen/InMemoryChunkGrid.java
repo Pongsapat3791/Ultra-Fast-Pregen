@@ -1,8 +1,10 @@
 package com.example.pregen;
 
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -15,6 +17,9 @@ import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.util.StaticCache2D;
@@ -161,6 +166,12 @@ public class InMemoryChunkGrid {
     }
 
     private final ServerLevel level;
+    /**
+     * The level's heights as constants, for the grid's chunks: a chunk asks for its minimum Y on
+     * every block it reads or writes, and the level answers through its dimension type (about 1%
+     * of generation time). Proto chunks use their accessor for nothing else.
+     */
+    private final LevelHeightAccessor heights;
     private final ChunkGenerator generator;
     private final StructureTemplateManager templateManager;
     private final ThreadedLevelLightEngine lightEngine;
@@ -332,7 +343,7 @@ public class InMemoryChunkGrid {
             ProtoChunk fallback = new ProtoChunk(
                 new ChunkPos(worldChunkX, worldChunkZ),
                 UpgradeData.EMPTY,
-                level,
+                heights,
                 level.palettedContainerFactory(),
                 null
             );
@@ -344,6 +355,7 @@ public class InMemoryChunkGrid {
     public InMemoryChunkGrid(ServerLevel level, int minBlockX, int minBlockZ, int coreChunksX, int coreChunksZ,
                              boolean fusedTerrain, boolean parallelSteps) {
         this.level = level;
+        this.heights = LevelHeightAccessor.create(level.getMinY(), level.getHeight());
         this.generator = level.getChunkSource().getGenerator();
         this.templateManager = level.getStructureManager();
         this.lightEngine = level.getChunkSource().getLightEngine();
@@ -376,7 +388,7 @@ public class InMemoryChunkGrid {
                 chunks[gx][gz] = new ProtoChunk(
                     new ChunkPos(worldChunkX, worldChunkZ),
                     UpgradeData.EMPTY,
-                    level,
+                    heights,
                     biomeRegistry,
                     null
                 );
@@ -538,6 +550,7 @@ public class InMemoryChunkGrid {
                 RandomState randomState = level.getChunkSource().randomState();
                 StructureManager structureManager = level.structureManager();
                 NoiseSettings noiseSettings = noiseGen.generatorSettings().value().noiseSettings();
+                com.example.pregen.terrain.SharedCorners.open(randomState);
 
                 // Minecraft 1.21 builds noise and surface only once the eight neighbors have
                 // biomes (surface reads their stored biomes), so every chunk first computes its
@@ -643,7 +656,11 @@ public class InMemoryChunkGrid {
                 }
             }
 
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            try {
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } finally {
+                com.example.pregen.terrain.SharedCorners.close(level.getChunkSource().randomState());
+            }
             return;
         }
 
@@ -905,7 +922,8 @@ public class InMemoryChunkGrid {
      * Minecraft's INITIALIZE_LIGHT and LIGHT steps on every terrain chunk, core and halo, as the
      * server lights a chunk among lit neighbors; the light engine reads the grid's blocks through
      * chunkForLighting meanwhile. The engine runs on its own thread, so the four phases only bound
-     * how much work is queued at once. Chunks the server keeps are left to it.
+     * how much work is queued at once. Chunks the server keeps are left to it. Without such chunks
+     * the workers light the grid instead (see lightInParallel).
      */
     private void executeLighting(ExecutorService workerPool, Runnable onChunkDone) {
         List<ProtoChunk> lit = new ArrayList<>();
@@ -920,6 +938,10 @@ public class InMemoryChunkGrid {
         lightStarted = true;
         lighting = true;
         try {
+            if (lightHeld.isEmpty() && GridLight.enabled && WorldgenCompat.parallelLightAllowed()) {
+                lightInParallel(lit, workerPool, onChunkDone);
+                return;
+            }
             List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size());
             for (ProtoChunk chunk : lit) initFutures.add(generate(ChunkStatus.INITIALIZE_LIGHT, chunk, 0));
             awaitLight(initFutures);
@@ -937,6 +959,39 @@ public class InMemoryChunkGrid {
         } finally {
             lighting = false;
         }
+    }
+
+    /**
+     * The grid's light worked out on the workers (see GridLight), then given to the server's light
+     * engine as it takes a lit chunk loaded from disk (SerializableChunkData#read, then Minecraft's
+     * light steps for a lit chunk), so that engine propagates nothing; spawning, saving and the
+     * release of the grid's light (dispose) read it there as before.
+     */
+    private void lightInParallel(List<ProtoChunk> lit, ExecutorService workerPool, Runnable onChunkDone) {
+        Long2ObjectOpenHashMap<ProtoChunk> byPos = new Long2ObjectOpenHashMap<>(lit.size());
+        for (ProtoChunk chunk : lit) byPos.put(chunk.getPos().pack(), chunk);
+        List<GridLight.ChunkLight> computed = GridLight.compute(level, byPos,
+                terrainMinX(), terrainMinZ(), terrainMaxX(), terrainMaxZ(), workerPool);
+        int bottom = lightEngine.getMinLightSection();
+        List<CompletableFuture<?>> futures = new ArrayList<>(computed.size());
+        for (GridLight.ChunkLight light : computed) {
+            ProtoChunk chunk = light.chunk();
+            ChunkPos pos = chunk.getPos();
+            lightEngine.retainData(pos, true);
+            for (int i = 0; i < light.sky().length; i++) {
+                SectionPos section = SectionPos.of(pos, bottom + i);
+                // An empty block layer is what the engine starts any section with.
+                DataLayer block = light.block()[i];
+                if (block != null && !block.isEmpty()) lightEngine.queueSectionData(LightLayer.BLOCK, section, block);
+                if (light.sky()[i] != null) lightEngine.queueSectionData(LightLayer.SKY, section, light.sky()[i]);
+            }
+            chunk.setLightEngine(lightEngine);
+            CompletableFuture<?> f = CompletableFuture.allOf(lightEngine.initializeLight(chunk, true), lightEngine.lightChunk(chunk, true))
+                    .thenRun(() -> chunk.setPersistedStatus(ChunkStatus.LIGHT));
+            if (onChunkDone != null && isCore(pos.x(), pos.z())) f = f.thenRun(onChunkDone);
+            futures.add(f);
+        }
+        awaitLight(futures);
     }
 
     /** No chunk's light finishing for this long means the light engine stopped (see awaitLight). */
