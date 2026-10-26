@@ -23,9 +23,9 @@ mods do, so it has no fast terrain path and is slower; see its page for how it d
 
 ## Speed
 
-Measured with the [benchmark tool](benchmark/README.md) on an **AMD Ryzen 5 7500F (6 cores, 12 threads)**, 32 GB RAM,
-Windows 11, NeoForge 26.1.2: a fresh world (seed 42), a square of radius 1,500 blocks (about 35,000 chunks), average of 2 runs.
-"Vanilla" is Minecraft's own generation driven by Chunky 1.5.4.
+Measured with version 14 and the [benchmark tool](benchmark/README.md) on an **AMD Ryzen 5 7500F (6 cores, 12 threads)**,
+32 GB RAM, Windows 11, NeoForge 26.1.2: a fresh world (seed 42), a square of radius 1,500 blocks (about 35,000 chunks),
+average of 2 runs. "Vanilla" is Minecraft's own generation driven by Chunky 1.5.4.
 
 ![Chunk pregeneration speed: Overworld, Tectonic + WWOO, Nether and End, without and with C2ME](images/benchmark-summary.png)
 
@@ -40,13 +40,20 @@ Windows 11, NeoForge 26.1.2: a fresh world (seed 42), a square of radius 1,500 b
 | End | 752.1 | **1,079.7** | 1.44× |
 | End + C2ME | 992.2 | **1,113.8** | 1.12× |
 
+**Version 15 is faster than these numbers from 14:** whole Overworld runs without other mods are **21% faster on
+NeoForge 26.1.2** and **17% faster on Fabric 26.2** (the surface rule shortcuts +5% / +7%, then the other new steps
++15% / +9%; i9-11900T, 16 threads, 2,000 × 2,000 blocks; see [Faster](CHANGELOG.md#faster)). The table and chart have
+not been measured again with 15.
+
 Ultra Fast Pregen runs on the CPU only (no OpenCL / GPU). The same worlds on Bye?Pregen's published chart
 (Ryzen 9 9950X3D, 16 cores / 32 threads, NeoForge 26.1.2, also Chunky as vanilla): vanilla 201.9 → Bye?Pregen 304.1 chunks/s (1.51×),
 Tectonic + WWOO 27.9 → 60.2 (2.16×), C2ME 1,173.2 → 1,467.6 (1.25×), Tectonic + WWOO + C2ME 301.7 → 531.1 (1.76×).
 Different machines: compare the speed-ups, not the absolute numbers.
 
-**Modpacks** (i9-11900T ES, 16 threads, Ultra Fast Pregen 14 vs 13): All the Mods 9 35.0 → 39.1 chunks/s, All the Mods 10 48.6 → 54.2,
-Prominence II 32.4 → 36.9 (the fast terrain path now stays on in all three).
+**Modpacks** (Intel Xeon E5-2670 v2, 20 threads, version 15 against 14.1): All the Mods 10 59.6 → 60.0 chunks/s (+1%),
+All the Mods 9 51.5 → 60.1 (+17%), Prominence II 52.6 → 51.5 (−2%), one run each; a run's speed varies by up to about
+10%. Other mods in these packs change most of the code that the new fast steps of 15 stand in for, so those steps turn
+themselves off ([details](COMPATIBILITY.md#modpacks)).
 
 ## Quick start
 
@@ -135,11 +142,13 @@ Each batch is generated in RAM in this order:
 2. **Biomes, noise and surface** in one fused pass for the batch and a 1-chunk ring.
 3. **Carvers (caves).**
 4. **Features**, in the 9-phase order Minecraft's dependencies require for chunks that write over each other; other chunks start right away.
-5. **Light:** Minecraft's own INITIALIZE_LIGHT and LIGHT steps with the server's light engine, which reads the batch from RAM.
+5. **Light:** Minecraft's own light engine on the worker threads, one copy for each tile of 8 × 8 chunks, reading the batch
+   from RAM. Batches with chunks the server holds, and servers where another mod changes the light engine, are lit with
+   Minecraft's INITIALIZE_LIGHT and LIGHT steps on the server's light engine.
 6. **Initial mob spawning**, chunk by chunk as in vanilla.
 7. **Saving:** encoding on all threads, then one write per region file through the server's IO worker.
 
-Steps 5–7 run on a separate thread while the next batch runs steps 1–3. Feature placement that crosses a batch edge is carried into
+Steps 5–7 of a batch run while the next batch runs steps 1–3. Feature placement that crosses a batch edge is carried into
 the next batch (or merged back into the saved chunk), so batches give the same blocks as one run (test `BATCH_SEAM_CHECK`).
 
 **Stage 2 is about 1.8× faster than Minecraft with bit-identical results:** 4×8×4 noise cells proven all air or all stone from the
@@ -154,7 +163,8 @@ The test suite (`runPartialBatchCheck`, `runTerrainBenchmark`) runs on a real se
   amplified, caves and floating islands presets).
 - Sky and block light of every block match Minecraft's light engine on the same blocks (1,572,864 blocks, 0 different).
 - Batch seams, stopping and resuming, and joining an existing area give the blocks of one uninterrupted run.
-- A batch that fails on the fast paths is generated again Minecraft's way with the same blocks (`SAFE_MODE_RETRY_CHECK`).
+- A batch that fails on the fast paths is generated again Minecraft's way with the same blocks (`SAFE_MODE_RETRY_CHECK`),
+  and one whose lighting or saving fails is generated again from what is saved (`TAIL_FAILURE_RETRY_CHECK`).
 
 ## Compatibility with other mods
 

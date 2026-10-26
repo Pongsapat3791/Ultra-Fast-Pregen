@@ -51,7 +51,7 @@ VERSIONS = {
     "26.1.2": {
         "neoforge": "26.1.2.122",
         "java": 25,
-        "ufp": "ultrafastpregen-neoforge-26.1.2-14.jar",
+        "ufp": "ultrafastpregen-neoforge-26.1.2-15.jar",
         "c2me_nodfc": "c2me-26.1.2-nodfc.toml",
         "mods": {
             "chunky": ("Chunky-NeoForge-1.5.4.jar", MODRINTH + "fALzjamp/versions/EyCqftOK/Chunky-NeoForge-1.5.4.jar"),
@@ -71,7 +71,7 @@ VERSIONS = {
     "1.21.1": {
         "neoforge": "21.1.259",
         "java": 21,
-        "ufp": "ultrafastpregen-neoforge-1.21.1-14.jar",
+        "ufp": "ultrafastpregen-neoforge-1.21.1-15.jar",
         "c2me_nodfc": "c2me-nodfc.toml",
         "mods": {
             "chunky": ("Chunky-NeoForge-1.4.23.jar", MODRINTH + "fALzjamp/versions/LuFhm4eU/Chunky-NeoForge-1.4.23.jar"),

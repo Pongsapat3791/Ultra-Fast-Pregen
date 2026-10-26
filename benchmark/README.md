@@ -33,8 +33,8 @@ the same way, so the numbers are comparable.
 ## Steps
 
 1. Copy the `benchmark` folder (`bench.py`, `chart.py`, `summary.py`, `c2me-26.1.2-nodfc.toml`, `c2me-nodfc.toml`)
-   to the machine and put `ultrafastpregen-neoforge-26.1.2-14.jar` next to `bench.py`
-   (`--mc 1.21.1` uses `ultrafastpregen-neoforge-1.21.1-14.jar`).
+   to the machine and put `ultrafastpregen-neoforge-26.1.2-15.jar` next to `bench.py`
+   (`--mc 1.21.1` uses `ultrafastpregen-neoforge-1.21.1-15.jar`).
 2. Install everything (once):
    ```
    python bench.py setup

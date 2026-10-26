@@ -1,6 +1,6 @@
 # Changelog
 
-## 15 (in development)
+## 15
 
 ### New builds
 - **Bukkit plugin for Minecraft 26.2:** one jar for CraftBukkit, Spigot, Paper and Folia
@@ -10,11 +10,6 @@
   Chunks the server holds part-generated are left to it, and `/pregen resume` fills them in later.
 - **Sponge 26.2** (SpongeVanilla, API 20): the Fabric 26.2 build as a Sponge plugin, with every fast path
   ([ports/sponge-26.2](ports/sponge-26.2/README.md)).
-- **Tested** on CraftBukkit, Spigot, Paper and Folia 26.2 and on SpongeVanilla 26.2
-  ([COMPATIBILITY.md](COMPATIBILITY.md#bukkit-servers-and-sponge)): Sponge's worlds are the Fabric 26.2 build's block
-  for block in all three dimensions, and the plugin's on Spigot too, apart from 10 shipwreck chests stored without
-  water, which they get back when the server loads them; stopping the server during a run, chunks the server holds, a
-  batch whose saving fails and the API work on every server; and a player tested every one of them in the game.
 
 ### New
 - **Any radius, square or circle:** `/pregen radius <blocks>`, `/pregen shape square|circle` and `/pregen start` without a size;
@@ -94,6 +89,25 @@
   on 26.x, where a village lies next to a batch edge of its area; the check now also requires that the server holds
   no chunks around the area afterwards.
 - Includes the fix of 14.1.
+
+### Tested
+- The automated test suite passes on all six mod builds with the released jars: blocks, biomes and light identical to
+  Minecraft's own generation (Overworld, Nether, End and the other world presets), batch edges, stopping and resuming,
+  joining existing areas, circles, continuing after a server stop, the API, and the safety net, also for a batch whose
+  lighting or saving fails.
+- With other mods, on dedicated servers of all six mod builds with the released jars: 132 of 132 runs passed (C2ME,
+  Lithium / Canary, Noisium, FerriteCore, ModernFix, Starlight / ScalableLux, Distant Horizons, Voxy, Terralith,
+  Biomes O' Plenty, YUNG's Better Caves and Alex's Caves, alone and together, in the Overworld, Nether and End, every
+  saved chunk checked), and the biomes are Minecraft's own in every run. Moonrise was refused as intended.
+- Modpacks against 14.1 on the same server: All the Mods 10 59.6 → 60.0 chunks/s, All the Mods 9 51.5 → 60.1 (the
+  surface rule shortcuts stay on there), Prominence II 52.6 → 51.5; one run each, and a run's speed varies by up to
+  about 10%. In these packs other mods change most of the code that the new fast steps stand in for, so those steps
+  turn themselves off. Details in [COMPATIBILITY.md](COMPATIBILITY.md#modpacks).
+- **The Bukkit and Sponge builds** on CraftBukkit, Spigot, Paper and Folia 26.2 and on SpongeVanilla 26.2
+  ([COMPATIBILITY.md](COMPATIBILITY.md#bukkit-servers-and-sponge)): Sponge's worlds are the Fabric 26.2 build's block
+  for block in all three dimensions, and the plugin's on Spigot too, apart from 10 shipwreck chests stored without
+  water, which they get back when the server loads them; stopping the server during a run, chunks the server holds, a
+  batch whose saving fails and the API work on every server; and a player tested every one of them in the game.
 
 ## 14.1
 

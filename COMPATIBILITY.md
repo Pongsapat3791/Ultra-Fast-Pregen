@@ -1,7 +1,7 @@
 # Compatibility and test results
 
-Ultra Fast Pregen 15 (in development, branch `dev`), tested with the jars whose SHA-1 is at the end of this page: the
-automated test suite, the runs with other mods, the modpacks, and the Bukkit and Sponge builds.
+Ultra Fast Pregen 15, tested with the released jars, whose SHA-1 is at the end of this page: the automated test suite,
+the runs with other mods, the modpacks, and the Bukkit and Sponge builds.
 
 - [Automated test suite](#automated-test-suite): every build, block for block against Minecraft's own generation
 - [Together with other mods](#together-with-other-mods): performance, LoD and worldgen mods on dedicated servers
@@ -233,7 +233,8 @@ Exactly these files were installed (with the libraries they require), from Modri
 
 ## Tested jars
 
-Version 15: the automated test suite, the runs with other mods, the modpacks, and the Bukkit and Sponge builds.
+Version 15, the released jars: the automated test suite, the runs with other mods, the modpacks, and the Bukkit and
+Sponge builds.
 
 | File | SHA-1 |
 |---|---|
