@@ -85,6 +85,18 @@ final class SeamWrites {
     private long importedWrites;
     private long borderChunksSaved;
 
+    /**
+     * Forgets the edges this run keeps in memory (the counts stay): the run goes on from what is
+     * stored, as /pregen resume does (see DynamicBatchPreGen#redoTail).
+     */
+    synchronized void forgetRun() {
+        pending.clear();
+        handled.clear();
+        written.clear();
+        finals.clear();
+        storedRead.clear();
+    }
+
     synchronized void markHandled(long chunk, boolean wrote) {
         set(handled, chunk);
         if (wrote) set(written, chunk);

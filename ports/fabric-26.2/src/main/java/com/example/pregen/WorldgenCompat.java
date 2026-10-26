@@ -57,6 +57,11 @@ public final class WorldgenCompat {
      * (compared block for block on 10 000 chunks with C2ME 0.4.2-alpha.0.56).
      */
     private static final Set<String> FILL_NEUTRAL_MIXINS = Set.of(
+            // Lithium (Fabric, NeoForge) and Canary (Forge): the noise generator's sea level read once
+            // from its settings and kept; the same value.
+            "net.caffeinemc.mods.lithium.mixin.gen.cached_generator_settings.NoiseBasedChunkGeneratorMixin",
+            "me.jellysquid.mods.lithium.mixin.gen.cached_generator_settings.NoiseChunkGeneratorMixin",
+            "com.abdelaziz.canary.mixin.gen.cached_generator_settings.NoiseBasedChunkGeneratorMixin",
             // C2ME: accessors, a constructor-only mixin, Minecraft's random without atomics, its
             // aquifer and beardifier rewrites (same results), and the executor of the noise step.
             "com.ishland.c2me.base.mixin.access.IAquiferSamplerImpl",

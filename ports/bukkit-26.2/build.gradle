@@ -1,0 +1,65 @@
+plugins {
+    id 'java'
+}
+
+version = project.version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+/** A key of local.properties next to this file (machine settings, not committed), or null. */
+def localProperty(String key) {
+    def local = file('local.properties')
+    if (!local.isFile()) return null
+    def props = new Properties()
+    local.withInputStream { props.load(it) }
+    return props.getProperty(key)
+}
+
+repositories {
+    // BuildTools' local repository: Spigot 26.2 itself. It holds only the POMs of most libraries,
+    // so those come from the public repositories below. Maven's own local repository, where
+    // BuildTools installs it, unless spigot_repo (-Pspigot_repo=... or local.properties) names another.
+    def spigotRepo = findProperty('spigot_repo') ?: localProperty('spigot_repo')
+    if (spigotRepo) {
+        maven {
+            url = uri(new File(spigotRepo).toURI())
+            content { includeGroup 'org.spigotmc' }
+        }
+    } else {
+        mavenLocal {
+            content { includeGroup 'org.spigotmc' }
+        }
+    }
+    mavenCentral()
+    maven { url = 'https://libraries.minecraft.net/' }
+}
+
+dependencies {
+    // The server provides all of these at run time: Bukkit, CraftBukkit and Minecraft itself.
+    compileOnly "org.spigotmc:spigot:${project.spigot_version}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 25
+    options.compilerArgs += ['-Xmaxerrs', '2000']
+}
+
+processResources {
+    def props = [version: project.version]
+    inputs.properties props
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_ultrafastpregen" }
+    }
+}

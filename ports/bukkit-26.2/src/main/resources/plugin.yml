@@ -1,0 +1,17 @@
+name: UltraFastPregen
+version: '${version}'
+main: com.example.pregen.UltraFastPregenPlugin
+api-version: '26.2'
+folia-supported: true
+description: Pre-generates worlds in memory, one batch of chunks at a time on every CPU core.
+author: Pongsapat
+load: POSTWORLD
+commands:
+  pregen:
+    description: Pre-generate an area (start, radius, shape, worldborder, spawn, world, center, resume, reset, stop, status, set)
+    usage: /pregen <start|radius|shape|worldborder|spawn|world|center|resume|reset|stop|status|set>
+    permission: ultrafastpregen.command
+permissions:
+  ultrafastpregen.command:
+    description: Use /pregen and see a run's boss bar.
+    default: op

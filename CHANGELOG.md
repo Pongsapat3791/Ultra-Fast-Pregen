@@ -2,6 +2,20 @@
 
 ## 15 (in development)
 
+### New builds
+- **Bukkit plugin for Minecraft 26.2:** one jar for CraftBukkit, Spigot, Paper and Folia
+  ([ports/bukkit-26.2](ports/bukkit-26.2/README.md)). A plugin cannot change Minecraft's code, so it calls Minecraft's
+  own world generation directly: no fast terrain path, but structures, caves, features, light and saving on every core
+  as in the mod. On Paper and Folia it saves through Paper's chunk storage (Moonrise), which the mods do not support.
+  Chunks the server holds part-generated are left to it, and `/pregen resume` fills them in later.
+- **Sponge 26.2** (SpongeVanilla, API 20): the Fabric 26.2 build as a Sponge plugin, with every fast path
+  ([ports/sponge-26.2](ports/sponge-26.2/README.md)).
+- **Tested** on CraftBukkit, Spigot, Paper and Folia 26.2 and on SpongeVanilla 26.2
+  ([COMPATIBILITY.md](COMPATIBILITY.md#bukkit-servers-and-sponge)): Sponge's worlds are the Fabric 26.2 build's block
+  for block in all three dimensions, and the plugin's on Spigot too, apart from 10 shipwreck chests stored without
+  water, which they get back when the server loads them; stopping the server during a run, chunks the server holds, a
+  batch whose saving fails and the API work on every server; and a player tested every one of them in the game.
+
 ### New
 - **Any radius, square or circle:** `/pregen radius <blocks>`, `/pregen shape square|circle` and `/pregen start` without a size;
   `/pregen worldborder` takes the center and size from the world border, `/pregen spawn` centers on the world spawn.
@@ -39,6 +53,15 @@
   12 to 23 s while the next batch generates. Lighting already ran alongside the next batch, so whole runs gain little
   from this alone, but a run of one batch, and the last batch of every run, finish sooner. Batches with chunks the
   server holds, and servers where another mod changes the light engine, are lit by the server's light engine as before.
+- **Lithium and Canary keep the cell-skipping fill:** their one change to the noise generator (the sea level read once
+  and kept) turned the fill off. It stays on with them now: with Lithium on 26.2, 201 instead of about 185 chunks/s
+  (Xeon E5-2670 v2, 20 threads, 2000 x 2000 blocks), and the full Essentially Optimized set of mods is no longer slower
+  than Ultra Fast Pregen alone.
+- **SuperChunk keeps the fast terrain path:** SuperChunk (NeoForge 1.21.1, Forge 1.20.1) bundles C2ME under its own
+  package names, so its copy of C2ME's changes, and four of its own that give the same results, turned the fast
+  terrain path off and ran features one chunk at a time. They are recognized now: overworld 104.5 -> 173.0 chunks/s on
+  NeoForge 1.21.1 and 33.5 -> 184.1 on Forge 1.20.1 (Xeon E5-2670 v2, 20 threads, 1000 x 1000 blocks), with the
+  same blocks as on Minecraft's path with SuperChunk (2 of 3,844 chunks differ on Forge).
 - All together, whole runs are 15% faster on 26.1.2 and 9% faster on 26.2 than with the surface rules alone (same
   machine and area), with the same blocks and light as Minecraft's. Like the fast paths before them, these steps turn
   themselves off where another mod changes the code they stand in for; in large mod packs that is often the case.
@@ -54,6 +77,22 @@
   code it replaces. These checks ran on whichever worker thread needed them first, and two threads reading the same
   mixin at once could make one of them fail; on Fabric with Fabric API this sometimes turned the surface shortcuts off
   for a whole run. The checks now run one at a time.
+- **A batch whose lighting or saving fails is generated again:** a batch is lit and saved while the next one
+  generates, so such a failure showed only when the next batch waited for it. The safety net then generated the
+  next batch again instead, the failed batch was never saved, and the run ended reporting "cancelled" with part of
+  the area missing. Now the failed batch is generated again first, from what is saved, as `/pregen resume` does, and
+  the run continues (test `TAIL_FAILURE_RETRY_CHECK`: the blocks of an undisturbed run, beside the next batch and one
+  batch at a time). A run that ends incomplete without being stopped now says so, and the mods named in a failure
+  are also read from Sponge's way of naming mixins. Found while testing the Sponge build with a player in the area.
+- **Minecraft's way no longer makes the server generate chunks:** when a batch is generated the way Minecraft does
+  (after a failure on the fast paths, or with `parallel_steps=false`), its structures and features run one chunk at a
+  time on the run's own thread, and lookups that feature code makes through the world (a cat placed in a village
+  checks for a witch hut) went to the server instead of the batch. The server then generated up to 17 x 17 chunks
+  around that spot to structure starts and kept them: the next batches left those chunks to the server and lost the
+  features that reach into them, and the server's saves replaced part-generated chunks at the area's edge. These
+  lookups are answered from the batch now, as on the worker threads (all builds). Found by `TAIL_FAILURE_RETRY_CHECK`
+  on 26.x, where a village lies next to a batch edge of its area; the check now also requires that the server holds
+  no chunks around the area afterwards.
 - Includes the fix of 14.1.
 
 ## 14.1

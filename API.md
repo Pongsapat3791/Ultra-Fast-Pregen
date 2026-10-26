@@ -1,10 +1,11 @@
 # Ultra Fast Pregen API
 
-Other mods can start, resume and stop pregeneration, follow it, receive every chunk it saves, and tell it how
-their own world generation changes interact with its fast paths.
+Other mods and plugins can start, resume and stop pregeneration, follow it, receive every chunk it saves, and tell
+it how their own world generation changes interact with its fast paths.
 
 - [What is in it](#what-is-in-it)
 - [Setup](#setup)
+- [Setup for plugins](#setup-for-plugins): Bukkit (CraftBukkit, Spigot, Paper, Folia) and Sponge
 - [Quick start](#quick-start)
 - [Runs](#runs)
 - [Events](#events)
@@ -16,10 +17,11 @@ their own world generation changes interact with its fast paths.
 ## What is in it
 
 The API is the package `io.github.pongsapat3791.ultrafastpregen.api`, inside every Ultra Fast Pregen jar from
-version 15 on (Fabric 1.20.1, Forge 1.20.1, Fabric 1.21.1, NeoForge 1.21.1, NeoForge 26.1.2, Fabric 26.2).
+version 15 on: the mods (Fabric 1.20.1, Forge 1.20.1, Fabric 1.21.1, NeoForge 1.21.1, NeoForge 26.1.2, Fabric 26.2)
+and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and Sponge 26.2).
 It uses plain Java types only: dimension ids as strings, block coordinates, and chunk positions packed into
 longs. No Minecraft class appears in it, so the same code compiles against any of the jars and runs on every
-Minecraft version and loader Ultra Fast Pregen is built for.
+Minecraft version, loader and server Ultra Fast Pregen is built for.
 
 | Class | What it is |
 |---|---|
@@ -91,6 +93,57 @@ final class PregenIntegration {
 `UltraFastPregenApi.get()` works from the moment Ultra Fast Pregen has initialized, which every loader does before
 any server starts. Called earlier, it throws `IllegalStateException`.
 
+## Setup for plugins
+
+The API is the same for plugins; only how the dependency is declared, and how work gets back to the server, differ.
+
+### Bukkit: CraftBukkit, Spigot, Paper and Folia
+
+Compile against the plugin jar (`compileOnly files("libs/ultrafastpregen-bukkit-26.2-15.jar")`), and declare it in
+your `plugin.yml`, so that Ultra Fast Pregen is enabled before your plugin:
+
+```yaml
+softdepend: [UltraFastPregen]     # or depend: [UltraFastPregen] when your plugin needs it
+```
+
+Then check that it is enabled before your plugin loads the class that mentions the API:
+
+```java
+@Override
+public void onEnable() {
+    if (getServer().getPluginManager().isPluginEnabled("UltraFastPregen")) {
+        PregenIntegration.register(this);   // the only class that mentions the API, as above
+    }
+}
+```
+
+- **Dimensions** are the worlds' keys: `world.getKey().toString()`, for example `minecraft:overworld`,
+  `minecraft:the_nether` and `minecraft:the_end` for the default worlds.
+- **Back to the server:** listeners run on Ultra Fast Pregen's threads. On CraftBukkit, Spigot and Paper hand work to the
+  server with `Bukkit.getScheduler().runTask(plugin, () -> ...)`. Folia has no main thread and refuses that scheduler:
+  use its global region scheduler (`Bukkit.getGlobalRegionScheduler().execute(plugin, () -> ...)`) or, for a place in
+  the world, its region scheduler.
+- **Settings** come from `plugins/UltraFastPregen/ultrafastpregen.conf`.
+- **Compatibility declarations** do not apply: the plugin has no fast terrain path and checks no mixins, so
+  `declareCompatibleMixin` does nothing. `requireMinecraftTerrain` still makes runs use Minecraft's per-status steps.
+
+### Sponge
+
+The Sponge build is the mod with a Sponge entry point. Compile against its jar
+(`compileOnly files("libs/ultrafastpregen-sponge-26.2-15.jar")`) and declare it in your `META-INF/sponge_plugins.json`:
+
+```json
+"dependencies": [
+  { "id": "ultrafastpregen", "version": "*", "load-order": "after", "optional": true }
+]
+```
+
+Check `Sponge.pluginManager().plugin("ultrafastpregen").isPresent()` before loading the class that mentions the API,
+and call `UltraFastPregenApi.get()` once the plugins are constructed (for example on `StartedEngineEvent<Server>`).
+Hand work back to the server with Sponge's scheduler (`Sponge.server().scheduler().submit(Task.builder()...)`).
+Compatibility declarations work as on the mods, in code; the metadata form (`fabric.mod.json`, `mods.toml`) has no
+Sponge equivalent.
+
 ## Quick start
 
 ```java
@@ -138,13 +191,13 @@ pregen.status().ifPresent(status -> show(status));
   features along the circle are not cut off. The radius is 1 to 50,000 blocks (`PregenRequest.MAX_RADIUS`).
 - **Dimension:** the id of a loaded dimension: `minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`
   or a modded one.
-- **Settings:** a run uses `config/ultrafastpregen.conf` (batch size, threads, keeping existing chunks), exactly
-  as `/pregen start` does.
+- **Settings:** a run uses `config/ultrafastpregen.conf` (batch size, threads, keeping existing chunks; the Bukkit
+  plugin: `plugins/UltraFastPregen/ultrafastpregen.conf`), exactly as `/pregen start` does.
 - **One run at a time:** `start` and `resume` return at once; the run continues on Ultra Fast Pregen's threads.
   While a run is active, every other start is refused.
 - **Refused starts:** `StartResult.started()` is `false` and `message()` says why: no server running, the
-  dimension is not loaded, another run is active, the area reaches past the world border, Moonrise is installed
-  (not supported yet), or there is no earlier run to resume.
+  dimension is not loaded, another run is active, the area reaches past the world border, the Moonrise mod is
+  installed (not supported yet by the mods; Paper and Folia are, by the plugin), or there is no earlier run to resume.
 - **Status:** `status()` describes the active run, or else the last run since the server started; it is empty
   before the first run. Each call returns a new snapshot.
 

@@ -1,0 +1,32 @@
+{
+  "loader": {
+    "name": "java_plain",
+    "version": "1.0"
+  },
+  "license": "LGPL-3.0",
+  "global": {
+    "version": "${version}",
+    "contributors": [
+      {
+        "name": "Pongsapat",
+        "description": "Author"
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "spongeapi",
+        "version": "20.0.0",
+        "load-order": "after",
+        "optional": false
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "id": "ultrafastpregen",
+      "name": "Ultra Fast Pregen",
+      "entrypoint": "com.example.pregen.sponge.SpongeEntrypoint",
+      "description": "Pre-generates the world with every CPU core: /pregen start <size in thousands of blocks>"
+    }
+  ]
+}

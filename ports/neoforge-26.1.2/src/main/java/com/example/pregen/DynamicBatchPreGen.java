@@ -108,6 +108,23 @@ public class DynamicBatchPreGen {
     private boolean seamsCommitted;
     /** Test hook (PartialExistingBatchCheck): runs on a worker before a fast-path batch's features, with the batch index. */
     static volatile java.util.function.IntConsumer testFailureBeforeFeatures;
+    /**
+     * Test hook (PartialExistingBatchCheck, or -Dultrafastpregen.test.failTail=batch on a server):
+     * runs when a batch's chunks are encoded, before they are saved, with its index.
+     */
+    static volatile java.util.function.IntConsumer testFailureInTail = tailFailureFromProperty();
+
+    /** -Dultrafastpregen.test.failTail=batch: that batch's first lighting and saving fails once. */
+    private static java.util.function.IntConsumer tailFailureFromProperty() {
+        Integer batch = Integer.getInteger("ultrafastpregen.test.failTail");
+        if (batch == null) return null;
+        java.util.concurrent.atomic.AtomicBoolean thrown = new java.util.concurrent.atomic.AtomicBoolean();
+        return index -> {
+            if (index == batch && thrown.compareAndSet(false, true)) {
+                throw new IllegalStateException("injected by -Dultrafastpregen.test.failTail=" + batch);
+            }
+        };
+    }
     private volatile int currentBatchIndex;
     private volatile int completedBatchesCount;
     private volatile String currentStageName = "Queued";
@@ -191,6 +208,10 @@ public class DynamicBatchPreGen {
         final int firstPhase;
         volatile StageProgress stage;
         volatile boolean finished;
+        /** Its chunks went to the IO thread: from there a failure is not generated again (see redoTail). */
+        volatile boolean writesQueued;
+        /** The light engine dropping the batch's light, once its grid is disposed. */
+        volatile CompletableFuture<Void> lightReleased;
 
         BatchTail(int index, int total, ChunkBatchPlan.Tile tile, InMemoryChunkGrid grid, LongSet done, long startedAt,
                   List<WorldChunkIO.EncodedChunk> partGenerated, Map<Long, List<SeamWrites.Write>> intoSaved,
@@ -214,6 +235,16 @@ public class DynamicBatchPreGen {
             StageProgress current = stage;
             if (current == null) return (double) firstPhase / PROGRESS_PHASES;
             return (current.phase + (current.endedAt != 0 ? 1.0 : current.percent() / 100.0)) / PROGRESS_PHASES;
+        }
+    }
+
+    /** Lighting, mobs or saving of a batch failed (see finishBatch): the batch is generated again (see redoTail). */
+    private static final class TailFailure extends IllegalStateException {
+        final BatchTail tail;
+
+        TailFailure(BatchTail tail, Throwable cause) {
+            super("Lighting or saving batch " + tail.index + " failed", cause);
+            this.tail = tail;
         }
     }
 
@@ -654,7 +685,7 @@ public class DynamicBatchPreGen {
                     boolean allByFastpregen = done.size() == core.length;
                     if (!allByFastpregen && skipExistingChunks) done.addAll(existingChunks(core));
                     if (done.size() == core.length) {
-                        awaitTail();
+                        awaitTailOrRedo();
                         skipGeneratedBatch(currentBatchIndex, totalBatches, tile, allByFastpregen);
                     } else if (overlapBatches) {
                         startTail(generateWithFallback(currentBatchIndex, totalBatches, tile, done));
@@ -664,7 +695,7 @@ public class DynamicBatchPreGen {
                 }
             }
 
-            awaitTail();
+            awaitTailOrRedo();
             awaitPendingWrites();
             totalEndTime = System.currentTimeMillis();
             log(String.format("[Ultra Fast Pregen] Generated and saved %d chunks; kept %d chunks that already existed (%d whole batches skipped).",
@@ -687,10 +718,19 @@ public class DynamicBatchPreGen {
                 logCellSkipping();
                 log(String.format("[PreGen] All %d batches (%d Chunks) completed successfully in %s! Average Speed: %.1f chunks/s",
                         completedBatchesCount, completedChunksCount, formatDuration(getElapsedMillis()), getChunksPerSecond()));
-            } else if (!serverStopping) {
+            } else if (!serverStopping && isCancelled) {
                 finalStatus = "Cancelled";
                 stoppedMessage = String.format("%s: stopped at %.1f%%", PreGenMod.NAME, getProgressPercent());
                 log(String.format("[PreGen] Pre-generation was cancelled after %d/%d completed batches (%d/%d chunks, %s).",
+                        completedBatchesCount, totalBatches, completedChunksCount,
+                        getTotalWorldChunks(), formatDuration(getElapsedMillis())));
+            } else if (!serverStopping) {
+                // Nobody stopped it: chunks went missing on the way (a save that failed, see the log).
+                failed = true;
+                finalStatus = "Failed";
+                stoppedMessage = String.format("%s: incomplete at %.1f%% (see the server log)", PreGenMod.NAME, getProgressPercent());
+                log(String.format("[PreGen] Pre-generation ended incomplete: %d/%d batches (%d/%d chunks) saved in %s; see the"
+                                + " server log. /pregen resume generates the rest.",
                         completedBatchesCount, totalBatches, completedChunksCount,
                         getTotalWorldChunks(), formatDuration(getElapsedMillis())));
             }
@@ -991,18 +1031,21 @@ public class DynamicBatchPreGen {
      * does not expect them), the same batch again the way Minecraft generates chunks: the
      * per-status terrain path and one chunk at a time for structures, carvers and features.
      * The rest of the run continues that way. The batch fails for good when that fails too, or
-     * when it failed after its edge writes were passed on to other chunks.
+     * when it failed after its edge writes were passed on to other chunks. When the batch
+     * before it failed while it was lit and saved beside this one, that batch is generated
+     * again first (see redoTail).
      */
     private BatchTail generateWithFallback(int index, int total, ChunkBatchPlan.Tile tile, LongSet done) {
         try {
             return generateBatch(index, total, tile, done);
+        } catch (TailFailure failure) {
+            // Raised before this batch took anything from the edge store (see generateBatch).
+            putBackTaken();
+            redoTail(failure);
+            return generateWithFallback(index, total, tile, done);
         } catch (RuntimeException | LinkageError | StackOverflowError failure) {
             if (safeMode || isCancelled || seamsCommitted) throw failure;
-            Throwable cause = failure;
-            while ((cause instanceof java.util.concurrent.CompletionException || cause instanceof ExecutionException)
-                    && cause.getCause() != null) {
-                cause = cause.getCause();
-            }
+            Throwable cause = rootCause(failure);
             String involved = involvedMods(cause);
             LOGGER.warn("[PreGen] [{}/{}] Batch failed on the fast paths{}", index, total,
                     involved.isEmpty() ? "" : " (involving " + involved + ")", failure);
@@ -1011,23 +1054,89 @@ public class DynamicBatchPreGen {
                             + " terrain_pipeline=vanilla and parallel_steps=false do this from the start.",
                     index, total, involved.isEmpty() ? "" : " (involving " + involved + ")", cause));
             safeMode = true;
-            for (Map.Entry<Long, List<SeamWrites.Write>> taken : takenThisBatch.entrySet()) {
-                seams.putBack(taken.getKey(), taken.getValue());
+            putBackTaken();
+            return generateWithFallback(index, total, tile, done);
+        }
+    }
+
+    private static Throwable rootCause(Throwable failure) {
+        Throwable cause = failure;
+        while ((cause instanceof java.util.concurrent.CompletionException || cause instanceof ExecutionException)
+                && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /** The writes the batch being generated took from the edge store go back, as it is generated again. */
+    private void putBackTaken() {
+        for (Map.Entry<Long, List<SeamWrites.Write>> taken : takenThisBatch.entrySet()) {
+            seams.putBack(taken.getKey(), taken.getValue());
+        }
+        takenThisBatch = new HashMap<>();
+    }
+
+    /**
+     * Lighting, mobs or saving of a batch failed before its chunks went to the IO thread, after
+     * its edge writes were passed on in memory. The run goes on from what is stored, as /pregen
+     * resume does: the batches before it are saved, with the part-generated chunks their edge
+     * writes went into, and this one saved nothing. The memory of edges is dropped, the batch is
+     * generated again the way Minecraft does, and the rest of the run continues that way. Fails
+     * for good when that fails too, or when the batch failed after its chunks went to the IO thread.
+     */
+    private void redoTail(TailFailure failure) {
+        BatchTail failed = failure.tail;
+        if (isCancelled || serverStopping || detached || failed.writesQueued) throw failure;
+        Throwable cause = rootCause(failure.getCause());
+        String involved = involvedMods(cause);
+        LOGGER.warn("[PreGen] [{}/{}] Lighting or saving the batch failed{}", failed.index, failed.total,
+                involved.isEmpty() ? "" : " (involving " + involved + ")", failure);
+        log(String.format("[PreGen] [%d/%d] Lighting or saving the batch failed%s: %s. Generating it again the way Minecraft does"
+                        + " (per-status terrain, one chunk at a time); the rest of this run continues that way.",
+                failed.index, failed.total, involved.isEmpty() ? "" : " (involving " + involved + ")", cause));
+        safeMode = true;
+        // Its light leaves the engine before the batch is lit again.
+        CompletableFuture<Void> released = failed.lightReleased;
+        if (released != null) awaitLightRelease(released, failed.index, failed.total);
+        awaitPendingWrites();
+        seams.forgetRun();
+        takenThisBatch = new HashMap<>();
+        findStoredChunks();
+        long[] core = corePositions(failed.tile);
+        LongSet done = saveFile != null ? saveFile.doneAmong(core) : new LongOpenHashSet();
+        boolean allByFastpregen = done.size() == core.length;
+        if (!allByFastpregen && skipExistingChunks) done.addAll(existingChunks(core));
+        try {
+            if (done.size() == core.length) {
+                skipGeneratedBatch(failed.index, failed.total, failed.tile, allByFastpregen);
+            } else {
+                finishBatch(generateBatch(failed.index, failed.total, failed.tile, done), false);
             }
-            takenThisBatch = new HashMap<>();
-            return generateBatch(index, total, tile, done);
+        } catch (RuntimeException | LinkageError | StackOverflowError again) {
+            throw new IllegalStateException(String.format("Batch %d failed again the way Minecraft generates: %s",
+                    failed.index, rootCause(again)), again);
+        }
+    }
+
+    /** awaitTail, generating the batch again when its lighting or saving failed. */
+    private void awaitTailOrRedo() {
+        try {
+            awaitTail();
+        } catch (TailFailure failure) {
+            redoTail(failure);
         }
     }
 
     /**
-     * Other mods in a failure's stack trace: mod ids from their mixin handlers' names (Mixin
-     * names them handler$...$modid$...) and the first classes outside Minecraft, its libraries
-     * and this mod.
+     * Other mods in a failure's stack trace: mod ids from their mixin handlers' names (Fabric's
+     * Mixin names them handler$zza000$modid$..., Sponge's handler$modid$zza000$...) and the first
+     * classes outside Minecraft, its libraries and this mod.
      */
     static String involvedMods(Throwable failure) {
         java.util.Set<String> mods = new java.util.LinkedHashSet<>();
         java.util.regex.Pattern handler = java.util.regex.Pattern.compile(
-                "^(?:handler|redirect|modify[a-zA-Z]*|localvar|wrapOperation|wrapWithCondition|wrapMethod)\\$[a-z0-9]+\\$([a-z0-9_.-]+)\\$");
+                "^(?:handler|redirect|modify[a-zA-Z]*|localvar|wrapOperation|wrapWithCondition|wrapMethod)\\$([a-z0-9_.-]+)\\$([a-z0-9_.-]+)\\$");
+        java.util.regex.Pattern counter = java.util.regex.Pattern.compile("[a-z]{3}\\d{3}");
         List<String> ownPackages = List.of("net.minecraft.", "com.mojang.", "java.", "jdk.", "sun.", "com.example.pregen.",
                 "it.unimi.", "com.google.", "org.spongepowered.", "com.llamalad7.", "net.neoforged.", "net.fabricmc.",
                 "net.minecraftforge.", "cpw.mods.", "org.slf4j.", "org.apache.");
@@ -1035,7 +1144,10 @@ public class DynamicBatchPreGen {
         for (Throwable t = failure; t != null && mods.size() < 4; t = t.getCause()) {
             for (StackTraceElement frame : t.getStackTrace()) {
                 java.util.regex.Matcher matcher = handler.matcher(frame.getMethodName());
-                if (matcher.find() && !matcher.group(1).equals(PreGenMod.MOD_ID)) mods.add(matcher.group(1));
+                if (matcher.find()) {
+                    String mod = counter.matcher(matcher.group(1)).matches() ? matcher.group(2) : matcher.group(1);
+                    if (!mod.equals(PreGenMod.MOD_ID)) mods.add(mod);
+                }
                 String type = frame.getClassName();
                 if (firstOther == null && ownPackages.stream().noneMatch(type::startsWith)) firstOther = type;
             }
@@ -1046,7 +1158,12 @@ public class DynamicBatchPreGen {
 
     /** Generates and saves the tile; chunks in {@code done} were saved by an earlier run and are kept. */
     private void processBatch(int index, int total, ChunkBatchPlan.Tile tile, LongSet done) {
-        finishBatch(generateWithFallback(index, total, tile, done), false);
+        BatchTail tail = generateWithFallback(index, total, tile, done);
+        try {
+            finishBatch(tail, false);
+        } catch (RuntimeException | LinkageError | StackOverflowError failure) {
+            redoTail(new TailFailure(tail, failure));
+        }
     }
 
     /** Runs the tile's tail on the tail thread; the previous tail has finished (see generateBatch). */
@@ -1063,7 +1180,7 @@ public class DynamicBatchPreGen {
         pendingTail = CompletableFuture.runAsync(() -> finishBatch(tail, true), tailExecutor);
     }
 
-    /** Waits for the batch finishing on the tail thread and rethrows its failure once. */
+    /** Waits for the batch finishing on the tail thread and rethrows its failure once (TailFailure). */
     private void awaitTail() {
         CompletableFuture<Void> tail = pendingTail;
         try {
@@ -1073,7 +1190,11 @@ public class DynamicBatchPreGen {
             throw new IllegalStateException("Interrupted while finishing the previous batch", interrupted);
         } catch (ExecutionException failure) {
             pendingTail = CompletableFuture.completedFuture(null);
-            throw new IllegalStateException("Finishing a batch failed", failure.getCause());
+            BatchTail failed = runningTail;
+            // It no longer runs beside the next batch (see startStage).
+            runningTail = null;
+            if (failed == null) throw new IllegalStateException("Finishing a batch failed", failure.getCause());
+            throw new TailFailure(failed, failure.getCause());
         }
     }
 
@@ -1251,6 +1372,8 @@ public class DynamicBatchPreGen {
             progress = startTailStage(tail, overlapped, "Saving: encoding chunks", areaChunks - kept.size());
             List<WorldChunkIO.EncodedChunk> encoded = grid.encodeForSaving(tailPool, kept, progress);
             endTailStage(tail, overlapped, times);
+            java.util.function.IntConsumer tailHook = testFailureInTail;
+            if (tailHook != null) tailHook.accept(index);
             // Chunks the server holds get the generated terrain too, or its later save would
             // overwrite ours; when keeping existing chunks, only part-way generated ones.
             dropTailIfDetached();
@@ -1258,6 +1381,7 @@ public class DynamicBatchPreGen {
             LOGGER.debug(grid.getEncodeDiagnostics() + String.format(" | Spawned mobs: %d", grid.getSpawnedEntities()));
             keptExistingChunks.addAndGet(kept.size());
             List<ChunkPos> lodChunks = lodExport == null ? List.of() : encoded.stream().map(WorldChunkIO.EncodedChunk::pos).toList();
+            tail.writesQueued = true;
             submitWrites(index, total, encoded, !overlapped);
             if (!partGenerated.isEmpty()) {
                 // Never over a chunk stored fully generated meanwhile (a player's).
@@ -1293,6 +1417,7 @@ public class DynamicBatchPreGen {
             reportProgress();
         } finally {
             lightReleased = grid.dispose();
+            tail.lightReleased = lightReleased;
         }
         // The next batch's features read light next to this tile; its light leaves the engine first.
         awaitLightRelease(lightReleased, index, total);

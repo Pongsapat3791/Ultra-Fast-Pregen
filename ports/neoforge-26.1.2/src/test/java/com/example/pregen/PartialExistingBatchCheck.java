@@ -141,6 +141,7 @@ public final class PartialExistingBatchCheck {
             if (only.contains("held")) checkHeldDuringBatch(server, level, io, tasks);
             if (only.contains("lod")) checkLodExport(level, tasks);
             if (only.contains("safe")) checkSafeModeRetry(level, io, tasks);
+            if (only.contains("tail")) checkTailFailureRetry(level, io, tasks);
             if (only.contains("api")) checkApi(level, tasks);
             if (only.contains("circle")) checkCircle(level, io, tasks);
             if (only.contains("restart")) checkAutoResume(server, level, tasks);
@@ -237,6 +238,7 @@ public final class PartialExistingBatchCheck {
         checkBatchSeams(level, io, tasks);
         checkResumeEdges(level, io, tasks);
         checkSafeModeRetry(level, io, tasks);
+        checkTailFailureRetry(level, io, tasks);
         checkExistingNeighbors(server, level, io, tasks);
         checkOtherDimensions(server, tasks);
         checkLightParity(level, io, tasks);
@@ -510,7 +512,82 @@ public final class PartialExistingBatchCheck {
         require(announced.get(), "The switch must be announced");
         long differing = compareStored(io, reference, "safe mode");
         require(differing <= 8, "Generating a failed batch again must give the blocks of an undisturbed run: " + differing + " differ");
-        System.out.println("SAFE_MODE_RETRY_CHECK PASS differing_blocks=" + differing + " retried_batch=2");
+        int held = heldAround(level, plan);
+        require(held == 0, "Generating the batch again must not make the server generate chunks around the area: " + held + " held");
+        System.out.println("SAFE_MODE_RETRY_CHECK PASS differing_blocks=" + differing + " retried_batch=2 server_held=0");
+    }
+
+    /**
+     * A batch whose lighting or saving fails (a failure injected once into its tail, after its
+     * edge writes were passed on) is generated again before the run goes on, and the run
+     * completes with the blocks of an undisturbed run: beside the next batch (where the failure
+     * shows only when that batch waits for it) and with batches one at a time. Before, the next
+     * batch was generated again instead and the failed one was never saved. Also the names of
+     * other mods in a failure's stack trace, in Fabric's and Sponge's Mixin naming.
+     */
+    private static void checkTailFailureRetry(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        Throwable sample = new IllegalStateException("sample");
+        sample.setStackTrace(new StackTraceElement[]{
+                new StackTraceElement("net.minecraft.world.ticks.LevelChunkTicks", "handler$spongevanill$bco000$impl$onSchedule", null, 1),
+                new StackTraceElement("net.minecraft.server.level.ServerLevel", "redirect$zza000$lithium$tickChunk", null, 1)});
+        String involved = DynamicBatchPreGen.involvedMods(sample);
+        require("spongevanill, lithium".equals(involved), "Mod ids from both Mixin naming schemes, got: " + involved);
+
+        // An area no other check generates (checkApi's is around 860_000).
+        int center = 880_000;
+        ChunkBatchPlan plan = new ChunkBatchPlan(1000, 512, center, center);
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen normal = new DynamicBatchPreGen(level, 1, 512, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(normal);
+        }
+        normal.setReleaseMemoryEachBatch(false);
+        normal.start();
+        require("Completed".equals(normal.getCurrentStageName()), "The undisturbed run must complete");
+        Map<Long, BlockState[]> reference = readArea(io, plan, 0);
+
+        StringBuilder result = new StringBuilder();
+        for (boolean overlap : new boolean[]{true, false}) {
+            erase(io, plan, 1);
+            PreGenSaveFile.delete(level);
+            java.util.concurrent.atomic.AtomicBoolean announced = new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicBoolean misattributed = new java.util.concurrent.atomic.AtomicBoolean();
+            java.util.concurrent.atomic.AtomicBoolean injected = new java.util.concurrent.atomic.AtomicBoolean();
+            DynamicBatchPreGen failing = new DynamicBatchPreGen(level, 1, 512, 4, center, center, message -> {
+                if (message.contains("[2/4] Lighting or saving the batch failed")) announced.set(true);
+                if (message.contains("Batch failed on the fast paths")) misattributed.set(true);
+            });
+            synchronized (tasks) {
+                tasks.add(failing);
+            }
+            failing.setReleaseMemoryEachBatch(false);
+            failing.setOverlapBatches(overlap);
+            DynamicBatchPreGen.testFailureInTail = index -> {
+                if (index == 2 && injected.compareAndSet(false, true)) {
+                    throw new IllegalStateException("injected by TAIL_FAILURE_RETRY_CHECK");
+                }
+            };
+            try {
+                failing.start();
+            } finally {
+                DynamicBatchPreGen.testFailureInTail = null;
+            }
+            String mode = overlap ? "beside the next batch" : "one batch at a time";
+            require(injected.get(), "The failure must have been injected (" + mode + ")");
+            require("Completed".equals(failing.getCurrentStageName()),
+                    "The run whose batch failed while saved must complete (" + mode + "), got " + failing.getCurrentStageName());
+            require(announced.get(), "The failed batch must be named and generated again (" + mode + ")");
+            require(!misattributed.get(), "No other batch may be taken for the failed one (" + mode + ")");
+            require((boolean) field(failing, "safeMode"), "The rest of the run must go Minecraft's way (" + mode + ")");
+            long differing = compareStored(io, reference, "tail failure " + mode);
+            require(differing <= 8, "Generating a batch again whose saving failed must give the blocks of an undisturbed run ("
+                    + mode + "): " + differing + " differ");
+            int held = heldAround(level, plan);
+            require(held == 0, "Generating the batch again must not make the server generate chunks around the area ("
+                    + mode + "): " + held + " held");
+            result.append(overlap ? " overlapped_differing_blocks=" : " one_at_a_time_differing_blocks=").append(differing);
+        }
+        System.out.println("TAIL_FAILURE_RETRY_CHECK PASS" + result + " failed_batch=2 server_held=0");
     }
 
     /**
@@ -892,6 +969,21 @@ public final class PartialExistingBatchCheck {
             }
         }
         return blocks;
+    }
+
+    /**
+     * Chunks the server holds in the plan's area and the structure range around it. A run leaves
+     * none there: it answers the level's chunk lookups of Minecraft's steps from its grid.
+     */
+    private static int heldAround(ServerLevel level, ChunkBatchPlan plan) throws Exception {
+        int range = InMemoryChunkGrid.PADDING;
+        int minX = Math.floorDiv(plan.minBlockX(), 16) - range;
+        int minZ = Math.floorDiv(plan.minBlockZ(), 16) - range;
+        it.unimi.dsi.fastutil.longs.LongArrayList positions = new it.unimi.dsi.fastutil.longs.LongArrayList();
+        for (int x = minX; x < minX + plan.chunksX() + 2 * range; x++) {
+            for (int z = minZ; z < minZ + plan.chunksZ() + 2 * range; z++) positions.add(ChunkPos.pack(x, z));
+        }
+        return WorldChunkIO.findHeldByServer(level, positions).get(30, TimeUnit.SECONDS).size();
     }
 
     /** Removes the plan's chunks and the ring around them from the region files. */

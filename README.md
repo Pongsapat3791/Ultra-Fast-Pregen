@@ -1,6 +1,7 @@
 # Ultra Fast Pregen
 
-A world pre-generation mod for Minecraft servers and singleplayer. It generates a square area one batch at a time
+A world pre-generation mod for Minecraft servers and singleplayer, also as a plugin for Bukkit servers (CraftBukkit,
+Spigot, Paper, Folia) and Sponge. It generates a square area one batch at a time
 **in RAM, with every CPU core in every stage**, then writes each batch to the region files in one go.
 The blocks, biomes and light are the same as Minecraft's own generation (checked block for block by its test suite).
 
@@ -12,9 +13,13 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 | NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-15.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
 | NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-15.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
 | Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-15.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
+| Bukkit plugin: CraftBukkit, Spigot, Paper, Folia | 26.2 | 25+ | `ultrafastpregen-bukkit-26.2-15.jar` ([ports/bukkit-26.2](ports/bukkit-26.2/README.md)) |
+| Sponge (SpongeVanilla, API 20) | 26.2 | 25+ | `ultrafastpregen-sponge-26.2-15.jar` ([ports/sponge-26.2](ports/sponge-26.2/README.md)) |
 
 `15` is the update round, the same for every build. Install it on the server only: players do not need it
-(it has no packets of its own). In singleplayer it runs in the integrated server.
+(it has no packets of its own). In singleplayer it runs in the integrated server. The Bukkit plugin goes in the
+server's `plugins` folder, the Sponge build in its `mods` folder. The Bukkit plugin cannot change Minecraft's code as the
+mods do, so it has no fast terrain path and is slower; see its page for how it differs.
 
 ## Speed
 
@@ -86,12 +91,14 @@ again (`resume_after_restart`).
 | `/pregen set resume_after_restart <true\|false>` | Continue a run cut short by a server stop or crash once the server has started |
 | `/pregen set` | Shows the values |
 
+On Bukkit servers, `/pregen` and the boss bar need the permission `ultrafastpregen.command` (operators have it by default).
 `world`, `center`, `radius` and `shape` last until the server restarts; a running job keeps its own.
 The console shows `Progress / Speed / ETA` every 3 seconds and, after each batch, a `Step times` line with the time of every stage.
 
 ## Configuration: `config/ultrafastpregen.conf`
 
-Read again on every `start`. Missing keys are added automatically.
+Read again on every `start`. Missing keys are added automatically. The Bukkit plugin keeps it in
+`plugins/UltraFastPregen/ultrafastpregen.conf`.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -167,17 +174,18 @@ The test suite (`runPartialBatchCheck`, `runTerrainBenchmark`) runs on a real se
   All the Mods 10 and Prominence II. The mods, versions and results are in [COMPATIBILITY.md](COMPATIBILITY.md).
   With Lithium or Canary and Noisium together, or with Alex's Caves, the start-up log shows Minecraft's per-status
   terrain path: those mods change steps the fast path would skip, so it steps aside by itself.
-- **Not supported yet: Moonrise.** It replaces Minecraft's chunk system (chunk storage, chunk holders and the light engine),
-  which this mod generates and saves through; `/pregen start` says so and does nothing.
+- **Not supported yet by the mods: Moonrise.** It replaces Minecraft's chunk system (chunk storage, chunk holders and the
+  light engine), which this mod generates and saves through; `/pregen start` says so and does nothing. Paper and Folia,
+  which have Moonrise built in, are supported by the Bukkit plugin, which saves through Paper's chunk storage.
 
-## For mod developers
+## For mod and plugin developers
 
-Other mods can start and stop runs, follow them, receive every chunk they save, and declare how their own
-world generation changes interact with the fast paths: see [API.md](API.md).
+Other mods and plugins (Bukkit, Spigot, Paper, Folia, Sponge) can start and stop runs, follow them, receive every
+chunk they save, and declare how their own world generation changes interact with the fast paths: see [API.md](API.md).
 
 ## Limitations
 
-- Moonrise is not supported yet (see Compatibility).
+- The Moonrise mod is not supported yet by the mods (see Compatibility); Paper and Folia are, by the Bukkit plugin.
 - It uses every core: with players online, lower `threads` by 1–2.
 - Chunks the server is holding (players nearby) and chunks of old Minecraft versions not yet upgraded do not receive features that reach into them.
 

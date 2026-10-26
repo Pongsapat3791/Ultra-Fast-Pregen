@@ -77,6 +77,8 @@ public class InMemoryChunkGrid {
     private static volatile InMemoryChunkGrid currentGrid = null;
     /** Every grid not disposed yet (a batch's grid stays while it is lit and saved). */
     private static final java.util.Set<InMemoryChunkGrid> activeGrids = ConcurrentHashMap.newKeySet();
+    /** Set while a thread runs one of Minecraft's steps for a grid chunk (see chunkForWorker). */
+    private static final ThreadLocal<Boolean> runningStep = new ThreadLocal<>();
 
     public static InMemoryChunkGrid getCurrentGrid() {
         return currentGrid;
@@ -143,14 +145,17 @@ public class InMemoryChunkGrid {
     }
 
     /**
-     * For this mod's workers: a grid chunk at least at {@code status}, or null. Feature code
-     * sometimes asks the level itself for a chunk (a cat spawned in a village checks for a witch
-     * hut through the level's structure manager). The server would then generate that chunk
-     * again on its main thread up to the status, while the worker waits; the grid already holds
-     * it with the same structure data.
+     * For this mod's workers, and for any thread while it runs a step for a grid chunk (one chunk
+     * at a time, Minecraft's way, runs them on the thread that asks): a grid chunk at least at
+     * {@code status}, or null. Feature code sometimes asks the level itself for a chunk (a cat
+     * spawned in a village checks for a witch hut through the level's structure manager). The
+     * server would then generate that chunk and the ones around it up to the status and keep
+     * them: later batches found them held by the server, and its saves replaced the
+     * part-generated chunks stored at the area's edge. The grid already holds them with the same
+     * structure data.
      */
     public static ChunkAccess chunkForWorker(net.minecraft.world.level.Level level, int chunkX, int chunkZ, ChunkStatus status) {
-        if (!(Thread.currentThread() instanceof WorkerThread)) return null;
+        if (!(Thread.currentThread() instanceof WorkerThread) && runningStep.get() == null) return null;
         for (InMemoryChunkGrid grid : activeGrids) {
             if (grid.level != level) continue;
             ProtoChunk chunk = grid.getChunk(chunkX, chunkZ);
@@ -415,11 +420,22 @@ public class InMemoryChunkGrid {
     private CompletableFuture<?> generateOnPool(ChunkStatus status, ExecutorService workerPool, List<ChunkAccess> cache,
                                                 boolean parallel) {
         if (!parallel) {
-            return status.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache);
+            return asGridStep(() -> status.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache));
         }
         return CompletableFuture.supplyAsync(() -> status.generate(
                 workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache), workerPool)
                 .thenCompose(Function.identity());
+    }
+
+    /** Runs one of Minecraft's steps on this thread, which chunkForWorker then serves as it serves a worker. */
+    private static <T> T asGridStep(java.util.function.Supplier<T> step) {
+        boolean outermost = runningStep.get() == null;
+        if (outermost) runningStep.set(Boolean.TRUE);
+        try {
+            return step.get();
+        } finally {
+            if (outermost) runningStep.remove();
+        }
     }
 
     /**
@@ -1121,9 +1137,9 @@ public class InMemoryChunkGrid {
         for (long packed : getCorePositions()) {
             if (skip.contains(packed)) continue;
             ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
-            CompletableFuture<?> f = ChunkStatus.SPAWN.generate(
+            CompletableFuture<?> f = asGridStep(() -> ChunkStatus.SPAWN.generate(
                 workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
-            ).thenRun(() -> spawnedEntities.add(chunk.getEntities().size()));
+            )).thenRun(() -> spawnedEntities.add(chunk.getEntities().size()));
             if (onChunkDone != null) f = f.thenRun(onChunkDone);
             futures.add(f);
         }

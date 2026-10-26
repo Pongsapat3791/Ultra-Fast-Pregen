@@ -57,6 +57,11 @@ public final class WorldgenCompat {
      * (compared block for block on 10 000 chunks with C2ME 0.2.0+alpha.11.18 for 1.20.1).
      */
     private static final Set<String> FILL_NEUTRAL_MIXINS = Set.of(
+            // Lithium (Fabric, NeoForge) and Canary (Forge): the noise generator's sea level read once
+            // from its settings and kept; the same value.
+            "net.caffeinemc.mods.lithium.mixin.gen.cached_generator_settings.NoiseBasedChunkGeneratorMixin",
+            "me.jellysquid.mods.lithium.mixin.gen.cached_generator_settings.NoiseChunkGeneratorMixin",
+            "com.abdelaziz.canary.mixin.gen.cached_generator_settings.NoiseBasedChunkGeneratorMixin",
             // C2ME: an accessor, a constructor-only mixin, material rules without allocations,
             // Minecraft's random without atomics, its aquifer rewrite (same results), and the
             // executor of the noise step.
@@ -87,13 +92,28 @@ public final class WorldgenCompat {
     private static final Set<String> PARALLEL_SAFE_FEATURE_MIXINS = Set.of(
             // GregTech CEu: ore veins from a Guava cache, placed in the chunk's own sections with a
             // random seeded from the world seed and chunk position.
-            "com.gregtechceu.gtceu.core.mixins.ChunkGeneratorMixin");
+            "com.gregtechceu.gtceu.core.mixins.ChunkGeneratorMixin",
+            // SuperChunk: the structure map per decoration step cached by registry (a benign race on
+            // one volatile entry, the same map), and features skipped where Minecraft would fail
+            // reading outside the region (counted in concurrent maps).
+            "dev.superchunk.mixin.MixinChunkGeneratorDecorationStepCache",
+            "dev.superchunk.mixin.MixinFeatureOutsideRegion");
 
     /**
      * Other mods' mixins, by class, whose changes to what the fused path skips concern only work
      * that path does not do (verified block for block on 10 000 chunks).
      */
     private static final Set<String> FUSED_COMPATIBLE_MIXINS = Set.of(
+            // SuperChunk (NeoForge 1.21.1, Forge 1.20.1), which bundles C2ME under dev.superchunk: C2ME's
+            // random without atomics (the same bytecode) and its executor that runs createBiomes' and
+            // fillFromNoise's work on the calling thread; its own WorldgenRandom without a synchronized
+            // setSeed (the same numbers); and on Forge the seam that sends createBiomes and
+            // fillFromNoise through its GPU batches when its GPU mode is on (the fused path computes
+            // the same terrain on the CPU).
+            "dev.superchunk.com.ishland.c2me.opts.worldgen.general.mixin.random_instances.MixinRedirectAtomicSimpleRandom",
+            "dev.superchunk.com.ishland.c2me.rewrites.chunksystem.mixin.MixinNoiseChunkGenerator",
+            "dev.superchunk.mixin.MixinPlainWorldgenRandomSites",
+            "dev.superchunk.mixin.MixinNoiseBasedChunkGeneratorGpuSeam",
             // C2ME: Minecraft's random sources created without atomics (a redirect in every method,
             // same numbers): seen once MixinExtras' sugar wrappers are read (round 14).
             "com.ishland.c2me.opts.worldgen.general.mixin.random_instances.MixinRedirectAtomicSimpleRandom",

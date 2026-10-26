@@ -1,0 +1,55 @@
+plugins {
+	// Minecraft 26.x is unobfuscated: Loom here only provides Minecraft and Mixin to compile against
+	// (with Minecraft's own names, as SpongeVanilla runs it); the jar holds this plugin's classes alone.
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+repositories {
+	maven {
+		name = 'Sponge'
+		url = 'https://repo.spongepowered.org/repository/maven-public/'
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	// Mixin's annotations as SpongeVanilla's Mixin declares them (Fabric's fork compiles @Redirect's
+	// at as an array, which SpongeVanilla's MixinExtras cannot read); SpongeVanilla brings Mixin at run time.
+	compileOnly "org.spongepowered:mixin:${project.sponge_mixin_version}"
+	compileOnly "org.spongepowered:spongeapi:${project.sponge_api_version}"
+	// The mixin checks read other mods' mixins with ASM, which SpongeVanilla brings too.
+	compileOnly "org.ow2.asm:asm-tree:${project.asm_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	filesMatching("META-INF/sponge_plugins.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.encoding = 'UTF-8'
+	it.options.release = 25
+	it.options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+jar {
+	// SpongeVanilla applies the mixins a plugin jar names in its manifest (VanillaTransformationService).
+	manifest {
+		attributes 'MixinConfigs': 'pregen.mixins.json'
+	}
+	from("LICENSE") {
+		rename { "${it}_ultrafastpregen" }
+	}
+}
