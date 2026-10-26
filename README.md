@@ -16,6 +16,9 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 | Bukkit plugin: CraftBukkit, Spigot, Paper, Folia | 26.2 | 25+ | `ultrafastpregen-bukkit-26.2-15.jar` ([ports/bukkit-26.2](ports/bukkit-26.2/README.md)) |
 | Sponge (SpongeVanilla, API 20) | 26.2 | 25+ | `ultrafastpregen-sponge-26.2-15.jar` ([ports/sponge-26.2](ports/sponge-26.2/README.md)) |
 
+**Download:** the mods on [CurseForge](https://www.curseforge.com/minecraft/mc-mods/ultra-fast-pregen), the Bukkit plugin
+on [CurseForge](https://www.curseforge.com/minecraft/bukkit-plugins/ultra-fast-pregen-bukkit).
+
 `15` is the update round, the same for every build. Install it on the server only: players do not need it
 (it has no packets of its own). In singleplayer it runs in the integrated server. The Bukkit plugin goes in the
 server's `plugins` folder, the Sponge build in its `mods` folder. The Bukkit plugin cannot change Minecraft's code as the
