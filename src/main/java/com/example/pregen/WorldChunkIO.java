@@ -13,7 +13,12 @@ import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.io.IOException;
 import java.io.ByteArrayInputStream;
+import java.io.DataInput;
 import java.io.DataInputStream;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
+import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -24,11 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.nbt.StringTag;
 import net.minecraft.nbt.Tag;
-import net.minecraft.nbt.visitors.CollectFields;
-import net.minecraft.nbt.visitors.FieldSelector;
 import java.io.DataOutputStream;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -37,6 +40,7 @@ import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.world.level.chunk.storage.IOWorker;
 import net.minecraft.world.level.chunk.storage.RegionFile;
+import net.minecraft.world.level.chunk.storage.RegionFileStorage;
 import net.minecraft.world.level.chunk.storage.RegionFileVersion;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
@@ -268,23 +272,99 @@ final class WorldChunkIO {
     }
 
     private static boolean isFullyGenerated(ChunkStream chunk) {
-        try {
-            String status = readStatus(chunk, new FieldSelector(StringTag.TYPE, "Status"), false);
-            if (status == null) status = readStatus(chunk, new FieldSelector("Level", StringTag.TYPE, "Status"), true);
+        try (DataInputStream in = chunk.open()) {
+            if (in == null) return true;
+            String status = readStatus(in);
             return status == null || isFullStatus(status);
         } catch (IOException | RuntimeException failure) {
             return true;
         }
     }
 
-    private static String readStatus(ChunkStream chunk, FieldSelector selector, boolean nested) throws IOException {
-        try (DataInputStream in = chunk.open()) {
-            if (in == null) return null;
-            CollectFields fields = new CollectFields(selector);
-            NbtIo.parse(in, fields);
-            if (!(fields.getResult() instanceof CompoundTag tag)) return null;
-            CompoundTag holder = nested ? tag.getCompound("Level") : tag;
-            return holder.contains("Status", Tag.TAG_STRING) ? holder.getString("Status") : null;
+    /**
+     * Status, else Level/Status, of a chunk's uncompressed NBT, read without building tags; reading
+     * stops at the root's Status. Parsed here rather than with NbtIo.parse, whose parameters
+     * changed in 1.20.2, so one jar runs on 1.20 to 1.20.6.
+     */
+    private static String readStatus(DataInput in) throws IOException {
+        if (in.readByte() != Tag.TAG_COMPOUND) return null;
+        in.readUTF();
+        return compoundStatus(in, true, 1);
+    }
+
+    /** Reads a compound's entries; the root returns at its Status, Level is read to its end. */
+    private static String compoundStatus(DataInput in, boolean root, int depth) throws IOException {
+        String status = null;
+        String levelStatus = null;
+        for (byte type = in.readByte(); type != Tag.TAG_END; type = in.readByte()) {
+            String name = in.readUTF();
+            if (type == Tag.TAG_STRING && name.equals("Status")) {
+                status = in.readUTF();
+                if (root) return status;
+            } else if (root && type == Tag.TAG_COMPOUND && name.equals("Level")) {
+                levelStatus = compoundStatus(in, false, depth + 1);
+            } else {
+                skipPayload(in, type, depth + 1);
+            }
+        }
+        return status != null ? status : levelStatus;
+    }
+
+    /** Skips one tag's payload, nested at most 512 deep as in Minecraft. */
+    private static void skipPayload(DataInput in, byte type, int depth) throws IOException {
+        if (depth > 512) throw new IOException("NBT nested deeper than 512");
+        switch (type) {
+            case Tag.TAG_BYTE, Tag.TAG_SHORT, Tag.TAG_INT, Tag.TAG_LONG, Tag.TAG_FLOAT, Tag.TAG_DOUBLE ->
+                    skip(in, fixedSize(type));
+            case Tag.TAG_BYTE_ARRAY -> skip(in, length(in));
+            case Tag.TAG_STRING -> skip(in, in.readUnsignedShort());
+            case Tag.TAG_INT_ARRAY -> skip(in, 4L * length(in));
+            case Tag.TAG_LONG_ARRAY -> skip(in, 8L * length(in));
+            case Tag.TAG_LIST -> {
+                byte element = in.readByte();
+                int count = length(in);
+                int size = fixedSize(element);
+                if (size > 0) {
+                    skip(in, (long) size * count);
+                } else {
+                    for (int i = 0; i < count; i++) skipPayload(in, element, depth + 1);
+                }
+            }
+            case Tag.TAG_COMPOUND -> {
+                for (byte entry = in.readByte(); entry != Tag.TAG_END; entry = in.readByte()) {
+                    skip(in, in.readUnsignedShort());
+                    skipPayload(in, entry, depth + 1);
+                }
+            }
+            default -> throw new IOException("Unknown NBT tag type " + type);
+        }
+    }
+
+    /** Bytes of a number tag's payload; 0 for every other type. */
+    private static int fixedSize(byte type) {
+        return switch (type) {
+            case Tag.TAG_BYTE -> 1;
+            case Tag.TAG_SHORT -> 2;
+            case Tag.TAG_INT, Tag.TAG_FLOAT -> 4;
+            case Tag.TAG_LONG, Tag.TAG_DOUBLE -> 8;
+            default -> 0;
+        };
+    }
+
+    private static int length(DataInput in) throws IOException {
+        int length = in.readInt();
+        if (length < 0) throw new IOException("Negative NBT length " + length);
+        return length;
+    }
+
+    private static void skip(DataInput in, long bytes) throws IOException {
+        while (bytes > 0) {
+            int skipped = in.skipBytes((int) Math.min(bytes, Integer.MAX_VALUE));
+            if (skipped <= 0) {
+                in.readByte();
+                skipped = 1;
+            }
+            bytes -= skipped;
         }
     }
 
@@ -519,10 +599,54 @@ final class WorldChunkIO {
         Path folder = storage.pregen$getFolder();
         Files.createDirectories(folder);
         Path file = folder.resolve("r." + ChunkPos.getX(regionKey) + "." + ChunkPos.getZ(regionKey) + ".mca");
-        ours = new RegionFile(file, folder, false);
+        ours = openRegionFile(storage, file, folder);
         cache.putAndMoveToFirst(regionKey, ours);
         fastHandles.put(regionKey, ours);
         return ours;
+    }
+
+    /**
+     * new RegionFile(file, folder, false), as the storage opens its files. 1.20.5 put the storage's
+     * RegionStorageInfo first in that constructor; there it is called through a method handle.
+     */
+    private static RegionFile openRegionFile(RegionFileStorageAccessor storage, Path file, Path folder) throws IOException {
+        if (ModernRegionFile.OPEN == null) return new RegionFile(file, folder, false);
+        try {
+            return (RegionFile) ModernRegionFile.OPEN.invoke(ModernRegionFile.INFO.get(storage), file, folder, false);
+        } catch (IOException | RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            throw new IOException(failure);
+        }
+    }
+
+    /** RegionFile's constructor of 1.20.5 and later and RegionFileStorage's RegionStorageInfo; null before. */
+    private static final class ModernRegionFile {
+        static final MethodHandle OPEN;
+        static final Field INFO;
+
+        static {
+            MethodHandle open = null;
+            Field info = null;
+            try {
+                Class<?> infoType = Class.forName(FabricLoader.getInstance().getMappingResolver()
+                        .mapClassName("intermediary", "net.minecraft.class_9240"), false, WorldChunkIO.class.getClassLoader());
+                for (Field field : RegionFileStorage.class.getDeclaredFields()) {
+                    if (field.getType() == infoType) info = field;
+                }
+                if (info == null) throw new NoSuchFieldException("RegionFileStorage has no RegionStorageInfo field");
+                info.setAccessible(true);
+                open = MethodHandles.publicLookup().findConstructor(RegionFile.class,
+                        MethodType.methodType(void.class, infoType, Path.class, Path.class, boolean.class));
+            } catch (ClassNotFoundException olderMinecraft) {
+                info = null;
+            } catch (ReflectiveOperationException | RuntimeException failure) {
+                throw new IllegalStateException("This Minecraft has RegionStorageInfo (1.20.5 or later) but not the"
+                        + " RegionFile constructor of 1.20.5 and 1.20.6", failure);
+            }
+            OPEN = open;
+            INFO = info;
+        }
     }
 
     private void releaseFastHandle(RegionFileStorageAccessor storage, long regionKey) throws IOException {

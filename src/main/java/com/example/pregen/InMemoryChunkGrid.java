@@ -1,6 +1,5 @@
 package com.example.pregen;
 
-import com.mojang.datafixers.util.Either;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongSets;
@@ -13,7 +12,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
-import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
@@ -174,7 +172,8 @@ public class InMemoryChunkGrid {
     private final ChunkGenerator generator;
     private final StructureTemplateManager templateManager;
     private final ThreadedLevelLightEngine lightEngine;
-    private final Function<ChunkAccess, CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> fullChunkGetter;
+    /** Minecraft's status steps, called as this Minecraft version takes them (see ChunkSteps). */
+    private final ChunkSteps steps;
     private final boolean fusedTerrain;
     private final boolean parallelSteps;
     /** Off when other mods keep state in feature placement (WorldgenCompat#featurePlacementMixins). */
@@ -294,7 +293,7 @@ public class InMemoryChunkGrid {
         this.generator = level.getChunkSource().getGenerator();
         this.templateManager = level.getStructureManager();
         this.lightEngine = level.getChunkSource().getLightEngine();
-        this.fullChunkGetter = c -> CompletableFuture.completedFuture(Either.left(c));
+        this.steps = ChunkSteps.of(level, generator, templateManager, lightEngine);
         this.fusedTerrain = fusedTerrain;
         this.parallelSteps = parallelSteps;
         this.parallelFeatures = parallelSteps;
@@ -360,6 +359,13 @@ public class InMemoryChunkGrid {
         return cache;
     }
 
+    /** The largest radius up to wanted whose neighborhood around the chunk lies inside the grid. */
+    private int radiusInGrid(int worldChunkX, int worldChunkZ, int wanted) {
+        int gx = worldChunkX - gridMinChunkX;
+        int gz = worldChunkZ - gridMinChunkZ;
+        return Math.min(wanted, Math.min(Math.min(gx, gridChunksX - 1 - gx), Math.min(gz, gridChunksZ - 1 - gz)));
+    }
+
     public int getGridTotalChunks() {
         return gridChunksX * gridChunksZ;
     }
@@ -420,10 +426,9 @@ public class InMemoryChunkGrid {
     private CompletableFuture<?> generateOnPool(ChunkStatus status, ExecutorService workerPool, List<ChunkAccess> cache,
                                                 boolean parallel) {
         if (!parallel) {
-            return asGridStep(() -> status.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache));
+            return asGridStep(() -> steps.generate(status, workerPool, cache));
         }
-        return CompletableFuture.supplyAsync(() -> status.generate(
-                workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache), workerPool)
+        return CompletableFuture.supplyAsync(() -> steps.generate(status, workerPool, cache), workerPool)
                 .thenCompose(Function.identity());
     }
 
@@ -500,23 +505,25 @@ public class InMemoryChunkGrid {
                 // biome source otherwise; both give the same biome (vanilla's surface step relies
                 // on the same), but sampling costs as much as the biome step itself. So every
                 // chunk first computes its biomes, and its noise and surface wait for the 3x3
-                // neighbors' biomes.
-                int sizeX = maxX - minX + 1;
-                int sizeZ = maxZ - minZ + 1;
+                // neighbors' biomes. From 1.20.5 a region throws instead of sampling, so there the
+                // ring just outside the terrain area gets biomes too.
+                int ring = steps.needsNeighborBiomes() ? 1 : 0;
+                int sizeX = maxX - minX + 1 + 2 * ring;
+                int sizeZ = maxZ - minZ + 1 + 2 * ring;
                 TerrainRegion[][] regions = new TerrainRegion[sizeX][sizeZ];
                 CompletableFuture<?>[][] biomesDone = new CompletableFuture<?>[sizeX][sizeZ];
-                for (int cz = minZ; cz <= maxZ; cz++) {
-                    for (int cx = minX; cx <= maxX; cx++) {
+                for (int cz = minZ - ring; cz <= maxZ + ring; cz++) {
+                    for (int cx = minX - ring; cx <= maxX + ring; cx++) {
                         final int x = cx;
                         final int z = cz;
                         ProtoChunk chunk = getChunk(x, z);
                         if (chunk == null) continue;
-                        int ix = x - minX;
-                        int iz = z - minZ;
+                        int ix = x - minX + ring;
+                        int iz = z - minZ + ring;
                         biomesDone[ix][iz] = CompletableFuture.runAsync(() -> {
                             try (TerrainGenerationContext ignored = TerrainGenerationContext.enter()) {
                                 long partStart = System.nanoTime();
-                                List<ChunkAccess> cache = getNeighborhoodCache(x, z, ChunkStatus.SURFACE.getRange());
+                                List<ChunkAccess> cache = getNeighborhoodCache(x, z, radiusInGrid(x, z, ChunkStatus.SURFACE.getRange()));
                                 WorldGenRegion region = new WorldGenRegion(level, cache, ChunkStatus.SURFACE, 0);
                                 TerrainRegion terrain = new TerrainRegion(Blender.of(region),
                                         structureManager.forWorldGenRegion(region));
@@ -536,8 +543,8 @@ public class InMemoryChunkGrid {
                     for (int cx = minX; cx <= maxX; cx++) {
                         ProtoChunk chunk = getChunk(cx, cz);
                         if (chunk == null) continue;
-                        int ix = cx - minX;
-                        int iz = cz - minZ;
+                        int ix = cx - minX + ring;
+                        int iz = cz - minZ + ring;
                         List<CompletableFuture<?>> neighbors = new ArrayList<>(9);
                         for (int dz = -1; dz <= 1; dz++) {
                             for (int dx = -1; dx <= 1; dx++) {
@@ -548,7 +555,9 @@ public class InMemoryChunkGrid {
                                 }
                             }
                         }
-                        if (!biomesBeforeSurface) neighbors.subList(0, neighbors.size()).removeIf(n -> n != biomesDone[ix][iz]);
+                        if (!biomesBeforeSurface && ring == 0) {
+                            neighbors.subList(0, neighbors.size()).removeIf(n -> n != biomesDone[ix][iz]);
+                        }
                         CompletableFuture<?> f = CompletableFuture.allOf(neighbors.toArray(new CompletableFuture[0])).thenRunAsync(() -> {
                             try (TerrainGenerationContext ignored = TerrainGenerationContext.enter()) {
                                 TerrainRegion terrain = regions[ix][iz];
@@ -565,9 +574,8 @@ public class InMemoryChunkGrid {
                                 // 3. Surface Rules: Minecraft's own step (the same region as above; it
                                 // sets the status), so mods hooking it apply here too.
                                 partStart = System.nanoTime();
-                                ChunkStatus.SURFACE.generate(workerPool, level, generator, templateManager, lightEngine,
-                                        fullChunkGetter, getNeighborhoodCache(chunk.getPos().x, chunk.getPos().z,
-                                                ChunkStatus.SURFACE.getRange())).join();
+                                steps.generate(ChunkStatus.SURFACE, workerPool, getNeighborhoodCache(chunk.getPos().x,
+                                        chunk.getPos().z, ChunkStatus.SURFACE.getRange())).join();
                                 surfaceNanos.add(System.nanoTime() - partStart);
                                 terrainChunks.increment();
                             }
@@ -575,14 +583,43 @@ public class InMemoryChunkGrid {
                         futures.add(onChunkDone != null ? f.thenRun(onChunkDone) : f);
                     }
                 }
+            } else if (steps.needsNeighborBiomes()) {
+                // Minecraft's own status tasks, including every hook other mods place on them, in
+                // the order 1.20.5 and later need: biomes first, with the ring just outside the
+                // terrain area, then each chunk's noise and surface once its 3x3 neighbors have them.
+                int sizeX = maxX - minX + 3;
+                int sizeZ = maxZ - minZ + 3;
+                CompletableFuture<?>[][] biomesDone = new CompletableFuture<?>[sizeX][sizeZ];
+                for (int cz = minZ - 1; cz <= maxZ + 1; cz++) {
+                    for (int cx = minX - 1; cx <= maxX + 1; cx++) {
+                        biomesDone[cx - minX + 1][cz - minZ + 1] = steps.generate(ChunkStatus.BIOMES, workerPool,
+                                getNeighborhoodCache(cx, cz, radiusInGrid(cx, cz, ChunkStatus.BIOMES.getRange())));
+                    }
+                }
+                for (int cz = minZ; cz <= maxZ; cz++) {
+                    for (int cx = minX; cx <= maxX; cx++) {
+                        int ix = cx - minX + 1;
+                        int iz = cz - minZ + 1;
+                        List<CompletableFuture<?>> neighbors = new ArrayList<>(9);
+                        for (int dz = -1; dz <= 1; dz++) {
+                            for (int dx = -1; dx <= 1; dx++) neighbors.add(biomesDone[ix + dx][iz + dz]);
+                        }
+                        List<ChunkAccess> cache = getNeighborhoodCache(cx, cz, ChunkStatus.SURFACE.getRange());
+                        CompletableFuture<?> f = CompletableFuture.allOf(neighbors.toArray(new CompletableFuture[0]))
+                            .thenCompose(c -> steps.generate(ChunkStatus.NOISE, workerPool, cache))
+                            .thenCompose(c -> steps.generate(ChunkStatus.SURFACE, workerPool, cache));
+                        if (onChunkDone != null) f = f.thenRun(onChunkDone);
+                        futures.add(f);
+                    }
+                }
             } else {
                 // Minecraft's own status tasks, including every hook other mods place on them.
                 for (int cz = minZ; cz <= maxZ; cz++) {
                     for (int cx = minX; cx <= maxX; cx++) {
                         List<ChunkAccess> cache = getNeighborhoodCache(cx, cz, ChunkStatus.SURFACE.getRange());
-                        CompletableFuture<?> f = ChunkStatus.BIOMES.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache)
-                            .thenCompose(c -> ChunkStatus.NOISE.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache))
-                            .thenCompose(c -> ChunkStatus.SURFACE.generate(workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, cache));
+                        CompletableFuture<?> f = steps.generate(ChunkStatus.BIOMES, workerPool, cache)
+                            .thenCompose(c -> steps.generate(ChunkStatus.NOISE, workerPool, cache))
+                            .thenCompose(c -> steps.generate(ChunkStatus.SURFACE, workerPool, cache));
                         if (onChunkDone != null) f = f.thenRun(onChunkDone);
                         futures.add(f);
                     }
@@ -762,7 +799,7 @@ public class InMemoryChunkGrid {
                         BlockState was = before[i].get(x, y, z);
                         if (now == was) continue;
                         pos.set(minX + x, baseY + y, minZ + z);
-                        CompoundTag blockEntity = now.hasBlockEntity() ? chunk.getBlockEntityNbtForSaving(pos) : null;
+                        CompoundTag blockEntity = now.hasBlockEntity() ? steps.blockEntityNbt(chunk, pos) : null;
                         writes.add(new SeamWrites.Write(minX + x, baseY + y, minZ + z, was, now, blockEntity));
                     }
                 }
@@ -879,9 +916,7 @@ public class InMemoryChunkGrid {
             }
             List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size());
             for (ProtoChunk chunk : lit) {
-                initFutures.add(ChunkStatus.INITIALIZE_LIGHT.generate(
-                    workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
-                ));
+                initFutures.add(steps.generate(ChunkStatus.INITIALIZE_LIGHT, workerPool, List.of(chunk)));
             }
             awaitLight(initFutures);
             for (int phase = 0; phase < 4; phase++) {
@@ -889,8 +924,8 @@ public class InMemoryChunkGrid {
                 for (ProtoChunk chunk : lit) {
                     ChunkPos pos = chunk.getPos();
                     if (phaseOf(pos.x, pos.z, 2) != phase) continue;
-                    CompletableFuture<?> f = ChunkStatus.LIGHT.generate(workerPool, level, generator, templateManager,
-                            lightEngine, fullChunkGetter, getNeighborhoodCache(pos.x, pos.z, ChunkStatus.LIGHT.getRange()));
+                    CompletableFuture<?> f = steps.generate(ChunkStatus.LIGHT, workerPool,
+                            getNeighborhoodCache(pos.x, pos.z, ChunkStatus.LIGHT.getRange()));
                     if (onChunkDone != null && isCore(pos.x, pos.z)) f = f.thenRun(onChunkDone);
                     phaseFutures.add(f);
                 }
@@ -1043,8 +1078,7 @@ public class InMemoryChunkGrid {
                             .thenApplyAsync(ignored -> {
                                 long started = System.nanoTime();
                                 try {
-                                    return ChunkStatus.FEATURES.generate(workerPool, level, generator,
-                                            templateManager, lightEngine, fullChunkGetter, cache);
+                                    return steps.generate(ChunkStatus.FEATURES, workerPool, cache);
                                 } finally {
                                     took[ix][iz] = System.nanoTime() - started;
                                 }
@@ -1137,9 +1171,10 @@ public class InMemoryChunkGrid {
         for (long packed : getCorePositions()) {
             if (skip.contains(packed)) continue;
             ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
-            CompletableFuture<?> f = asGridStep(() -> ChunkStatus.SPAWN.generate(
-                workerPool, level, generator, templateManager, lightEngine, fullChunkGetter, List.of(chunk)
-            )).thenRun(() -> spawnedEntities.add(chunk.getEntities().size()));
+            // The region of SPAWN's range: 0, the chunk alone, before 1.20.5; 1 from 1.20.5.
+            List<ChunkAccess> cache = getNeighborhoodCache(chunk.getPos().x, chunk.getPos().z, ChunkStatus.SPAWN.getRange());
+            CompletableFuture<?> f = asGridStep(() -> steps.generate(ChunkStatus.SPAWN, workerPool, cache))
+                    .thenRun(() -> spawnedEntities.add(chunk.getEntities().size()));
             if (onChunkDone != null) f = f.thenRun(onChunkDone);
             futures.add(f);
         }

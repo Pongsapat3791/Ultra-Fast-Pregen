@@ -1,5 +1,39 @@
 # Changelog
 
+## 15.1
+
+Only the Fabric build for Minecraft 1.20 changes; every other build stays at 15.
+
+- **One Fabric jar for Minecraft 1.20 to 1.20.6:** `ultrafastpregen-fabric-1.20.x-15.1.jar` replaces
+  `ultrafastpregen-fabric-1.20.1-15.jar`. It needs Java 17 or later, as before; Minecraft 1.20.5 and 1.20.6 themselves
+  need Java 21.
+- **Fixed: the 15 jar on Minecraft 1.20.2 to 1.20.6.** It refused Minecraft 1.20, and Fabric loaded it on 1.20.2 to
+  1.20.6, where Minecraft had changed calls it makes:
+  - 1.20.2 and later: every run over chunks that already exist (around spawn, a run continued after a restart) ended
+    with "Timed out waiting for reading the area's region headers";
+  - 1.20.3 and later: once `/pregen` had run, the server crashed at every start ("Exception in server tick loop"),
+    because `resume_after_restart` reads the save file then;
+  - 1.20.5 and 1.20.6: no chunk could be generated at all.
+
+  The jar now makes each of these calls the way the running version takes them. A stored chunk's status and the save
+  file are read without the NBT calls that 1.20.2 and 1.20.3 changed. On 1.20.5 and 1.20.6, Minecraft's chunk steps,
+  block entities, region files and DataFixerUpper results are called as those versions take them. 1.20.5 also stopped
+  letting a generation region answer for a neighbor that has not reached the step it asks for, so there the chunks just
+  outside the terrain area get their biomes before the surface step reads them, and mob spawning gets the region of one
+  chunk around it that 1.20.5 gives it. On 1.20 to 1.20.4 nothing else changes.
+
+### Tested
+- **Every version from 1.20 to 1.20.6**, each on a dedicated Fabric server (Fabric Loader 0.19.5; Intel Xeon E5-2670 v2,
+  20 threads): a fresh 1,000 × 1,000 block area in the Overworld, the Nether and the End; 2,000 × 2,000 blocks around
+  spawn over the spawn chunks saved before, the same area again from the save file, and a restart with `/pregen resume`;
+  and a server stopped after the first of 4 saved batches, whose run continued by itself after the restart. Every chunk
+  was fully generated, lit and readable, on the fast terrain path, with no error in any log
+  ([details](COMPATIBILITY.md#fabric-120-to-1206)).
+- **The fast terrain path against Minecraft's own biome, noise and surface steps** (`terrain_pipeline=vanilla`), the
+  same 4,096 chunks block for block on 1.20.1, 1.20.2, 1.20.4, 1.20.5 and 1.20.6: the Nether and the End are identical.
+  In the Overworld only bee nests differ, one block apart, as they also do between two runs of the same jar; on 1.20.1
+  to 1.20.4 also 12 or 13 surface blocks (mud, sand), and the 15 jar gives the same 13 on 1.20.1.
+
 ## 15
 
 ### New builds

@@ -1,12 +1,13 @@
 # Compatibility and test results
 
 Ultra Fast Pregen 15, tested with the released jars, whose SHA-1 is at the end of this page: the automated test suite,
-the runs with other mods, the modpacks, and the Bukkit and Sponge builds.
+the runs with other mods, the modpacks, and the Bukkit and Sponge builds; and 15.1's Fabric jar on every Minecraft 1.20.x.
 
 - [Automated test suite](#automated-test-suite): every build, block for block against Minecraft's own generation
 - [Together with other mods](#together-with-other-mods): performance, LoD and worldgen mods on dedicated servers
 - [Modpacks](#modpacks): All the Mods 10, All the Mods 9 and Prominence II, against 14.1
 - [Bukkit servers and Sponge](#bukkit-servers-and-sponge): the 26.2 plugin builds
+- [Fabric 1.20 to 1.20.6](#fabric-120-to-1206): the 15.1 jar on every Minecraft 1.20.x
 - [Known limits](#known-limits)
 - [Tested mod files](#tested-mod-files)
 - [Tested jars](#tested-jars)
@@ -192,6 +193,49 @@ stopping the server, chunks the server holds, a failing batch and the API, are i
 Bukkit plugin has no fast terrain path (it cannot change Minecraft's code), so it is slower than the mods in the
 Overworld; the Sponge build is the Fabric build's code and has every fast path.
 
+## Fabric 1.20 to 1.20.6
+
+Version 15.1's Fabric jar (`ultrafastpregen-fabric-1.20.x-15.1.jar`) on a dedicated Fabric server of every 1.20.x
+(Fabric Loader 0.19.5), on the same test server as above (Intel Xeon E5-2670 v2, 20 threads, 10 GB heap), each time a
+fresh world with seed 42:
+
+- **Fresh area:** 1,000 × 1,000 blocks around x = z = 100,000 in each dimension;
+- **Around spawn:** 2,000 × 2,000 blocks around 0, 0 over the spawn chunks saved before; then the same area again,
+  every batch skipped from the save file; then a restart, which reads the save file at start, and `/pregen resume`;
+- **Restart:** 2,000 × 2,000 blocks; the server stopped after the first of 4 saved batches, and the run continued by
+  itself after the restart and completed.
+
+| Minecraft | Overworld | Nether | End | Around spawn | Restart |
+|---|---|---|---|---|---|
+| 1.20 | ✅ 167.5 | ✅ 309.8 | ✅ 783.2 | ✅ 169.4 | ✅ |
+| 1.20.1 | ✅ 165.7 | ✅ 266.7 | ✅ 710.2 | ✅ 167.7 | ✅ |
+| 1.20.2 | ✅ 165.1 | ✅ 294.1 | ✅ 703.4 | ✅ 163.8 | ✅ |
+| 1.20.3 | ✅ 167.0 | ✅ 298.9 | ✅ 772.4 | ✅ 165.6 | ✅ |
+| 1.20.4 | ✅ 169.5 | ✅ 302.5 | ✅ 741.1 | ✅ 163.3 | ✅ |
+| 1.20.5 | ✅ 161.6 | ✅ 300.4 | ✅ 784.2 | ✅ 163.4 | ✅ |
+| 1.20.6 | ✅ 154.9 | ✅ 288.4 | ✅ 774.6 | ✅ 166.9 | ✅ |
+
+✅ and the numbers (chunks per second): every chunk fully generated, lit and readable, on the fast terrain path, and
+no error in the log; around spawn, also no cave stored with daylight. The 15 jar on the same tests: not loaded on 1.20;
+on 1.20.2 the runs around spawn and after the restart ended with an error; on 1.20.3 and 1.20.4 the server also crashed
+at its next start; on 1.20.5 and 1.20.6 nothing could be generated at all.
+
+**The fast terrain path on each version:** the same fresh 1,000 × 1,000 blocks generated twice, once on the fast terrain
+path and once with Minecraft's own biome, noise and surface steps (`terrain_pipeline=vanilla`; features and the rest run
+the same way in both), compared block for block over all 4,096 chunks of each dimension:
+
+| Minecraft | Overworld: blocks that differ | Nether | End |
+|---|---|---|---|
+| 1.20.1 | 29: 8 bee nests one block apart (16), 9 mud for dirt, 4 sand, clay or stone | 0 | 0 |
+| 1.20.2 | 26: 7 bee nests (14), 9 mud for dirt, 3 sand or stone | 0 | 0 |
+| 1.20.4 | 20: 4 bee nests (8), 9 mud for dirt, 3 sand or stone | 0 | 0 |
+| 1.20.5 | 8: 4 bee nests | 0 | 0 |
+| 1.20.6 | 6: 3 bee nests | 0 | 0 |
+
+Bee nests also land one block apart between two runs of the same jar on the same version (8 nests on 1.20.1, every
+other block identical), so their place is not fixed from run to run. On 1.20.1 the 15 jar gives the same 13 other
+blocks. The jar gives the same world on 1.20 as on 1.20.1, apart from bee nests.
+
 ## Known limits
 
 - **Moonrise is not supported yet by the mods** (the Bukkit plugin supports Paper and Folia, which have it built in).
@@ -246,6 +290,12 @@ Sponge builds.
 | `ultrafastpregen-neoforge-1.21.1-15.jar` | `0a7316527436bcc2ecd50fcc5c8a4b77f2d14cd9` |
 | `ultrafastpregen-neoforge-26.1.2-15.jar` | `3f53da8291d3cc988ba44550039be2cc1ca1521a` |
 | `ultrafastpregen-sponge-26.2-15.jar` | `41d7bea835b25c8588df2b344892b05f5f7a24bd` |
+
+Version 15.1, the released Fabric 1.20.x jar: [Fabric 1.20 to 1.20.6](#fabric-120-to-1206).
+
+| File | SHA-1 |
+|---|---|
+| `ultrafastpregen-fabric-1.20.x-15.1.jar` | `8cb2a181fe56ccdb7356f8b505285064c4d314e0` |
 
 Version 14.1 (the released jars), for the modpacks' comparison.
 

@@ -7,7 +7,7 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 
 | Loader | Minecraft | Java | File |
 |---|---|---|---|
-| Fabric (Loader 0.14+, no Fabric API needed) | 1.20.1 | 17+ | `ultrafastpregen-fabric-1.20.1-15.jar` |
+| Fabric (Loader 0.14+, no Fabric API needed) | 1.20 to 1.20.6 | 17+ (21+ from 1.20.5) | `ultrafastpregen-fabric-1.20.x-15.1.jar` |
 | Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-15.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
 | Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-15.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
 | NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-15.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
@@ -19,7 +19,8 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 **Download:** the mods on [CurseForge](https://www.curseforge.com/minecraft/mc-mods/ultra-fast-pregen), the Bukkit plugin
 on [CurseForge](https://www.curseforge.com/minecraft/bukkit-plugins/ultra-fast-pregen-bukkit).
 
-`15` is the update round, the same for every build. Install it on the server only: players do not need it
+`15` is the update round, the same for every build; the Fabric 1.20 build is at 15.1, one jar for Minecraft 1.20 to
+1.20.6 ([changelog](CHANGELOG.md#151)). Install it on the server only: players do not need it
 (it has no packets of its own). In singleplayer it runs in the integrated server. The Bukkit plugin goes in the
 server's `plugins` folder, the Sponge build in its `mods` folder. The Bukkit plugin cannot change Minecraft's code as the
 mods do, so it has no fast terrain path and is slower; see its page for how it differs.
@@ -205,7 +206,7 @@ chunk they save, and declare how their own world generation changes interact wit
 ## Building and testing
 
 ```powershell
-.\gradlew.bat build                                  # Fabric 1.20.1 (root)
+.\gradlew.bat build                                  # Fabric 1.20 to 1.20.6 (root)
 .\gradlew.bat -p ports/neoforge-26.1.2 build         # other builds
 .\gradlew.bat runTerrainBenchmark
 .\gradlew.bat runPartialBatchCheck -PcheckHeap=8G    # set a new level-name in build/partial-batch-check/server.properties first

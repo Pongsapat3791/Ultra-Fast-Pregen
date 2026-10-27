@@ -1,11 +1,16 @@
 package com.example.pregen;
 
 import com.mojang.serialization.Codec;
+import com.mojang.serialization.DataResult;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.MethodType;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -49,6 +54,31 @@ final class SeamWrites {
     static final Codec<PalettedContainer<BlockState>> BLOCK_STATE_CODEC = PalettedContainer.codecRW(
             Block.BLOCK_STATE_REGISTRY, BlockState.CODEC, PalettedContainer.Strategy.SECTION_STATES,
             Blocks.AIR.defaultBlockState());
+
+    /**
+     * DataResult.result(). DataResult is a class up to 1.20.4 and an interface from 1.20.5 (DataFixerUpper 8), so
+     * the call this jar compiles against 1.20.1 fails there; a method handle calls it on both.
+     */
+    private static final MethodHandle RESULT;
+
+    static {
+        try {
+            RESULT = MethodHandles.publicLookup().findVirtual(DataResult.class, "result", MethodType.methodType(Optional.class));
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> Optional<T> result(DataResult<T> result) {
+        try {
+            return (Optional<T>) RESULT.invoke(result);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
 
     /** Off only in the seam regression, to measure the batch edges without this. */
     static volatile boolean enabled = true;
@@ -220,8 +250,8 @@ final class SeamWrites {
             CompoundTag section = sections.getCompound(i);
             int index = section.getByte("Y") - minSectionY;
             if (index < 0 || index >= sectionCount || !section.contains("block_states", Tag.TAG_COMPOUND)) continue;
-            PalettedContainer<BlockState> decoded = BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompound("block_states")).result().orElse(null);
+            PalettedContainer<BlockState> decoded = result(BLOCK_STATE_CODEC
+                    .parse(NbtOps.INSTANCE, section.getCompound("block_states"))).orElse(null);
             if (decoded == null) return null;
             states[index] = writableCopy(decoded);
         }
@@ -265,8 +295,8 @@ final class SeamWrites {
             int sectionY = section.getByte("Y");
             int index = regenerated.getSectionIndexFromSectionY(sectionY);
             if (index < 0 || index >= mine.length || !section.contains("block_states", Tag.TAG_COMPOUND)) continue;
-            PalettedContainer<BlockState> stored = BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompound("block_states")).result().orElse(null);
+            PalettedContainer<BlockState> stored = result(BLOCK_STATE_CODEC
+                    .parse(NbtOps.INSTANCE, section.getCompound("block_states"))).orElse(null);
             if (stored == null) continue;
             PalettedContainer<BlockState> generated = mine[index].getStates();
             for (int y = 0; y < 16; y++) {
@@ -413,8 +443,8 @@ final class SeamWrites {
             int sectionY = write.y() >> 4;
             CompoundTag section = sectionByY.get(sectionY);
             if (section == null || !section.contains("block_states", Tag.TAG_COMPOUND)) continue;
-            PalettedContainer<BlockState> states = decoded.computeIfAbsent(sectionY, y -> BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompound("block_states")).result().orElse(null));
+            PalettedContainer<BlockState> states = decoded.computeIfAbsent(sectionY, y -> result(BLOCK_STATE_CODEC
+                    .parse(NbtOps.INSTANCE, section.getCompound("block_states"))).orElse(null));
             if (states == null) continue;
             int x = write.x() & 15;
             int y = write.y() & 15;
@@ -428,7 +458,7 @@ final class SeamWrites {
         if (!changed) return false;
         for (Map.Entry<Integer, PalettedContainer<BlockState>> entry : decoded.entrySet()) {
             if (entry.getValue() == null) continue;
-            BLOCK_STATE_CODEC.encodeStart(NbtOps.INSTANCE, entry.getValue()).result()
+            result(BLOCK_STATE_CODEC.encodeStart(NbtOps.INSTANCE, entry.getValue()))
                     .ifPresent(tag -> sectionByY.get(entry.getKey()).put("block_states", tag));
         }
         chunk.put("block_entities", blockEntities);

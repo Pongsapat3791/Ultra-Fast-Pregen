@@ -17,7 +17,7 @@ it how their own world generation changes interact with its fast paths.
 ## What is in it
 
 The API is the package `io.github.pongsapat3791.ultrafastpregen.api`, inside every Ultra Fast Pregen jar from
-version 15 on: the mods (Fabric 1.20.1, Forge 1.20.1, Fabric 1.21.1, NeoForge 1.21.1, NeoForge 26.1.2, Fabric 26.2)
+version 15 on: the mods (Fabric 1.20 to 1.20.6, Forge 1.20.1, Fabric 1.21.1, NeoForge 1.21.1, NeoForge 26.1.2, Fabric 26.2)
 and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and Sponge 26.2).
 It uses plain Java types only: dimension ids as strings, block coordinates, and chunk positions packed into
 longs. No Minecraft class appears in it, so the same code compiles against any of the jars and runs on every

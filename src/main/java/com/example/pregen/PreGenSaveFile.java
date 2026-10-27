@@ -4,14 +4,16 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
+import java.io.BufferedInputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
+import java.util.zip.GZIPInputStream;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.LongArrayTag;
@@ -74,8 +76,9 @@ final class PreGenSaveFile {
     static PreGenSaveFile load(Path file, long seed) throws IOException {
         if (!Files.exists(file)) return new PreGenSaveFile(file, seed, false);
         CompoundTag tag;
-        try (InputStream in = Files.newInputStream(file)) {
-            tag = NbtIo.readCompressed(in);
+        // What NbtIo.readCompressed(InputStream) did; 1.20.3 removed it.
+        try (DataInputStream in = new DataInputStream(new BufferedInputStream(new GZIPInputStream(Files.newInputStream(file))))) {
+            tag = NbtIo.read(in);
         }
         if (tag.getLong("seed") != seed) return new PreGenSaveFile(file, seed, true);
         PreGenSaveFile record = new PreGenSaveFile(file, seed, false);
