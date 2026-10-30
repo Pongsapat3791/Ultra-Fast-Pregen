@@ -29,7 +29,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
-import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.nbt.Tag;
 import java.io.DataOutputStream;
@@ -628,21 +627,24 @@ final class WorldChunkIO {
         static {
             MethodHandle open = null;
             Field info = null;
-            try {
-                Class<?> infoType = Class.forName(FabricLoader.getInstance().getMappingResolver()
-                        .mapClassName("intermediary", "net.minecraft.class_9240"), false, WorldChunkIO.class.getClassLoader());
-                for (Field field : RegionFileStorage.class.getDeclaredFields()) {
-                    if (field.getType() == infoType) info = field;
+            PreGenMod.RuntimeNames names = PreGenMod.runtimeNames; // null in the Forge jar (1.20 to 1.20.4)
+            if (names != null) {
+                try {
+                    Class<?> infoType = Class.forName(names.className("net.minecraft.class_9240"), false,
+                            WorldChunkIO.class.getClassLoader());
+                    for (Field field : RegionFileStorage.class.getDeclaredFields()) {
+                        if (field.getType() == infoType) info = field;
+                    }
+                    if (info == null) throw new NoSuchFieldException("RegionFileStorage has no RegionStorageInfo field");
+                    info.setAccessible(true);
+                    open = MethodHandles.publicLookup().findConstructor(RegionFile.class,
+                            MethodType.methodType(void.class, infoType, Path.class, Path.class, boolean.class));
+                } catch (ClassNotFoundException olderMinecraft) {
+                    info = null;
+                } catch (ReflectiveOperationException | RuntimeException failure) {
+                    throw new IllegalStateException("This Minecraft has RegionStorageInfo (1.20.5 or later) but not the"
+                            + " RegionFile constructor of 1.20.5 and 1.20.6", failure);
                 }
-                if (info == null) throw new NoSuchFieldException("RegionFileStorage has no RegionStorageInfo field");
-                info.setAccessible(true);
-                open = MethodHandles.publicLookup().findConstructor(RegionFile.class,
-                        MethodType.methodType(void.class, infoType, Path.class, Path.class, boolean.class));
-            } catch (ClassNotFoundException olderMinecraft) {
-                info = null;
-            } catch (ReflectiveOperationException | RuntimeException failure) {
-                throw new IllegalStateException("This Minecraft has RegionStorageInfo (1.20.5 or later) but not the"
-                        + " RegionFile constructor of 1.20.5 and 1.20.6", failure);
             }
             OPEN = open;
             INFO = info;

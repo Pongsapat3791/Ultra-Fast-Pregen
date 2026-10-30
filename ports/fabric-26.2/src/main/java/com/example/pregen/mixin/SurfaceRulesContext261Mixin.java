@@ -28,9 +28,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * refuses to inject into a method merged by a mixin of higher priority, failing the whole class.
  * Here both injections then sit in their updateY: the reset only moves this mod's own supplier,
  * and the redirect has nothing to replace where their code no longer calls Suppliers.memoize.
+ * Minecraft 26.1 to 26.1.2; SurfaceRulesContext262Mixin on 26.2 (PregenMixinPlugin).
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceRules$Context", priority = 1500)
-public abstract class SurfaceRulesContextMixin implements SurfaceRulePruning.ContextBiomes {
+public abstract class SurfaceRulesContext261Mixin implements SurfaceRulePruning.ContextBiomes {
     @Shadow @Final @Mutable private Function<BlockPos, Holder<Biome>> biomeGetter;
     @Shadow @Final private ChunkAccess chunk;
     @Shadow @Final BlockPos.MutableBlockPos pos;

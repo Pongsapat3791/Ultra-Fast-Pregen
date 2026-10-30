@@ -33,12 +33,13 @@ the same way, so the numbers are comparable.
 ## Steps
 
 1. Copy the `benchmark` folder (`bench.py`, `chart.py`, `summary.py`, `c2me-26.1.2-nodfc.toml`, `c2me-nodfc.toml`)
-   to the machine and put `ultrafastpregen-neoforge-26.1.2-15.jar` next to `bench.py`
-   (`--mc 1.21.1` uses `ultrafastpregen-neoforge-1.21.1-15.jar`).
+   to the machine and put `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` next to `bench.py`
+   (`--mc 1.21.1` uses `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar`).
 2. Install everything (once):
    ```
    python bench.py setup
    ```
+   - `--mods chunky` downloads only the mods named (enough for the runs without other mods).
 3. Run the 4 main configurations, 2 runs each (radius 1500 by default):
    ```
    python bench.py run --repeat 2 --heap 24G

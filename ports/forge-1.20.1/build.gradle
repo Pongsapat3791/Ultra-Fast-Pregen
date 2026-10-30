@@ -8,7 +8,8 @@ plugins {
 def shared = file('../..')
 def sharedProperties = new Properties()
 new File(shared, 'gradle.properties').withInputStream { sharedProperties.load(it) }
-version = sharedProperties.getProperty('version')
+// The shared version names the Fabric jar's Minecraft range (1.20.x-15.1); this jar names its own.
+version = project.minecraft_versions + '-' + sharedProperties.getProperty('version').replaceFirst(/^[^-]*-/, '')
 group = project.group
 
 base {
@@ -100,7 +101,8 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.named('processResources') {
     def props = [version: project.version, forge_version_range: project.forge_version_range,
-                 loader_version_range: project.loader_version_range, minecraft_version: project.minecraft_version]
+                 loader_version_range: project.loader_version_range,
+                 minecraft_version_range: project.minecraft_version_range]
     inputs.properties props
     filesMatching('META-INF/mods.toml') {
         expand props

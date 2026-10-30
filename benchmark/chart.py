@@ -55,7 +55,7 @@ MOD_NAMES = {"ufp": "Ultra Fast Pregen", "chunky": "Chunky", "c2me": "C2ME", "te
 def bench_constants(mc):
     """MC, NEOFORGE, UFP_JAR and MODS of that Minecraft version from bench.py's VERSIONS, read without running it."""
     found = {"MC": mc, "NEOFORGE": DEFAULT_NEOFORGE.get(mc, "?"),
-             "UFP_JAR": f"ultrafastpregen-neoforge-{mc}-14.jar", "MODS": {}}
+             "UFP_JAR": f"ultrafastpregen-neoforge-{mc}-15.1.jar", "MODS": {}}
     path = os.path.join(HERE, "bench.py")
     try:
         with open(path, encoding="utf-8") as f:
@@ -98,12 +98,13 @@ def results_version(path, rows_mc):
 
 
 def jar_version(jar):
-    """'tectonic-3.0.28-neoforge-21.1.jar' -> '3.0.28'; '' when no version is found."""
+    """'tectonic-3.0.28-neoforge-21.1.jar' -> '3.0.28', 'ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar' -> '15.1';
+    '' when no version is found."""
     stem = jar[:-4] if jar.lower().endswith(".jar") else jar
     parts = []
     for token in stem.split("-"):
         low = token.lower()
-        if low in ("neoforge", "forge", "fabric", "quilt", "1.21.1", "21.1", "26.1.2", "26.1") or (
+        if low in ("neoforge", "forge", "fabric", "quilt", "1.21", "1.21.1", "21.1", "26.1.2", "26.1", "26.2") or (
                 low.startswith("mc") and low[2:3].isdigit()):
             continue
         parts.append(token)

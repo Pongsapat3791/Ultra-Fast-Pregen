@@ -3,6 +3,7 @@ package com.example.pregen.fabric;
 import com.example.pregen.PreGenMod;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.MappingResolver;
 import net.fabricmc.loader.api.ModContainer;
 import net.fabricmc.loader.api.metadata.CustomValue;
 
@@ -11,6 +12,18 @@ public class FabricEntrypoint implements ModInitializer {
     @Override
     public void onInitialize() {
         FabricLoader loader = FabricLoader.getInstance();
+        MappingResolver names = loader.getMappingResolver();
+        PreGenMod.setRuntimeNames(new PreGenMod.RuntimeNames() {
+            @Override
+            public String className(String intermediary) {
+                return names.mapClassName("intermediary", intermediary);
+            }
+
+            @Override
+            public String methodName(String owner, String name, String descriptor) {
+                return names.mapMethodName("intermediary", owner, name, descriptor);
+            }
+        });
         String version = loader.getModContainer(PreGenMod.MOD_ID)
                 .map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
         PreGenMod.init(loader.getConfigDir(), version);

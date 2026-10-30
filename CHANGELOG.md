@@ -2,13 +2,31 @@
 
 ## 15.1
 
-Only the Fabric build for Minecraft 1.20 changes; every other build stays at 15.
+Each mod jar now runs on every Minecraft version in its name, and End cities and Nether fortresses are laid out as
+Minecraft lays them out, in every build including the Bukkit and Sponge plugins.
 
-- **One Fabric jar for Minecraft 1.20 to 1.20.6:** `ultrafastpregen-fabric-1.20.x-15.1.jar` replaces
+| Jar | Minecraft | The 15 jar |
+|---|---|---|
+| `ultrafastpregen-fabric-1.20.x-15.1.jar` | 1.20 to 1.20.6 | 1.20.1 |
+| `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` | 1.20 to 1.20.4 | 1.20.1 |
+| `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` | 1.21 and 1.21.1 | 1.21.1 |
+| `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` | 1.21 and 1.21.1 | 1.21.1 |
+| `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` | 26.1.2 and 26.2 | 26.1.2 |
+| `ultrafastpregen-fabric-26.1-26.2-15.1.jar` | 26.1 to 26.2 | 26.2 |
+| `ultrafastpregen-bukkit-26.2-15.1.jar` | 26.2 (CraftBukkit, Spigot, Paper, Folia) | 26.2 |
+| `ultrafastpregen-sponge-26.2-15.1.jar` | 26.2 (SpongeVanilla) | 26.2 |
+
+Not supported yet: Minecraft 1.21.2 to 1.21.11, which changed chunk saving, chunk generation and more from release to
+release, and 26.3, which rewrote the terrain generation itself. Each needs builds of its own. Forge 1.20.6 runs on
+Mojang's names instead of the SRG names the Forge jar is built with, and there is no Forge for 1.20.5. NeoForge exists
+for 26.1 and 26.1.1 only as betas, which bundle MixinExtras 0.5.3: it fails on this mod's `@Redirect` mixins (the 15
+jar too), where the 0.5.5 of NeoForge 26.1.2 and 26.2 reads them.
+
+- **Fabric, one jar for Minecraft 1.20 to 1.20.6:** `ultrafastpregen-fabric-1.20.x-15.1.jar` replaces
   `ultrafastpregen-fabric-1.20.1-15.jar`. It needs Java 17 or later, as before; Minecraft 1.20.5 and 1.20.6 themselves
   need Java 21.
-- **Fixed: the 15 jar on Minecraft 1.20.2 to 1.20.6.** It refused Minecraft 1.20, and Fabric loaded it on 1.20.2 to
-  1.20.6, where Minecraft had changed calls it makes:
+- **Fixed: the 15 Fabric 1.20.1 jar on Minecraft 1.20.2 to 1.20.6.** It refused Minecraft 1.20, and Fabric loaded it
+  on 1.20.2 to 1.20.6, where Minecraft had changed calls it makes:
   - 1.20.2 and later: every run over chunks that already exist (around spawn, a run continued after a restart) ended
     with "Timed out waiting for reading the area's region headers";
   - 1.20.3 and later: once `/pregen` had run, the server crashed at every start ("Exception in server tick loop"),
@@ -21,18 +39,64 @@ Only the Fabric build for Minecraft 1.20 changes; every other build stays at 15.
   letting a generation region answer for a neighbor that has not reached the step it asks for, so there the chunks just
   outside the terrain area get their biomes before the surface step reads them, and mob spawning gets the region of one
   chunk around it that 1.20.5 gives it. On 1.20 to 1.20.4 nothing else changes.
+- **Forge, one jar for Minecraft 1.20 to 1.20.4:** the Forge jar shares the Fabric jar's code, so it gets the same
+  fixes for 1.20.2 and 1.20.3 (a stored chunk's status and the save file). Forge 1.20.2 also gave the call that sends a
+  regenerated chunk to the players who see it another name at run time; the jar now finds it by its parameters. It
+  needs Forge 46 (Minecraft 1.20) or later.
+- **Fixed: the 15 Fabric 1.21.1 jar on Minecraft 1.21.2 and later.** It declared `~1.21.1`, so Fabric loaded it on
+  every 1.21.x, where it fails: 1.21.2 changed chunk saving and the calls it makes. The jar now asks for 1.21 or 1.21.1;
+  the NeoForge jar, which asked for exactly 1.21.1, now takes 1.21 as well.
+- **Fabric for Minecraft 26.1 to 26.2 and NeoForge for 26.1.2 and 26.2, one jar each:** 26.2 changed what the fast
+  terrain path hooks:
+  density functions are mapped by one walk in `DensityFunction#mapAll`, the surface rules keep the block's biome in a
+  field and test biomes against a set, and the surface step takes other parameters. Each jar now carries the hooks of
+  both versions, the ones each was tested with in 15, and applies those of the version it runs on.
+- **Fixed: End cities and Nether fortresses could be laid out differently from Minecraft (every build, and the
+  Bukkit and Sponge plugins).** Minecraft builds the layout of these two structures with code that keeps its state in
+  static fields: for End cities whether the city has its ship yet, for fortresses how many of each kind of room and
+  bridge the fortress has, which caps rooms such as the blaze spawners. Minecraft lays out one structure at a time,
+  but Ultra Fast Pregen creates a batch's structures on all worker threads, so two End cities or two fortresses laid
+  out at the same moment could change each other's layout: a city could lose its ship or get one it does not have in
+  Minecraft, and the rest of it was then built from another random sequence. Both are now laid out one at a time, as
+  strongholds already were. In the tests, an End city that has its ship and 88 pieces in Minecraft came out without
+  the ship and with 78 pieces in 3 of 3 runs of the jar before the fix on Fabric 1.21, and whole in all 7 runs of
+  15.1. On 26.2 it did not show before the fix either, although Minecraft keeps the same static fields there, and no
+  fortress came out differently ([details](COMPATIBILITY.md#end-cities-and-nether-fortresses)).
+- **Faster with C2ME: lighting stays on the worker threads.** 15 lights each batch on the worker threads unless another
+  mod changes Minecraft's light engine, and C2ME changes it in two places that keep its results: each light storage's
+  update runs under that storage's own lock, and the server's light engine schedules its next update when a task ends.
+  With C2ME, batches were therefore lit on the server's single light thread, which made lighting the slowest step in
+  the Nether and the End. These two changes are recognized now (all mod builds). On NeoForge 26.1.2 with C2ME, every
+  chunk has the same blocks and light as before (Overworld, Nether and End, 4,096 chunks each), and runs went from 143
+  to 182 chunks/s in the Overworld, 185 to 358 in the Nether and 362 to 591 in the End (Xeon E5-2670 v2, 20 threads,
+  1,000 × 1,000 blocks).
 
 ### Tested
-- **Every version from 1.20 to 1.20.6**, each on a dedicated Fabric server (Fabric Loader 0.19.5; Intel Xeon E5-2670 v2,
-  20 threads): a fresh 1,000 × 1,000 block area in the Overworld, the Nether and the End; 2,000 × 2,000 blocks around
-  spawn over the spawn chunks saved before, the same area again from the save file, and a restart with `/pregen resume`;
-  and a server stopped after the first of 4 saved batches, whose run continued by itself after the restart. Every chunk
-  was fully generated, lit and readable, on the fast terrain path, with no error in any log
-  ([details](COMPATIBILITY.md#fabric-120-to-1206)).
+- **Every Minecraft version of every jar, 22 in all**, each on a dedicated server of its own (Forge, NeoForge, or Fabric
+  Loader 0.19.5; Intel Xeon E5-2670 v2, 20 threads): a fresh 1,000 × 1,000 block area in the Overworld, the Nether and
+  the End; 1,000 × 1,000 blocks around spawn in 4 batches over the spawn chunks saved before, the same area again from
+  the save file, and a restart with `/pregen resume`; and a server stopped once the first batch was saved, whose run
+  continued by itself after the restart. Every chunk was fully generated, lit and readable, on the fast terrain path,
+  with no error from this mod in any log ([details](COMPATIBILITY.md#version-151)).
 - **The fast terrain path against Minecraft's own biome, noise and surface steps** (`terrain_pipeline=vanilla`), the
-  same 4,096 chunks block for block on 1.20.1, 1.20.2, 1.20.4, 1.20.5 and 1.20.6: the Nether and the End are identical.
-  In the Overworld only bee nests differ, one block apart, as they also do between two runs of the same jar; on 1.20.1
-  to 1.20.4 also 12 or 13 surface blocks (mud, sand), and the 15 jar gives the same 13 on 1.20.1.
+  same 4,096 chunks block for block in each dimension, on 15 of the versions. In the Overworld only bee nests differ
+  (none on 26.x), one block apart, as they also do between two runs of the same jar; on 1.20.1 to 1.20.4 also 12 or
+  13 surface blocks (mud, sand), and the 15 jar gives the same 13 on 1.20.1. The Nether and the End are identical,
+  apart from 21 blocks at the bottom of one Nether chunk on 26.2, which come from Minecraft's own biome lookup and can
+  come out either way in Minecraft too ([details](COMPATIBILITY.md#version-151)).
+- **With C2ME**, on each version that has a C2ME build (Fabric 1.20.1, 1.21.1 and 26.2, NeoForge 1.21.1 and 26.1.2):
+  the 15.1 jar against the same jar without the C2ME change, block for block in the Overworld, the Nether and the End,
+  and over existing chunks and across a restart ([details](COMPATIBILITY.md#with-c2me)). The two worlds had the same
+  blocks and light on NeoForge 26.1.2 and Fabric 26.2; on the other three only bee nests differed, and on NeoForge
+  1.21.1 also one End city, laid out by the race fixed above; with the final jar and C2ME, NeoForge 1.21.1 gave that
+  city its 88 pieces in 3 of 3 runs. The final jars passed every run with C2ME, with lighting on the worker threads
+  throughout.
+- **Static checks against every version each jar declares:** every class, method, field and mixin target the jar refers
+  to exists in that version's game and loader files, apart from 4 calls on the Fabric jar's path for 1.20 to 1.20.4,
+  which it does not take on 1.20.5 and 1.20.6.
+- **Corrected test results of 15:** the C2ME rows in
+  [Together with other mods](COMPATIBILITY.md#together-with-other-mods) had run without C2ME, because the test asked
+  for it under a name the test server did not have. They are now runs of the 15 jars with C2ME, and all passed.
 
 ## 15
 

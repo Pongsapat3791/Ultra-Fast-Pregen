@@ -388,7 +388,7 @@ final class SeamWrites {
         for (Write write : writes) {
             pos.set(write.x(), write.y(), write.z());
             chunk.setBlockState(pos, write.after(), 0);
-            if (!write.after().getFluidState().isEmpty()) chunk.markPosForPostprocessing(pos.immutable());
+            if (!write.after().getFluidState().isEmpty()) MinecraftVersion.markPosForPostProcessing(chunk, pos.immutable());
             if (write.blockEntity() != null) chunk.setBlockEntityNbt(write.blockEntity().copy());
         }
     }

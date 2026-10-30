@@ -1,18 +1,22 @@
-# Ultra Fast Pregen for NeoForge 26.1.2
+# Ultra Fast Pregen for NeoForge, Minecraft 26.1.2 and 26.2
 
-The port of Ultra Fast Pregen 15 to Minecraft 26.1.2 (NeoForge), with the commands (including `/pregen set` and the boss bar),
-the config file, the save file and every change up to round 15: see the [main README](../../README.md).
+The port of Ultra Fast Pregen to Minecraft 26.1.2 and 26.2 (NeoForge, built against 26.1.2), with the commands (including `/pregen set` and the boss bar),
+the config file, the save file and every change up to round 15.1: see the [main README](../../README.md).
 
-- **Requires:** NeoForge 26.1.2 (tested with 26.1.2.122) and Java 25
-- **File:** `build/libs/ultrafastpregen-neoforge-26.1.2-15.jar`, into the server's `mods/` folder; `15` is the update round, the same for every build
+- **Requires:** Minecraft 26.1.2 or 26.2 with its NeoForge (tested with 26.1.2.122 and 26.2.0.93) and Java 25. NeoForge for 26.1 and
+  26.1.1 exists only as betas, which bundle MixinExtras 0.5.3: it fails on this jar's `@Redirect` mixins (0.5.5 reads them)
+- **File:** `build/libs/ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar`, into the server's `mods/` folder; `15.1` is the update round
 - **Install:** on the server only; players do not need it, as the mod has no packets of its own
 - **Commands:** `/pregen start|resume|reset|stop|status|world|center|radius|shape|worldborder|spawn|set`, operator level 2 (in singleplayer the world's owner, cheats or not)
 - **Config:** `config/ultrafastpregen.conf`, with the same keys as the other builds
 
 ## Differences from the other builds
 
-The code comes from the Fabric 26.2 build (Minecraft 26.x is not obfuscated); only the APIs that still have their older names in 26.1.2
-and the loader entrypoint differ.
+The code is the Fabric 26.x build's (Minecraft 26.x is not obfuscated); only the loader entrypoint differs. Where 26.2 changed what the
+fast terrain path hooks (density functions mapped by one walk in `DensityFunction#mapAll`, the surface rules' biome lookups and tests, the
+surface step's parameters), both builds carry the mixins of 26.1.x and of 26.2, and `mixin.PregenMixinPlugin` applies the ones of the
+running version: 26.2 is the version with the class `DensityFunction$1RecursiveVisitor`. `MinecraftVersion` covers the one renamed method
+the rest of the code calls (`markPosForPostProcessing`, spelled `markPosForPostprocessing` before 26.2).
 
 - **Command registration:** NeoForge's `RegisterCommandsEvent` (`neoforge.NeoForgeEntrypoint`) instead of the Fabric build's mixin
 - **Config folder:** `FMLPaths.CONFIGDIR`

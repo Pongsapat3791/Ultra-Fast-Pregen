@@ -8,9 +8,12 @@ import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 
-/** The test of SurfaceRules.isBiome (its condition's compute), for SurfaceRulePruning. */
+/**
+ * The test of SurfaceRules.isBiome (its condition's compute), for SurfaceRulePruning.
+ * Minecraft 26.2, which tests a biome against a HolderSet; BiomeConditionSource261Mixin before (PregenMixinPlugin).
+ */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource")
-public abstract class BiomeConditionSourceMixin implements SurfaceRulePruning.BiomeTest {
+public abstract class BiomeConditionSource262Mixin implements SurfaceRulePruning.BiomeTest {
     @Shadow @Final private HolderSet<Biome> biomes;
 
     @Override

@@ -1,13 +1,15 @@
-# Ultra Fast Pregen for Forge 1.20.1
+# Ultra Fast Pregen for Forge, Minecraft 1.20 to 1.20.4
 
-The Forge build shares its code with the Fabric 1.20.1 build (`src/` of the main project); only the loader entrypoint differs
+The Forge build shares its code with the Fabric 1.20 build (`src/` of the main project); only the loader entrypoint differs
 (`com.example.pregen.forge.ForgeEntrypoint` instead of `com.example.pregen.fabric.FabricEntrypoint`).
-Every change to the Fabric build is in the Forge build too, with the same version number (`version` in the main project's `gradle.properties`).
+Every change to the Fabric build is in the Forge build too, with the same update round (`version` in the main project's `gradle.properties`;
+the jar names its own Minecraft range, `minecraft_versions` in this folder's `gradle.properties`).
 
 Commands, the config file, the save file and how it works are the same as in the Fabric build: see the [main README](../../README.md).
 
-- **Requires:** Forge 1.20.1 (47.x) and Java 17 or newer
-- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20.1-15.jar`
+- **Requires:** Minecraft 1.20 to 1.20.4 with its Forge (46.x for 1.20, 47.x for 1.20.1, 48.x for 1.20.2, 49.x for 1.20.3 and 1.20.4) and
+  Java 17 or newer. Forge 1.20.6 runs on Mojang's names, not the SRG names this jar is built with; there is no Forge for 1.20.5.
+- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20-1.20.4-15.1.jar`
 - **Install:** on the server only; players can join with or without it
 
 ## Building and testing (from the main project folder)

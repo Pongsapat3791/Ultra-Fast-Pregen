@@ -15,6 +15,8 @@ import net.minecraft.world.level.levelgen.SurfaceRules;
  * out with what it guards, and so do tests and sequences left with nothing to place; a sequence
  * ends at a rule that always places a block. Each block comes out as with Minecraft's rules,
  * after fewer tests (most of the overworld's rules are about biomes absent from a given chunk).
+ * Minecraft 26.2 itself turns such biome tests into constant conditions; the rules around them
+ * still ran for every block.
  * A subclass of SurfaceRules only to name its protected rule and context types; the mixins pass
  * them as Object.
  */
@@ -128,6 +130,10 @@ public final class SurfaceRulePruning extends SurfaceRules {
             return rule;
         }
 
+        /**
+         * Never called. On 26.2, where codec() returns a MapCodec, this method is no override, and
+         * such a call would fail with an AbstractMethodError instead.
+         */
         @Override
         public KeyDispatchDataCodec<? extends RuleSource> codec() {
             throw new UnsupportedOperationException("A rule built for one chunk is never saved");

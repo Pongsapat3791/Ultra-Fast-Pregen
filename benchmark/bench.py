@@ -34,10 +34,12 @@ import platform
 import queue
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -51,7 +53,7 @@ VERSIONS = {
     "26.1.2": {
         "neoforge": "26.1.2.122",
         "java": 25,
-        "ufp": "ultrafastpregen-neoforge-26.1.2-15.jar",
+        "ufp": "ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar",
         "c2me_nodfc": "c2me-26.1.2-nodfc.toml",
         "mods": {
             "chunky": ("Chunky-NeoForge-1.5.4.jar", MODRINTH + "fALzjamp/versions/EyCqftOK/Chunky-NeoForge-1.5.4.jar"),
@@ -71,7 +73,7 @@ VERSIONS = {
     "1.21.1": {
         "neoforge": "21.1.259",
         "java": 21,
-        "ufp": "ultrafastpregen-neoforge-1.21.1-15.jar",
+        "ufp": "ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar",
         "c2me_nodfc": "c2me-nodfc.toml",
         "mods": {
             "chunky": ("Chunky-NeoForge-1.4.23.jar", MODRINTH + "fALzjamp/versions/LuFhm4eU/Chunky-NeoForge-1.4.23.jar"),
@@ -139,9 +141,25 @@ def download(url, dest):
     log(f"download {url}")
     tmp = dest + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": "ultrafastpregen-benchmark"})
-    with urllib.request.urlopen(req) as response, open(tmp, "wb") as out:
-        shutil.copyfileobj(response, out)
+    try:
+        with urllib.request.urlopen(req) as response, open(tmp, "wb") as out:
+            shutil.copyfileobj(response, out)
+    except urllib.error.URLError as failure:
+        curl = windows_curl()
+        if not isinstance(failure.reason, ssl.SSLCertVerificationError) or not curl:
+            raise
+        # A fresh Windows holds only the root certificates something has asked it for, and Python never asks;
+        # Windows' own curl goes through Windows, which fetches a missing root as a browser does.
+        reason = getattr(failure.reason, "verify_message", None) or failure.reason
+        log(f"Python could not verify the certificate ({reason}): downloading with {curl}")
+        subprocess.check_call([curl, "-fsSL", "--retry", "3", "-A", "ultrafastpregen-benchmark", "-o", tmp, url])
     os.replace(tmp, dest)
+
+
+def windows_curl():
+    """Windows' own curl.exe (Windows 10 1803 and later), which uses Windows' certificate store; None elsewhere."""
+    path = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "curl.exe")
+    return path if os.name == "nt" and os.path.isfile(path) else None
 
 
 def java_exe():
@@ -178,6 +196,8 @@ def setup(args):
         log("installing the NeoForge server")
         subprocess.check_call([java, "-jar", installer, "--install-server", SERVER])
     for key, (name, url) in MODS.items():
+        if args.mods and key not in args.mods:
+            continue
         download(url, os.path.join(JARS, name))
     ufp = os.path.join(HERE, UFP_JAR)
     if not os.path.exists(ufp):
@@ -486,6 +506,7 @@ def main():
     parser.add_argument("--configs", nargs="*", help="explicit configuration names")
     parser.add_argument("--timeout", type=int, default=4 * 3600, help="seconds per run")
     parser.add_argument("--keep-worlds", action="store_true", help="keep each run's world under work/worlds")
+    parser.add_argument("--mods", nargs="*", help="setup: download only these mods, e.g. --mods chunky (default: all)")
     parser.add_argument("--c2me-dfc", choices=["on", "off"], default="on",
                         help="C2ME's density function compiler (useDensityFunctionCompiler), default on;"
                              " off is recorded as <config>-nodfc")

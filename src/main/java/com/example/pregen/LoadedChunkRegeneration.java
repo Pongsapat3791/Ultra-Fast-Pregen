@@ -3,6 +3,9 @@ package com.example.pregen;
 import com.example.pregen.mixin.ChunkMapAccessor;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -11,11 +14,14 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import net.minecraft.core.SectionPos;
+import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.network.ServerPlayerConnection;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkStatus;
@@ -39,6 +45,7 @@ final class LoadedChunkRegeneration {
     /** Chunks replaced per server-thread task, to keep each tick short. */
     private static final int SLICE = 16;
     private static final long TIMEOUT_SECONDS = 120;
+    private static final MethodHandle SEND = findSend();
 
     private LoadedChunkRegeneration() {}
 
@@ -175,7 +182,7 @@ final class LoadedChunkRegeneration {
             if (neighborsLoaded(level, pos)) live.postProcessGeneration();
             ClientboundLevelChunkWithLightPacket packet = new ClientboundLevelChunkWithLightPacket(
                     live, level.getChunkSource().getLightEngine(), null, null);
-            level.getChunkSource().chunkMap.getPlayers(pos, false).forEach(player -> player.connection.send(packet));
+            level.getChunkSource().chunkMap.getPlayers(pos, false).forEach(player -> send(player, packet));
         } else {
             generated.getBlockEntities().values().forEach(held::setBlockEntity);
             generated.getBlockEntityNbts().values().forEach(held::setBlockEntityNbt);
@@ -183,5 +190,33 @@ final class LoadedChunkRegeneration {
             ((ProtoChunk) held).setStatus(ChunkStatus.FULL);
         }
         held.setUnsaved(true);
+    }
+
+    private static void send(ServerPlayer player, Packet<?> packet) {
+        try {
+            SEND.invoke((ServerPlayerConnection) player.connection, packet);
+        } catch (RuntimeException | Error failure) {
+            throw failure;
+        } catch (Throwable failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
+    /**
+     * ServerPlayerConnection.send, found as that interface's only void (Packet) method: Forge's
+     * runtime name for it changed in 1.20.2 (m_9829_ to m_141995_), so the call the compiler makes
+     * against 1.20.1 fails there. Fabric's name did not change.
+     */
+    private static MethodHandle findSend() {
+        for (Method method : ServerPlayerConnection.class.getMethods()) {
+            if (method.getReturnType() == void.class && Arrays.equals(method.getParameterTypes(), new Class<?>[]{Packet.class})) {
+                try {
+                    return MethodHandles.publicLookup().unreflect(method);
+                } catch (IllegalAccessException failure) {
+                    throw new IllegalStateException(failure);
+                }
+            }
+        }
+        throw new IllegalStateException("ServerPlayerConnection has no send(Packet)");
     }
 }

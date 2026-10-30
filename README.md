@@ -8,22 +8,22 @@ The blocks, biomes and light are the same as Minecraft's own generation (checked
 | Loader | Minecraft | Java | File |
 |---|---|---|---|
 | Fabric (Loader 0.14+, no Fabric API needed) | 1.20 to 1.20.6 | 17+ (21+ from 1.20.5) | `ultrafastpregen-fabric-1.20.x-15.1.jar` |
-| Forge (47.x) | 1.20.1 | 17+ | `ultrafastpregen-forge-1.20.1-15.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
-| Fabric (no Fabric API needed) | 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21.1-15.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
-| NeoForge (21.1.x) | 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21.1-15.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
-| NeoForge (26.1.2.x) | 26.1.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-15.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
-| Fabric (Loader 0.16+, no Fabric API needed) | 26.2 | 25+ | `ultrafastpregen-fabric-26.2-15.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
-| Bukkit plugin: CraftBukkit, Spigot, Paper, Folia | 26.2 | 25+ | `ultrafastpregen-bukkit-26.2-15.jar` ([ports/bukkit-26.2](ports/bukkit-26.2/README.md)) |
-| Sponge (SpongeVanilla, API 20) | 26.2 | 25+ | `ultrafastpregen-sponge-26.2-15.jar` ([ports/sponge-26.2](ports/sponge-26.2/README.md)) |
+| Forge (46.x to 49.x) | 1.20 to 1.20.4 | 17+ | `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` ([ports/forge-1.20.1](ports/forge-1.20.1/README.md)) |
+| Fabric (no Fabric API needed) | 1.21 and 1.21.1 | 21+ | `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` ([ports/fabric-1.21.1](ports/fabric-1.21.1/README.md)) |
+| NeoForge (21.0.x, 21.1.x) | 1.21 and 1.21.1 | 21+ | `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` ([ports/neoforge-1.21.1](ports/neoforge-1.21.1/README.md)) |
+| NeoForge (26.1.2.x, 26.2.x) | 26.1.2 and 26.2 | 25+ | `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` ([ports/neoforge-26.1.2](ports/neoforge-26.1.2/README.md)) |
+| Fabric (Loader 0.16+, no Fabric API needed) | 26.1 to 26.2 | 25+ | `ultrafastpregen-fabric-26.1-26.2-15.1.jar` ([ports/fabric-26.2](ports/fabric-26.2/README.md)) |
+| Bukkit plugin: CraftBukkit, Spigot, Paper, Folia | 26.2 | 25+ | `ultrafastpregen-bukkit-26.2-15.1.jar` ([ports/bukkit-26.2](ports/bukkit-26.2/README.md)) |
+| Sponge (SpongeVanilla, API 20) | 26.2 | 25+ | `ultrafastpregen-sponge-26.2-15.1.jar` ([ports/sponge-26.2](ports/sponge-26.2/README.md)) |
 
 **Download:** the mods on [CurseForge](https://www.curseforge.com/minecraft/mc-mods/ultra-fast-pregen), the Bukkit plugin
 on [CurseForge](https://www.curseforge.com/minecraft/bukkit-plugins/ultra-fast-pregen-bukkit).
 
-`15` is the update round, the same for every build; the Fabric 1.20 build is at 15.1, one jar for Minecraft 1.20 to
-1.20.6 ([changelog](CHANGELOG.md#151)). Install it on the server only: players do not need it
-(it has no packets of its own). In singleplayer it runs in the integrated server. The Bukkit plugin goes in the
-server's `plugins` folder, the Sponge build in its `mods` folder. The Bukkit plugin cannot change Minecraft's code as the
-mods do, so it has no fast terrain path and is slower; see its page for how it differs.
+`15.1` is the update round, the same for every build. Each mod jar runs on every Minecraft version in its name
+([changelog](CHANGELOG.md#151)); Minecraft 1.21.2 to 1.21.11 and 26.3 are not supported yet. Install it on the server
+only: players do not need it (it has no packets of its own). In singleplayer it runs in the integrated server. The
+Bukkit plugin goes in the server's `plugins` folder, the Sponge build in its `mods` folder. The Bukkit plugin cannot
+change Minecraft's code as the mods do, so it has no fast terrain path and is slower; see its page for how it differs.
 
 ## Speed
 
@@ -176,8 +176,8 @@ The test suite (`runPartialBatchCheck`, `runTerrainBenchmark`) runs on a real se
   which mod. Mixins that only add accessors or touch other methods no longer force the slower path (round 14), so big modpacks keep the fast path.
 - **Safety net (round 14):** if a batch still fails on the fast paths (another mod's code that does not expect them), the batch is generated
   again the way Minecraft does (per-status terrain, one chunk at a time) and the rest of the run continues that way. The log names the mods involved.
-- **C2ME:** supported on every build, including its own chunk storage, on the fast terrain path. On 1.20.1 the cell-skipping
-  fill works with C2ME too. On 1.21.1 and 26.x it steps aside while C2ME's density function compiler is on (C2ME's default):
+- **C2ME:** supported on every build, including its own chunk storage, on the fast terrain path, and since 15.1 with
+  each batch lit on the worker threads ([changelog](CHANGELOG.md#151)). On 1.20.1 the cell-skipping fill works with C2ME too. On 1.21.1 and 26.x it steps aside while C2ME's density function compiler is on (C2ME's default):
   on 26.x that is the faster setting; on 1.21.1, setting `useDensityFunctionCompiler = false` under
   `[vanillaWorldGenOptimizations]` in `config/c2me.toml` is faster still.
 - **Distant Horizons / Voxy (26.x builds):** saved chunks are sent to their LoD databases (Voxy only in singleplayer, as it is client-side).

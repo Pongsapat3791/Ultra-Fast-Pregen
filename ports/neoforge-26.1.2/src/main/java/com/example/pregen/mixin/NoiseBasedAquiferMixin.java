@@ -29,8 +29,8 @@ public abstract class NoiseBasedAquiferMixin implements AquiferAirProof {
     @Shadow @Final private Aquifer.FluidPicker globalFluidPicker;
     @Shadow @Final private int skipSamplingAboveY;
     @Shadow @Final private PositionalRandomFactory positionalRandomFactory;
-    @Shadow @Final protected long[] aquiferLocationCache;
-    @Shadow protected boolean shouldScheduleFluidUpdate;
+    @Shadow @Final private long[] aquiferLocationCache;
+    @Shadow private boolean shouldScheduleFluidUpdate;
     @Shadow @Final private static double FLOWING_UPDATE_SIMULARITY;
 
     /** 0 unknown, 1 the generator's own y-only fluid picker, 2 any other picker. */
@@ -44,7 +44,10 @@ public abstract class NoiseBasedAquiferMixin implements AquiferAirProof {
     @Unique private final int[] pregen$centerY = new int[12];
     @Unique private final int[] pregen$centerZ = new int[12];
 
-    @Shadow protected abstract int getIndex(int gridX, int gridY, int gridZ);
+    @Shadow
+    private int getIndex(int gridX, int gridY, int gridZ) {
+        throw new AssertionError();
+    }
 
     @Shadow
     private Aquifer.FluidStatus getAquiferStatus(int index) {
@@ -58,22 +61,22 @@ public abstract class NoiseBasedAquiferMixin implements AquiferAirProof {
     }
 
     @Shadow
-    protected static double similarity(int distanceSqr1, int distanceSqr2) {
+    private static double similarity(int distanceSqr1, int distanceSqr2) {
         throw new AssertionError();
     }
 
     @Shadow
-    protected static int gridX(int blockCoord) {
+    private static int gridX(int blockCoord) {
         throw new AssertionError();
     }
 
     @Shadow
-    protected static int gridY(int blockCoord) {
+    private static int gridY(int blockCoord) {
         throw new AssertionError();
     }
 
     @Shadow
-    protected static int gridZ(int blockCoord) {
+    private static int gridZ(int blockCoord) {
         throw new AssertionError();
     }
 

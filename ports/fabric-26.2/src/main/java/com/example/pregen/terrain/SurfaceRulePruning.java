@@ -130,6 +130,10 @@ public final class SurfaceRulePruning extends SurfaceRules {
             return rule;
         }
 
+        /**
+         * Never called. Before 26.2, where codec() returns a KeyDispatchDataCodec, this method is no
+         * override, and such a call would fail with an AbstractMethodError instead.
+         */
         @Override
         public MapCodec<? extends RuleSource> codec() {
             throw new UnsupportedOperationException("A rule built for one chunk is never saved");

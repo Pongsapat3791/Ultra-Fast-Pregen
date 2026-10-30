@@ -8,7 +8,10 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** A terrain spline, referenced from several functions of the router, wrapped once per NoiseChunk (see NoiseChunkWrap.Memo). */
+/**
+ * A terrain spline, referenced from several functions of the router, wrapped once per NoiseChunk (see NoiseChunkWrap.Memo).
+ * Minecraft 26.1 to 26.1.2; 26.2 walks mapAll in one place (RecursiveVisitorMixin, PregenMixinPlugin).
+ */
 @Mixin(DensityFunctions.Spline.class)
 public abstract class SplineFunctionMixin {
     @Inject(method = "mapAll", at = @At("HEAD"), cancellable = true)

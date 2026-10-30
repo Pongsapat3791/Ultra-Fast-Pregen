@@ -22,6 +22,7 @@ import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.util.StaticCache2D;
 import net.minecraft.world.level.chunk.status.ChunkPyramid;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
@@ -37,6 +38,7 @@ import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.level.levelgen.structure.TemplateStructurePiece;
+import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
@@ -151,8 +153,13 @@ public class InMemoryChunkGrid {
     private final Map<Long, GridHolder> fallbackHolders = new ConcurrentHashMap<>();
     /** Chunks where a stronghold can start (see WorldgenSafety#strongholdChunks). */
     private LongSet strongholdChunks = LongSets.EMPTY_SET;
-    /** StrongholdPieces lays a stronghold out through static fields: one layout at a time, in any world. */
-    private static final Object STRONGHOLD_LAYOUT = new Object();
+    /** Placements of End cities and Nether fortresses (see WorldgenSafety#staticLayoutPlacements). */
+    private List<StructurePlacement> staticLayoutPlacements = List.of();
+    /**
+     * StrongholdPieces, EndCityPieces and NetherFortressPieces lay a structure out through static
+     * fields: one such layout at a time, in any world.
+     */
+    private static final Object STATIC_LAYOUT = new Object();
     private final LongAdder terrainSetupNanos = new LongAdder();
     private final LongAdder biomeNanos = new LongAdder();
     private final LongAdder noiseNanos = new LongAdder();
@@ -362,14 +369,14 @@ public class InMemoryChunkGrid {
      * the starts reach the level's structure cache through a task queued on the server thread,
      * which Minecraft's step hands them to with MinecraftServer#execute. A stopping server runs
      * such tasks on the calling thread, and the cache is not safe for many workers at once.
-     * Strongholds lay out one at a time (see STRONGHOLD_LAYOUT).
+     * Strongholds, End cities and Nether fortresses lay out one at a time (see STATIC_LAYOUT).
      */
     private CompletableFuture<ChunkAccess> generateStructureStarts(ProtoChunk chunk) {
         if (Platform.generatesStructures(level)) {
             Runnable create = () -> generator.createStructures(level.registryAccess(), level.getChunkSource().getGeneratorState(),
                     level.structureManager(), chunk, templateManager, level.dimension());
-            if (strongholdChunks.contains(chunk.getPos().pack())) {
-                synchronized (STRONGHOLD_LAYOUT) {
+            if (laysOutThroughStaticFields(chunk.getPos())) {
+                synchronized (STATIC_LAYOUT) {
                     create.run();
                 }
             } else {
@@ -390,6 +397,21 @@ public class InMemoryChunkGrid {
     /** Chunks where a stronghold can start; call before the first layer runs. */
     void setStrongholdChunks(LongSet chunks) {
         strongholdChunks = chunks;
+    }
+
+    /** Placements of End cities and Nether fortresses; call before the first layer runs. */
+    void setStaticLayoutPlacements(List<StructurePlacement> placements) {
+        staticLayoutPlacements = placements;
+    }
+
+    /** Whether a stronghold, an End city or a Nether fortress can start in the chunk. */
+    private boolean laysOutThroughStaticFields(ChunkPos pos) {
+        if (strongholdChunks.contains(pos.pack())) return true;
+        ChunkGeneratorStructureState state = level.getChunkSource().getGeneratorState();
+        for (StructurePlacement placement : staticLayoutPlacements) {
+            if (placement.isStructureChunk(state, pos.x(), pos.z())) return true;
+        }
+        return false;
     }
 
     public int getGridTotalChunks() {

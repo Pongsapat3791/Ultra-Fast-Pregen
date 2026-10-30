@@ -17,9 +17,12 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** The surface step's chunk and biome lookup on this mod's terrain workers, for its rules' context (see SurfaceBiomes). */
+/**
+ * The surface step's chunk and biome lookup on this mod's terrain workers, for its rules' context (see SurfaceBiomes).
+ * Minecraft 26.1 to 26.1.2, whose buildSurface takes the biome registry; SurfaceSystem262Mixin on 26.2 (PregenMixinPlugin).
+ */
 @Mixin(SurfaceSystem.class)
-public abstract class SurfaceSystemMixin {
+public abstract class SurfaceSystem261Mixin {
     @Inject(method = "buildSurface", at = @At("HEAD"))
     private void pregen$beginSurface(RandomState randomState, BiomeManager biomeManager, Registry<Biome> biomes,
                                      boolean useLegacyRandomSource, WorldGenerationContext generationContext,

@@ -1,5 +1,6 @@
 package com.example.pregen.terrain;
 
+import com.example.pregen.MinecraftVersion;
 import com.example.pregen.WorldgenCompat;
 import com.example.pregen.mixin.CacheAllInCellAccessor;
 import com.example.pregen.mixin.NoiseChunkAccessor;
@@ -181,7 +182,7 @@ public final class FastNoiseFill {
                                     heightmap2.update(aa, v, ad, blockState);
                                     if (aquifer.shouldScheduleFluidUpdate() && !blockState.getFluidState().isEmpty()) {
                                         mutableBlockPos.set(z, v, ac);
-                                        chunkAccess.markPosForPostProcessing(mutableBlockPos);
+                                        MinecraftVersion.markPosForPostProcessing(chunkAccess, mutableBlockPos);
                                     }
                                 }
                             }

@@ -16,6 +16,7 @@ import it.unimi.dsi.fastutil.longs.LongArrayList;
 import java.util.List;
 import java.util.HashMap;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
@@ -75,6 +76,8 @@ public class DynamicBatchPreGen {
     private boolean fusedTerrain;
     /** Chunks where a stronghold can start (see WorldgenSafety#strongholdChunks). */
     private LongSet strongholdChunks = LongSets.EMPTY_SET;
+    /** Placements of End cities and Nether fortresses (see WorldgenSafety#staticLayoutPlacements). */
+    private List<StructurePlacement> staticLayoutPlacements = List.of();
     // At most one tile's encoded chunks are in flight to the server's IO thread at a time.
     private volatile CompletableFuture<WorldChunkIO.WriteResult> pendingWrite;
     /** Lights and saves each batch on its own thread while the next one generates (see BatchTail). */
@@ -619,6 +622,7 @@ public class DynamicBatchPreGen {
             String unsafe = WorldgenSafety.install(level.getStructureManager());
             if (unsafe != null) parallelSteps = false;
             strongholdChunks = WorldgenSafety.strongholdChunks(level);
+            staticLayoutPlacements = WorldgenSafety.staticLayoutPlacements(level);
             boolean populators = !level.getWorld().getPopulators().isEmpty();
             parallelFeatures = parallelSteps && (!populators || alwaysParallelFeatures);
             // Minecraft's noise generator, not a plugin's (CraftBukkit wraps those in its own class).
@@ -1213,6 +1217,7 @@ public class DynamicBatchPreGen {
                 tile.chunksX(), tile.chunksZ(), fusedTerrain && !safeMode, parallelSteps && !safeMode);
         grid.setArea(batchPlan::containsChunk);
         grid.setStrongholdChunks(strongholdChunks);
+        grid.setStaticLayoutPlacements(staticLayoutPlacements);
         grid.setParallelFeatures(parallelFeatures && !safeMode);
         grid.setWorkerThreads(parallelThreads);
         InMemoryChunkGrid.setCurrentGrid(grid);

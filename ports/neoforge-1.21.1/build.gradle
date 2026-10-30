@@ -71,7 +71,7 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.named('processResources') {
     def props = [version: project.version, neo_version_range: project.neo_version_range,
-                 minecraft_version: project.minecraft_version]
+                 minecraft_version_range: project.minecraft_version_range]
     inputs.properties props
     filesMatching('META-INF/neoforge.mods.toml') {
         expand props

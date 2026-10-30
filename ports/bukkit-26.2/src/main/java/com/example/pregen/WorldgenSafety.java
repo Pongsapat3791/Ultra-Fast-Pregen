@@ -3,6 +3,7 @@ package com.example.pregen;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -14,8 +15,12 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
+import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
 import net.minecraft.world.level.levelgen.structure.placement.ConcentricRingsStructurePlacement;
+import net.minecraft.world.level.levelgen.structure.placement.StructurePlacement;
+import net.minecraft.world.level.levelgen.structure.structures.EndCityStructure;
+import net.minecraft.world.level.levelgen.structure.structures.NetherFortressStructure;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 
@@ -30,6 +35,9 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
  * - StrongholdPieces lays a stronghold out through static fields; the chunks where a stronghold
  *   can start (its ring positions) create their structure starts one at a time (see
  *   strongholdChunks).
+ * - EndCityPieces (its section generators, and whether a city has its ship yet) and
+ *   NetherFortressPieces (how often a layout placed each kind of piece) do the same, so the chunks
+ *   where an End city or a Nether fortress can start do too (see staticLayoutPlacements).
  *
  * When the template store cannot be wrapped (a server whose internals differ), structure starts
  * and features run one chunk at a time instead (see install).
@@ -130,5 +138,23 @@ final class WorldgenSafety {
             }
         }
         return chunks;
+    }
+
+    /**
+     * The placements of the structure sets with an End city or a Nether fortress: a chunk where one
+     * of them can start creates its structure starts one at a time (see InMemoryChunkGrid).
+     */
+    static List<StructurePlacement> staticLayoutPlacements(ServerLevel level) {
+        List<StructurePlacement> placements = new ArrayList<>();
+        for (Holder<StructureSet> set : level.getChunkSource().getGeneratorState().possibleStructureSets()) {
+            for (StructureSet.StructureSelectionEntry entry : set.value().structures()) {
+                Structure structure = entry.structure().value();
+                if (structure instanceof EndCityStructure || structure instanceof NetherFortressStructure) {
+                    placements.add(set.value().placement());
+                    break;
+                }
+            }
+        }
+        return placements;
     }
 }

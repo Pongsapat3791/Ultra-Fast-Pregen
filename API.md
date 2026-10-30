@@ -17,8 +17,8 @@ it how their own world generation changes interact with its fast paths.
 ## What is in it
 
 The API is the package `io.github.pongsapat3791.ultrafastpregen.api`, inside every Ultra Fast Pregen jar from
-version 15 on: the mods (Fabric 1.20 to 1.20.6, Forge 1.20.1, Fabric 1.21.1, NeoForge 1.21.1, NeoForge 26.1.2, Fabric 26.2)
-and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and Sponge 26.2).
+version 15 on: the mods (Fabric 1.20 to 1.20.6, Forge 1.20 to 1.20.4, Fabric and NeoForge 1.21 and 1.21.1, NeoForge and
+Fabric 26.1 to 26.2; before 15.1 each built for one of those versions) and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and Sponge 26.2).
 It uses plain Java types only: dimension ids as strings, block coordinates, and chunk positions packed into
 longs. No Minecraft class appears in it, so the same code compiles against any of the jars and runs on every
 Minecraft version, loader and server Ultra Fast Pregen is built for.
@@ -43,7 +43,7 @@ version you build for.
 ```gradle
 dependencies {
     // Fabric (Loom), NeoForge (ModDevGradle) and Forge alike.
-    compileOnly files("libs/ultrafastpregen-fabric-1.21.1-15.jar")
+    compileOnly files("libs/ultrafastpregen-fabric-1.21-1.21.1-15.1.jar")
 }
 ```
 
@@ -289,7 +289,7 @@ still force Minecraft's steps for everything with `terrain_pipeline=vanilla`.
 | Method | Description |
 |---|---|
 | `int apiVersion()` | `UltraFastPregenApi.VERSION` of the installed Ultra Fast Pregen |
-| `String modVersion()` | The installed version, for example `1.21.1-15` |
+| `String modVersion()` | The installed version, for example `1.21-1.21.1-15.1` |
 | `StartResult start(PregenRequest)` | Starts a run of the area |
 | `StartResult resume(String dimension)` | Continues the dimension's last run from Ultra Fast Pregen's save file |
 | `boolean stop()` | Asks the active run to stop after its current batch; `false` when nothing runs |

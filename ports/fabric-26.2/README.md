@@ -1,16 +1,20 @@
-# Ultra Fast Pregen for Fabric 26.2
+# Ultra Fast Pregen for Fabric, Minecraft 26.1 to 26.2
 
-The port of Ultra Fast Pregen 15 to Minecraft 26.2 (Fabric), with the commands (including `/pregen set` and the boss bar),
-the config file, the save file and every change up to round 15: see the [main README](../../README.md).
+The port of Ultra Fast Pregen to Minecraft 26.1 to 26.2 (Fabric, built against 26.2), with the commands (including `/pregen set` and the boss bar),
+the config file, the save file and every change up to round 15.1: see the [main README](../../README.md).
 
-- **Requires:** Fabric Loader 0.16 or newer and Java 25 (Fabric API is not needed)
-- **File:** `build/libs/ultrafastpregen-fabric-26.2-15.jar`; `15` is the update round, the same for every build
+- **Requires:** Minecraft 26.1, 26.1.1, 26.1.2 or 26.2, Fabric Loader 0.16 or newer and Java 25 (Fabric API is not needed)
+- **File:** `build/libs/ultrafastpregen-fabric-26.1-26.2-15.1.jar`; `15.1` is the update round
 - **Install:** on the server only; players do not need it
 
 ## Differences from the 1.20.1 builds
 
 The code started from the NeoForge 1.21.1 build (the `ChunkStep` chunk generation of Minecraft 1.21 and newer) and follows 26.x's API
 (Minecraft 26.x is not obfuscated, so Loom runs without remapping).
+
+- **26.1 to 26.2 in one jar:** where 26.2 changed what the fast terrain path hooks, the jar carries the mixins of 26.1.x and of 26.2 and
+  `mixin.PregenMixinPlugin` applies the ones of the running version, as in the NeoForge build
+  ([ports/neoforge-26.1.2](../neoforge-26.1.2/README.md#differences-from-the-other-builds)).
 
 - **The aquifer fast path is off:** Minecraft 26.x rewrote the aquifer (4 reference points instead of 3, and no sampling above a height of
   its own); the 1.20 fast path would not match the new algorithm, so Minecraft's aquifer is used. The cell-skipping fill works on cells that

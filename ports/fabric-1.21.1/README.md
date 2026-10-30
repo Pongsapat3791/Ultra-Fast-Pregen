@@ -1,11 +1,11 @@
-# Ultra Fast Pregen for Fabric 1.21.1
+# Ultra Fast Pregen for Fabric, Minecraft 1.21 and 1.21.1
 
-The Fabric build for Minecraft 1.21.1 shares its code with the NeoForge 1.21.1 build ([ports/neoforge-1.21.1](../neoforge-1.21.1/README.md));
+The Fabric build for Minecraft 1.21 and 1.21.1 shares its code with the NeoForge build ([ports/neoforge-1.21.1](../neoforge-1.21.1/README.md));
 only the loader entrypoint differs. It has the commands (including `/pregen set` and the boss bar), the config file, the save file and every
-change up to round 15: see the [main README](../../README.md).
+change up to round 15.1: see the [main README](../../README.md).
 
-- **Requires:** Fabric Loader 0.14 or newer and Java 21 (Fabric API is not needed)
-- **File:** `build/libs/ultrafastpregen-fabric-1.21.1-15.jar`; `15` is the update round, the same for every build
+- **Requires:** Minecraft 1.21 or 1.21.1, Fabric Loader 0.14 or newer and Java 21 (Fabric API is not needed)
+- **File:** `build/libs/ultrafastpregen-fabric-1.21-1.21.1-15.1.jar`; `15.1` is the update round
 - **Install:** on the server only; players do not need it (in singleplayer it runs in the integrated server)
 
 ## Differences from the NeoForge 1.21.1 build

@@ -138,10 +138,12 @@ public final class WorldgenCompat {
     private static final List<String> BIOME_CONDITION_CLASSES = List.of(
             "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition");
     private static volatile Boolean surfaceShortcutsAllowed;
-    /** How named functions, splines and spline coordinates map, which NoiseChunkWrap's memo stands in for. */
-    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapChildren");
-    /** DensityFunction#mapAll's walk, a local class, whose results the memo keeps. */
-    private static final String RECURSIVE_VISITOR_CLASS = "net.minecraft.world.level.levelgen.DensityFunction$1RecursiveVisitor";
+    /**
+     * How named functions, splines and spline coordinates map, which NoiseChunkWrap's memo stands in
+     * for: each one's own mapAll before 26.2, mapChildren under mapAll's one walk from 26.2. Each
+     * version has only one of the two on these classes.
+     */
+    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapAll", "mapChildren");
     private static volatile Boolean noiseChunkWrapAllowed;
     /** Minecraft's light engine, which GridLight runs on its own and hands to the server's. */
     private static final List<Class<?>> LIGHT_ENGINE_CLASSES = List.of(
@@ -153,6 +155,16 @@ public final class WorldgenCompat {
             net.minecraft.world.level.lighting.DataLayerStorageMap.class,
             net.minecraft.world.level.lighting.ChunkSkyLightSources.class, net.minecraft.world.level.chunk.DataLayer.class,
             net.minecraft.server.level.ThreadedLevelLightEngine.class);
+    /**
+     * Other mods' mixins, by class, into the light engine that keep its results: lighting on the
+     * workers gives the same light with them.
+     */
+    private static final Set<String> LIGHT_EQUIVALENT_MIXINS = Set.of(
+            // C2ME: each section storage's markNewInconsistencies under that storage's own lock (the
+            // workers' engines have storages of their own), and the server's engine scheduling its
+            // next update when a task ends.
+            "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinLightStorage",
+            "com.ishland.c2me.threading.lighting.mixin.MixinServerLightingProvider");
     private static volatile Boolean parallelLightAllowed;
 
     /** Mixins their own mods declared compatible (API or mod metadata): mixin class -> where it was declared. */
@@ -284,8 +296,9 @@ public final class WorldgenCompat {
 
     /**
      * The router-building shortcuts (NoiseChunkWrap) change no result but rely on how Minecraft's
-     * NoiseChunk wraps the router (see fastNoiseFillAllowed) and on how mapAll walks named
-     * functions, splines and spline coordinates: another mod's mixin into any of those turns them off.
+     * NoiseChunk wraps the router (see fastNoiseFillAllowed) and on how named functions, splines and
+     * spline coordinates map (from 26.2 through mapAll's walk, a local class whose results the memo
+     * keeps): another mod's mixin into any of those turns them off.
      */
     public static boolean noiseChunkWrapAllowed() {
         Boolean allowed = noiseChunkWrapAllowed;
@@ -296,11 +309,12 @@ public final class WorldgenCompat {
                     DensityFunctions.Spline.Coordinate.class)) {
                 foreign.addAll(changingMixinConfigs(target, ROUTER_MAPPING_METHODS, details));
             }
-            try {
-                foreign.addAll(changingMixinConfigs(Class.forName(RECURSIVE_VISITOR_CLASS, false,
-                        DensityFunctions.class.getClassLoader()), null, details));
-            } catch (ClassNotFoundException | LinkageError missing) {
-                foreign.add("unknown (" + missing.getClass().getSimpleName() + ")");
+            if (MinecraftVersion.MINECRAFT_26_2) {
+                try {
+                    foreign.addAll(changingMixinConfigs(MinecraftVersion.recursiveVisitor(), null, details));
+                } catch (ClassNotFoundException | LinkageError missing) {
+                    foreign.add("unknown (" + missing.getClass().getSimpleName() + ")");
+                }
             }
             if (!foreign.isEmpty()) {
                 PreGenMod.LOGGER.info("[PreGen] Faster noise router building disabled: other mods modify density functions {}: {}",
@@ -315,14 +329,17 @@ public final class WorldgenCompat {
     /**
      * Lighting a grid on the workers (GridLight) runs Minecraft's light engine on its own and gives
      * the result to the server's engine as a loaded chunk's light: another mod's change to the light
-     * engine (the Starlight family replaces it) keeps the server's engine lighting the grid.
+     * engine (the Starlight family replaces it) keeps the server's engine lighting the grid, apart
+     * from those LIGHT_EQUIVALENT_MIXINS lists.
      */
     public static boolean parallelLightAllowed() {
         Boolean allowed = parallelLightAllowed;
         if (allowed == null) {
             List<String> details = new ArrayList<>();
             Set<String> foreign = new TreeSet<>();
-            for (Class<?> target : LIGHT_ENGINE_CLASSES) foreign.addAll(changingMixinConfigs(target, null, details));
+            for (Class<?> target : LIGHT_ENGINE_CLASSES) {
+                foreign.addAll(changingMixinConfigs(target, null, details, LIGHT_EQUIVALENT_MIXINS));
+            }
             allowed = foreign.isEmpty();
             if (!allowed) {
                 PreGenMod.LOGGER.info("[PreGen] Lighting on the worker threads disabled: other mods modify the light engine {}: {}",

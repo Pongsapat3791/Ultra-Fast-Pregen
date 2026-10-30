@@ -9,8 +9,6 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
-import net.fabricmc.loader.api.FabricLoader;
-import net.fabricmc.loader.api.MappingResolver;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -28,7 +26,8 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
  * both: ChunkStatus.generate takes a WorldGenContext and a ToFullChunk and its future holds the chunk
  * instead of an Either, and ProtoChunk.getBlockEntityNbtForSaving takes the registries. This jar is
  * built against 1.20.1, so on 1.20.5 and 1.20.6 they are called through method handles, found by their
- * intermediary names; one jar then runs on 1.20 to 1.20.6.
+ * intermediary names (PreGenMod.RuntimeNames); one Fabric jar then runs on 1.20 to 1.20.6. The Forge
+ * jar, which has no intermediary names, stops at 1.20.4.
  */
 abstract class ChunkSteps {
     /** The generate of 1.20.5 and later, or null before; found once. */
@@ -134,13 +133,14 @@ abstract class ChunkSteps {
         /** The handles, by intermediary name: WorldGenContext is class_9312, ToFullChunk class_9311. */
         record Calls(MethodHandle context, MethodHandle generate, Object toFullChunk, MethodHandle blockEntityNbt) {
             static Calls find() {
-                MappingResolver names = FabricLoader.getInstance().getMappingResolver();
+                PreGenMod.RuntimeNames names = PreGenMod.runtimeNames;
+                if (names == null) return null;
                 Class<?> contextType;
                 Class<?> toFullType;
                 try {
-                    contextType = Class.forName(names.mapClassName("intermediary", "net.minecraft.class_9312"),
+                    contextType = Class.forName(names.className("net.minecraft.class_9312"),
                             false, ChunkSteps.class.getClassLoader());
-                    toFullType = Class.forName(names.mapClassName("intermediary", "net.minecraft.class_9311"),
+                    toFullType = Class.forName(names.className("net.minecraft.class_9311"),
                             false, ChunkSteps.class.getClassLoader());
                 } catch (ClassNotFoundException olderMinecraft) {
                     return null;
@@ -149,12 +149,12 @@ abstract class ChunkSteps {
                     MethodHandles.Lookup lookup = MethodHandles.publicLookup();
                     MethodHandle context = lookup.findConstructor(contextType, MethodType.methodType(void.class,
                             ServerLevel.class, ChunkGenerator.class, StructureTemplateManager.class, ThreadedLevelLightEngine.class));
-                    String generateName = names.mapMethodName("intermediary", "net.minecraft.class_2806", "method_12154",
+                    String generateName = names.methodName("net.minecraft.class_2806", "method_12154",
                             "(Lnet/minecraft/class_9312;Ljava/util/concurrent/Executor;Lnet/minecraft/class_9311;Ljava/util/List;)"
                                     + "Ljava/util/concurrent/CompletableFuture;");
                     MethodHandle generate = lookup.findVirtual(ChunkStatus.class, generateName, MethodType.methodType(
                             CompletableFuture.class, contextType, Executor.class, toFullType, List.class));
-                    String nbtName = names.mapMethodName("intermediary", "net.minecraft.class_2839", "method_20598",
+                    String nbtName = names.methodName("net.minecraft.class_2839", "method_20598",
                             "(Lnet/minecraft/class_2338;Lnet/minecraft/class_7225$class_7874;)Lnet/minecraft/class_2487;");
                     MethodHandle blockEntityNbt = lookup.findVirtual(ProtoChunk.class, nbtName, MethodType.methodType(
                             CompoundTag.class, BlockPos.class, HolderLookup.Provider.class));

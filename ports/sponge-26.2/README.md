@@ -4,7 +4,7 @@ The Fabric 26.2 build of Ultra Fast Pregen as a Sponge plugin, with the commands
 bar), the config file and the save file: see the [main README](../../README.md).
 
 - **Requires:** SpongeVanilla 26.2 (Sponge API 20) and Java 25
-- **File:** `build/libs/ultrafastpregen-sponge-26.2-15.jar`; `15` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-sponge-26.2-15.1.jar`; `15.1` is the update round, the same for every build
 - **Install:** put the jar in the server's `mods` folder; players do not need anything
 - **Commands:** operator level 2, as in the mod; **config file:** `config/ultrafastpregen.conf`
 
@@ -27,7 +27,17 @@ including the fast terrain path, the cell-skipping fill and the surface shortcut
 ## Tests (Minecraft 26.2)
 
 SpongeVanilla 26.2-20.0.0-RC2754 on a test server with an Intel Xeon E5-2670 v2 (10 cores / 20 threads) and a 10 GB
-heap; a fresh world with seed 42, around x = z = 100,000; the jar with SHA-1 `41d7bea835b25c8588df2b344892b05f5f7a24bd`.
+heap; a fresh world with seed 42, around x = z = 100,000.
+
+**15.1** (the jar with SHA-1 `097c0734d688758359b1ca3afdbc61ba5a0ee866`):
+
+- **1,000 × 1,000 blocks in each dimension:** every chunk fully generated, lit and readable, no error in the log;
+  140.8, 250.1 and 597.4 chunks/s (Overworld, Nether, End).
+- **The End over 3,000 × 3,000 blocks**, twice: the two worlds were the same block for block, with the same pieces in
+  all 10 End cities as with the Bukkit plugin. The End city and Nether fortress fix of 15.1 is the mods' own
+  ([changelog](../../CHANGELOG.md#151)), tested with the mods in all three dimensions.
+
+**15** (the jar with SHA-1 `41d7bea835b25c8588df2b344892b05f5f7a24bd`), the tests below:
 
 - **The same world as the Fabric build:** in the Overworld, the Nether and the End (1,000 × 1,000 blocks each), every
   chunk has the same blocks and light as the Fabric 26.2 build's, compared block for block (3,844 chunks per

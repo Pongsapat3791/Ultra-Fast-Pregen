@@ -12,8 +12,26 @@ public final class PreGenMod {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     /** The loader's config folder, set by its entry point. */
     static volatile Path configDirectory = Path.of("config");
+    /** Set by the Fabric entry point; null on Forge (see RuntimeNames). */
+    static volatile RuntimeNames runtimeNames;
 
     private PreGenMod() {}
+
+    /**
+     * Runtime names of the 1.20.5 and 1.20.6 classes and methods that this 1.20.1 build reaches by
+     * intermediary name (ChunkSteps, WorldChunkIO). Only the Fabric jar runs there; the Forge jar
+     * stops at 1.20.4 and never asks.
+     */
+    public interface RuntimeNames {
+        String className(String intermediary);
+
+        String methodName(String owner, String name, String descriptor);
+    }
+
+    /** Called by the Fabric entry point before init. */
+    public static void setRuntimeNames(RuntimeNames names) {
+        runtimeNames = names;
+    }
 
     public static void init(Path configFolder) {
         init(configFolder, "unknown");

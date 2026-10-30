@@ -21,6 +21,8 @@
     "BeardifierAccessor",
     "StructureTemplatePaletteMixin",
     "StrongholdStructureMixin",
+    "EndCityStructureMixin",
+    "NetherFortressStructureMixin",
     "TemplateStructurePieceMixin",
     "FlatCacheAccessor",
     "ShiftedNoiseAccessor",

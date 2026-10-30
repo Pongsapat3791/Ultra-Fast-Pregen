@@ -165,6 +165,16 @@ public final class WorldgenCompat {
             net.minecraft.world.level.lighting.DataLayerStorageMap.class,
             net.minecraft.world.level.lighting.ChunkSkyLightSources.class, net.minecraft.world.level.chunk.DataLayer.class,
             net.minecraft.server.level.ThreadedLevelLightEngine.class);
+    /**
+     * Other mods' mixins, by class, into the light engine that keep its results: lighting on the
+     * workers gives the same light with them.
+     */
+    private static final Set<String> LIGHT_EQUIVALENT_MIXINS = Set.of(
+            // C2ME: each section storage's markNewInconsistencies under that storage's own lock (the
+            // workers' engines have storages of their own), and the server's engine scheduling its
+            // next update when a task ends.
+            "com.ishland.c2me.fixes.worldgen.threading_issues.mixin.threading.MixinLightStorage",
+            "com.ishland.c2me.threading.lighting.mixin.MixinServerLightingProvider");
     private static volatile Boolean parallelLightAllowed;
 
     /** Mixins their own mods declared compatible (API or mod metadata): mixin class -> where it was declared. */
@@ -330,14 +340,17 @@ public final class WorldgenCompat {
     /**
      * Lighting a grid on the workers (GridLight) runs Minecraft's light engine on its own and gives
      * the result to the server's engine as a loaded chunk's light: another mod's change to the light
-     * engine (the Starlight family replaces it) keeps the server's engine lighting the grid.
+     * engine (the Starlight family replaces it) keeps the server's engine lighting the grid, apart
+     * from those LIGHT_EQUIVALENT_MIXINS lists.
      */
     public static boolean parallelLightAllowed() {
         Boolean allowed = parallelLightAllowed;
         if (allowed == null) {
             List<String> details = new ArrayList<>();
             Set<String> foreign = new TreeSet<>();
-            for (Class<?> target : LIGHT_ENGINE_CLASSES) foreign.addAll(changingMixinConfigs(target, null, details));
+            for (Class<?> target : LIGHT_ENGINE_CLASSES) {
+                foreign.addAll(changingMixinConfigs(target, null, details, LIGHT_EQUIVALENT_MIXINS));
+            }
             allowed = foreign.isEmpty();
             if (!allowed) {
                 PreGenMod.LOGGER.info("[PreGen] Lighting on the worker threads disabled: other mods modify the light engine {}: {}",

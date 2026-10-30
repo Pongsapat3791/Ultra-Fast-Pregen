@@ -1,10 +1,10 @@
-# Ultra Fast Pregen for NeoForge 1.21.1
+# Ultra Fast Pregen for NeoForge, Minecraft 1.21 and 1.21.1
 
-The NeoForge 1.21.1 port of Ultra Fast Pregen: the same in-RAM batch generator, with the commands (including `/pregen set` and the boss bar),
-the config file, the save file and every change up to round 15. See the [main README](../../README.md) for the details.
+The NeoForge port of Ultra Fast Pregen for Minecraft 1.21 and 1.21.1 (built against 1.21.1): the same in-RAM batch generator, with the commands (including `/pregen set` and the boss bar),
+the config file, the save file and every change up to round 15.1. See the [main README](../../README.md) for the details.
 
-- **Requires:** NeoForge 21.1.1 or newer (tested with 21.1.259) and Java 21
-- **File:** `build/libs/ultrafastpregen-neoforge-1.21.1-15.jar`, into the server's `mods/` folder; `15` is the update round, the same for every build
+- **Requires:** Minecraft 1.21 or 1.21.1 with its NeoForge (21.0.x or 21.1.x; tested with 21.0.167 and 21.1.259) and Java 21
+- **File:** `build/libs/ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar`, into the server's `mods/` folder; `15.1` is the update round
 - **Install:** on the server only; players do not need it, as the mod has no packets of its own
 - **Commands:** `/pregen start|resume|reset|stop|status|world|center|radius|shape|worldborder|spawn|set`, operator level 2 (in singleplayer the world's owner, cheats or not)
 - **Config:** `config/ultrafastpregen.conf`, with the same keys as the other builds (`skip_existing_chunks=true` by default).

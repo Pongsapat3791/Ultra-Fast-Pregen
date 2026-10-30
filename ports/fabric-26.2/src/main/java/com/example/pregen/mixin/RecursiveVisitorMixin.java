@@ -12,6 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 /**
  * DensityFunction#mapAll's walk, which maps every node it reaches: a named function or spline,
  * referenced from many places of the router, is mapped once per NoiseChunk (see NoiseChunkWrap.Memo).
+ * Minecraft 26.2; before, each function maps itself (HolderHolderMixin, SplineFunctionMixin, SplineCoordinateMixin; PregenMixinPlugin).
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.DensityFunction$1RecursiveVisitor")
 public abstract class RecursiveVisitorMixin {

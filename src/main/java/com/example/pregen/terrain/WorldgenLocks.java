@@ -18,6 +18,12 @@ public final class WorldgenLocks {
     /** StrongholdPieces keeps the layout being built in static fields. */
     public static final ReentrantLock STRONGHOLD_LAYOUT = new ReentrantLock();
 
+    /** EndCityPieces keeps its section generators, and whether the city has its ship, in static fields. */
+    public static final ReentrantLock END_CITY_LAYOUT = new ReentrantLock();
+
+    /** NetherFortressPieces counts the rooms and bridges a layout placed in piece weights kept in static fields. */
+    public static final ReentrantLock NETHER_FORTRESS_LAYOUT = new ReentrantLock();
+
     private WorldgenLocks() {}
 
     public static void acquire(ReentrantLock lock, String what) {

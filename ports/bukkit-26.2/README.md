@@ -4,7 +4,7 @@ One plugin jar for **CraftBukkit, Spigot, Paper and Folia** on Minecraft 26.2, w
 save file of the mod: see the [main README](../../README.md).
 
 - **Requires:** a CraftBukkit, Spigot, Paper or Folia 26.2 server and Java 25
-- **File:** `build/libs/ultrafastpregen-bukkit-26.2-15.jar`; `15` is the update round, the same for every build
+- **File:** `build/libs/ultrafastpregen-bukkit-26.2-15.1.jar`; `15.1` is the update round, the same for every build
 - **Install:** put the jar in the server's `plugins` folder; players do not need anything
 - **Permission:** `ultrafastpregen.command` for `/pregen` and for seeing a run's boss bar (operators have it by default);
   the console can always use `/pregen`
@@ -33,6 +33,10 @@ directly instead (Minecraft 26.x is not obfuscated, so the plugin finds it by na
   run inside the feature step; Minecraft runs that step one chunk at a time and populators may not expect more, so
   features then run one chunk at a time too (`parallel_features=auto`, the default; `always` runs them on all threads).
   Neither has been tested yet.
+- **End cities, Nether fortresses and strongholds:** Minecraft lays them out with code that keeps its state in static
+  fields. The plugin lays out the ones it generates one at a time (since 15.1 also End cities and fortresses); one that
+  the server lays out for a player at the same moment is not covered, since the plugin cannot change that code. The
+  mods lock that code itself, which covers both.
 - **Not in the plugin:** sending saved chunks to Distant Horizons or Voxy (mods).
 - **API:** other plugins can start, stop and follow runs ([API.md](../../API.md), "Setup for plugins").
 
@@ -56,7 +60,23 @@ each other, and differ from its worlds on Spigot here:
 
 CraftBukkit and Spigot 26.2 (BuildTools, 4648-96ae8cd), Paper 26.2 build 134 and Folia 26.2 build 7, on a test server
 with an Intel Xeon E5-2670 v2 (10 cores / 20 threads) and a 10 GB heap; a fresh world with seed 42, around
-x = z = 100,000; the jar with SHA-1 `c13d8f059539aa04628db6f7282e9ffa624ba9d6`.
+x = z = 100,000.
+
+**15.1** (the jar with SHA-1 `60314c701c76077eaf9fb42ae67079a96c5442a4`), on the same servers:
+
+- **1,000 × 1,000 blocks in each dimension:** every chunk fully generated, lit and readable, no error in the log;
+  Overworld, Nether and End in chunks/s: CraftBukkit 117.7, 237.5, 468.5; Spigot 116.8, 240.6, 494.6; Paper 134.2,
+  325.4, 731.7; Folia 143.9, 327.4, 752.2.
+- **Stopping the server during a run** (3,000 × 3,000 blocks, stopped after 3 of 9 batches): the run continued after the
+  restart, and all 35,344 chunks were generated (Spigot 141.1, Paper 155.5, Folia 153.5 chunks/s).
+- **The End over 3,000 × 3,000 blocks**, twice with the 15 jar and twice with 15.1 on Spigot: the two worlds of each
+  pair were the same block for block, and the 10 End cities had the same pieces with both jars.
+- **All three dimensions in one server**, three times with the 15 jar and three times with 15.1 on Spigot: the End city
+  at chunk (6224, 6222) had its 88 pieces every time. The End city race fixed in 15.1
+  ([changelog](../../CHANGELOG.md#151)) did not show with the 15 plugin in these tests, so they do not show the fix at
+  work; it showed in the tests of the mods on Fabric 1.21.
+
+**15** (the jar with SHA-1 `c13d8f059539aa04628db6f7282e9ffa624ba9d6`), the tests below:
 
 - **Compared with the mod:** on Spigot, block for block against the Fabric 26.2 build in the Overworld, the Nether and
   the End (1,000 × 1,000 blocks each, 3,844 chunks per dimension), the Nether and the End are identical, and in the

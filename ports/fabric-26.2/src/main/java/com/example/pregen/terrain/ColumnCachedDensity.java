@@ -69,9 +69,14 @@ public final class ColumnCachedDensity implements DensityFunction {
         provider.fillAllDirectly(values, this);
     }
 
+    /** A leaf to visitors: before 26.2 each function applies the visitor to itself. */
     @Override
+    public DensityFunction mapAll(Visitor visitor) {
+        return visitor.apply(this);
+    }
+
+    /** A leaf to visitors from 26.2, whose mapAll walk applies the visitor to the result itself. */
     public DensityFunction mapChildren(Visitor visitor) {
-        // A leaf to visitors, as before (26.x applies the visitor to the result itself).
         return this;
     }
 

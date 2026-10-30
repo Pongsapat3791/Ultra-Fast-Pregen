@@ -10,15 +10,17 @@ import net.minecraft.world.level.levelgen.DensityFunctions;
  * Building a NoiseChunk's copy of the noise router with less work (about a tenth of all
  * generation time goes into it). Minecraft rebuilds the router node by node for every chunk,
  * putting each node into a HashMap keyed by its value (a record's hash covers its whole subtree),
- * and rebuilds a named function or spline again wherever it is referenced: the overworld's
- * terrain splines each read the same few coordinates at every point.
+ * and rebuilds a named function, spline or (before 26.2) spline coordinate again wherever it is
+ * referenced: the overworld's terrain splines each read the same few coordinates at every point.
  *  - The map matters only for nodes it turns into the chunk's caches: markers, and the climate
  *    noises this mod caches per column (see NoiseChunkMixin), so that equal ones share one cache.
  *    Every other node of Minecraft's own comes back as itself (or a holder as its value), so an
  *    equal node found in the map instead is the same function over the same caches: these skip it.
- *  - Within one chunk, a named function and a spline come out of the chunk's wrapping the same
- *    every time (the same nodes over the same caches), so mapAll's walk keeps the first result
- *    and gives it again (Memo, see RecursiveVisitorMixin).
+ *  - Within one chunk, a named function, a spline and (before 26.2) a spline coordinate come out
+ *    of the chunk's wrapping the same every time (the same nodes over the same caches), so the
+ *    first result is kept and given again (Memo): by each one's own mapAll before 26.2
+ *    (HolderHolderMixin, SplineFunctionMixin, SplineCoordinateMixin), by mapAll's one walk from
+ *    26.2 (RecursiveVisitorMixin).
  */
 public final class NoiseChunkWrap {
     /** Benchmark switch, on unless -Dfastpregen.noiseChunkWrap=false. */
@@ -33,7 +35,7 @@ public final class NoiseChunkWrap {
                 && function.getClass().getName().startsWith("net.minecraft.");
     }
 
-    /** Whether mapAll's walk keeps what the node maps to: named functions and splines. */
+    /** Whether mapAll's walk (26.2) keeps what the node maps to: named functions and splines. */
     public static boolean memoized(DensityFunction function) {
         return function instanceof DensityFunctions.HolderHolder || function instanceof DensityFunctions.Spline;
     }

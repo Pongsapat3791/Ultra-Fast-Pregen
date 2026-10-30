@@ -22,9 +22,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * once (SurfaceBiomes), in place of the biome getter every way of evaluating the rules calls.
  * Minecraft 26.2 keeps the block's biome in a field, without the supplier per block of earlier
  * versions, so nothing else is needed here.
+ * Minecraft 26.2; SurfaceRulesContext261Mixin before (PregenMixinPlugin).
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceRules$Context")
-public abstract class SurfaceRulesContextMixin implements SurfaceRulePruning.ContextBiomes {
+public abstract class SurfaceRulesContext262Mixin implements SurfaceRulePruning.ContextBiomes {
     @Shadow @Final @Mutable private Function<BlockPos, Holder<Biome>> biomeGetter;
     @Shadow @Final private ChunkAccess chunk;
     @Unique private SurfaceBiomes pregen$surfaceBiomes;
