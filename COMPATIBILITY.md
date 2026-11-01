@@ -9,7 +9,9 @@ version they run on, alone and with C2ME, and its two plugin jars.
 - [Modpacks](#modpacks): All the Mods 10, All the Mods 9 and Prominence II, against 14.1
 - [Bukkit servers and Sponge](#bukkit-servers-and-sponge): the 26.2 plugin builds
 - [Version 15.1](#version-151): the six mod jars on every Minecraft version they run on,
-  [End cities and fortresses](#end-cities-and-nether-fortresses), [with C2ME](#with-c2me), and
+  [End cities and fortresses](#end-cities-and-nether-fortresses),
+  [players who see a replaced chunk](#players-who-see-a-replaced-chunk),
+  [chunks the server holds](#chunks-the-server-holds-during-a-run), [with C2ME](#with-c2me), and
   [the plugins](#bukkit-and-sponge-plugins)
 - [Known limits](#known-limits)
 - [Tested mod files](#tested-mod-files)
@@ -33,6 +35,8 @@ NeoForge 26.1.2, Fabric 26.2) with the jars at the end of this page.
 | `RESUME_EDGE_CHECK` | Stopping and resuming gives the blocks of an uninterrupted run (0 blocks differ). |
 | `EXISTING_NEIGHBORS_CHECK` | Joining an area generated earlier: 0 different blocks along the edge (about 17,500 without the fix). |
 | `SKIP_EXISTING_CHECK`, `HELD_DURING_BATCH_CHECK` | Chunks on disk and chunks the server holds are kept, also when the server finishes one during a batch. |
+| `HELD_RING_CHECK` | Chunks the server holds part-generated get the saved chunk's blocks, their mobs reach the world's entity storage, and features that cross a batch edge reach them. |
+| `REGENERATE_CHECK` | With `skip_existing_chunks=false`, a new run over an area that the save file has generates all of it again, and a run that continues keeps what is saved. |
 | `SPAWN_EDGE_REGENERATION_CHECK` | Chunks the server holds next to the area are handled without dark chunks, and the server stays responsive (worst latency 1–37 ms). |
 | `SAVE_FILE_RESUME_CHECK` | `/pregen resume` continues from the save file. |
 | `AUTO_RESUME_CHECK`, `SERVER_STOP_CHECK` | A run cut short by a server stop continues on the next start; one stopped with `/pregen stop`, or continued 3 times in a row without saving a batch, does not. Stopping the server keeps the batch being saved, and the run completes after the restart. |
@@ -216,35 +220,33 @@ seed 42 and no other mod:
 
 | Jar | Minecraft | Server | Overworld | Nether | End | Around spawn | Restart |
 |---|---|---|---|---|---|---|---|
-| `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` | 1.20 | Forge 46.0.14 | ✅ 167.3 | ✅ 288.3 | ✅ 774.3 | ✅ 124.4 | ✅ |
-|  | 1.20.1 | Forge 47.4.28 | ✅ 158.3 | ✅ 292.8 | ✅ 758.1 | ✅ 124.5 | ✅ |
-|  | 1.20.2 | Forge 48.1.0 | ✅ 162.8 | ✅ 284.0 | ✅ 693.1 | ✅ 124.4 | ✅ |
-|  | 1.20.3 | Forge 49.0.2 | ✅ 163.1 | ✅ 257.1 | ✅ 662.9 | ✅ 126.3 | ✅ |
-|  | 1.20.4 | Forge 49.2.13 | ✅ 165.8 | ✅ 250.7 | ✅ 672.5 | ✅ 126.4 | ✅ |
-| `ultrafastpregen-fabric-1.20.x-15.1.jar` | 1.20 | Fabric Loader 0.19.5 | ✅ 167.4 | ✅ 294.7 | ✅ 764.6 | ✅ 132.7 | ✅ |
-|  | 1.20.1 | Fabric Loader 0.19.5 | ✅ 166.0 | ✅ 296.5 | ✅ 744.5 | ✅ 129.0 | ✅ |
-|  | 1.20.2 | Fabric Loader 0.19.5 | ✅ 159.9 | ✅ 298.3 | ✅ 760.3 | ✅ 131.8 | ✅ |
-|  | 1.20.3 | Fabric Loader 0.19.5 | ✅ 169.4 | ✅ 296.8 | ✅ 693.2 | ✅ 129.8 | ✅ |
-|  | 1.20.4 | Fabric Loader 0.19.5 | ✅ 166.3 | ✅ 297.0 | ✅ 729.1 | ✅ 130.6 | ✅ |
-|  | 1.20.5 | Fabric Loader 0.19.5 | ✅ 159.1 | ✅ 291.4 | ✅ 709.8 | ✅ 125.2 | ✅ |
-|  | 1.20.6 | Fabric Loader 0.19.5 | ✅ 150.9 | ✅ 281.8 | ✅ 780.3 | ✅ 127.0 | ✅ |
-| `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` | 1.21 | Fabric Loader 0.19.5 | ✅ 140.5 | ✅ 286.0 | ✅ 754.1 | ✅ 118.7 | ✅ |
-|  | 1.21.1 | Fabric Loader 0.19.5 | ✅ 137.1 | ✅ 272.1 | ✅ 769.5 | ✅ 123.4 | ✅ |
-| `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` | 1.21 | NeoForge 21.0.167 | ✅ 141.1 | ✅ 286.0 | ✅ 746.4 | ✅ 121.6 | ✅ |
-|  | 1.21.1 | NeoForge 21.1.259 | ✅ 145.4 | ✅ 246.4 | ✅ 715.0 | ✅ 120.5 | ✅ |
-| `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` | 26.1.2 | NeoForge 26.1.2.122 | ✅ 144.7 | ✅ 252.4 | ✅ 604.8 | ✅ 129.0 | ✅ |
-|  | 26.2 | NeoForge 26.2.0.93 | ✅ 143.4 | ✅ 256.9 | ✅ 612.6 | ✅ 125.7 | ✅ |
-| `ultrafastpregen-fabric-26.1-26.2-15.1.jar` | 26.1 | Fabric Loader 0.19.5 | ✅ 144.7 | ✅ 258.8 | ✅ 635.1 | ✅ 122.2 | ✅ |
-|  | 26.1.1 | Fabric Loader 0.19.5 | ✅ 149.2 | ✅ 254.6 | ✅ 653.2 | ✅ 128.1 | ✅ |
-|  | 26.1.2 | Fabric Loader 0.19.5 | ✅ 142.5 | ✅ 256.6 | ✅ 622.1 | ✅ 129.1 | ✅ |
-|  | 26.2 | Fabric Loader 0.19.5 | ✅ 142.0 | ✅ 250.2 | ✅ 521.7 | ✅ 124.3 | ✅ |
+| `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` | 1.20 | Forge 46.0.14 | ✅ 166.6 | ✅ 281.5 | ✅ 725.6 | ✅ 128.9 | ✅ |
+|  | 1.20.1 | Forge 47.4.28 | ✅ 164.9 | ✅ 284.8 | ✅ 770.4 | ✅ 123.4 | ✅ |
+|  | 1.20.2 | Forge 48.1.0 | ✅ 166.4 | ✅ 280.2 | ✅ 726.2 | ✅ 127.6 | ✅ |
+|  | 1.20.3 | Forge 49.0.2 | ✅ 165.6 | ✅ 291.4 | ✅ 764.3 | ✅ 126.2 | ✅ |
+|  | 1.20.4 | Forge 49.2.13 | ✅ 165.7 | ✅ 286.5 | ✅ 764.5 | ✅ 127.7 | ✅ |
+| `ultrafastpregen-fabric-1.20.x-15.1.jar` | 1.20 | Fabric Loader 0.19.5 | ✅ 167.9 | ✅ 296.6 | ✅ 783.5 | ✅ 127.1 | ✅ |
+|  | 1.20.1 | Fabric Loader 0.19.5 | ✅ 164.3 | ✅ 303.6 | ✅ 758.0 | ✅ 137.1 | ✅ |
+|  | 1.20.2 | Fabric Loader 0.19.5 | ✅ 167.3 | ✅ 292.9 | ✅ 732.5 | ✅ 131.5 | ✅ |
+|  | 1.20.3 | Fabric Loader 0.19.5 | ✅ 168.8 | ✅ 298.0 | ✅ 778.6 | ✅ 129.2 | ✅ |
+|  | 1.20.4 | Fabric Loader 0.19.5 | ✅ 163.8 | ✅ 303.3 | ✅ 731.8 | ✅ 131.9 | ✅ |
+|  | 1.20.5 | Fabric Loader 0.19.5 | ✅ 149.8 | ✅ 291.3 | ✅ 738.2 | ✅ 123.7 | ✅ |
+|  | 1.20.6 | Fabric Loader 0.19.5 | ✅ 157.4 | ✅ 296.3 | ✅ 730.1 | ✅ 124.7 | ✅ |
+| `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` | 1.21 | Fabric Loader 0.19.5 | ✅ 144.1 | ✅ 294.1 | ✅ 795.0 | ✅ 120.8 | ✅ |
+|  | 1.21.1 | Fabric Loader 0.19.5 | ✅ 139.2 | ✅ 291.9 | ✅ 730.3 | ✅ 119.9 | ✅ |
+| `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` | 1.21 | NeoForge 21.0.167 | ✅ 134.8 | ✅ 244.1 | ✅ 745.4 | ✅ 119.2 | ✅ |
+|  | 1.21.1 | NeoForge 21.1.259 | ✅ 134.5 | ✅ 257.1 | ✅ 744.7 | ✅ 121.6 | ✅ |
+| `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` | 26.1.2 | NeoForge 26.1.2.122 | ✅ 146.1 | ✅ 251.3 | ✅ 608.5 | ✅ 131.3 | ✅ |
+|  | 26.2 | NeoForge 26.2.0.93 | ✅ 144.7 | ✅ 257.2 | ✅ 613.5 | ✅ 129.7 | ✅ |
+| `ultrafastpregen-fabric-26.1-26.2-15.1.jar` | 26.1 | Fabric Loader 0.19.5 | ✅ 147.4 | ✅ 255.9 | ✅ 617.4 | ✅ 128.1 | ✅ |
+|  | 26.1.1 | Fabric Loader 0.19.5 | ✅ 144.9 | ✅ 261.9 | ✅ 667.1 | ✅ 128.3 | ✅ |
+|  | 26.1.2 | Fabric Loader 0.19.5 | ✅ 148.8 | ✅ 263.0 | ✅ 552.8 | ✅ 129.9 | ✅ |
+|  | 26.2 | Fabric Loader 0.19.5 | ✅ 144.3 | ✅ 244.0 | ✅ 601.7 | ✅ 130.0 | ✅ |
 
 ✅ and the numbers (chunks per second): every chunk fully generated, lit and readable, on the fast terrain path, and
 no error in the log; around spawn, also no cave stored with daylight. NeoForge 26.1.2 and 26.2 log one error at every
-start, also without Ultra Fast Pregen: their debug log fails on netty's kqueue class, which is for macOS and BSD. A
-stopping server waits for the batch being saved; on Fabric 1.20.5, 26.1.2 and 26.2 and on NeoForge 26.1.2 and 26.2 the
-second batch was saved within that time too, and the run continued from the third. What the 15 jars did on these
-versions is in the [changelog](CHANGELOG.md#151).
+start, also without Ultra Fast Pregen: their debug log fails on netty's kqueue class, which is for macOS and BSD. What
+the 15 jars did on these versions is in the [changelog](CHANGELOG.md#151).
 
 **The fast terrain path on each version:** the same fresh 1,000 × 1,000 blocks generated twice, once on the fast terrain
 path and once with Minecraft's own biome, noise and surface steps (`terrain_pipeline=vanilla`; features and the rest run
@@ -253,24 +255,24 @@ the same way in both), compared block for block over all 4,096 chunks of each di
 | Server | Overworld: blocks that differ | Nether | End |
 |---|---|---|---|
 | Forge 1.20.2 | 26: 7 bee nests one block apart (14), 9 mud for dirt, 3 sand or stone | 0 | 0 |
-| Forge 1.20.4 | 22: 5 bee nests (10), 9 mud for dirt, 3 sand or stone | 0 | 0 |
-| Fabric 1.20.1 | 19: 3 bee nests (6), 9 mud for dirt, 4 sand, clay or stone | 0 | 0 |
+| Forge 1.20.4 | 30: 9 bee nests (18), 9 mud for dirt, 3 sand or stone | 0 | 0 |
+| Fabric 1.20.1 | 25: 6 bee nests (12), 9 mud for dirt, 4 sand, clay or stone | 0 | 0 |
 | Fabric 1.20.2 | 26: 7 bee nests (14), 9 mud for dirt, 3 sand or stone | 0 | 0 |
-| Fabric 1.20.4 | 24: 6 bee nests (12), 9 mud for dirt, 3 sand or stone | 0 | 0 |
-| Fabric 1.20.5 | 16: 8 bee nests | 0 | 0 |
+| Fabric 1.20.4 | 26: 7 bee nests (14), 9 mud for dirt, 3 sand or stone | 0 | 0 |
+| Fabric 1.20.5 | 8: 4 bee nests | 0 | 0 |
 | Fabric 1.20.6 | 14: 7 bee nests | 0 | 0 |
-| Fabric 1.21 | 14: 7 bee nests | 0 | 0 |
-| NeoForge 1.21 | 12: 6 bee nests | 0 | 0 |
+| Fabric 1.21 | 12: 6 bee nests | 0 | 0 |
+| NeoForge 1.21 | 10: 5 bee nests | 0 | 0 |
 | NeoForge 26.1.2, 26.2 | 0 | 0 | 0 |
-| Fabric 26.1, 26.1.1, 26.1.2 | 0 | 0 | 0 |
-| Fabric 26.2 | 0 | 21 in one chunk (below) | 0 |
+| Fabric 26.1, 26.1.1, 26.1.2, 26.2 | 0 | 0 | 0 |
 
 The light differs only in chunks with a different block or next to one. Bee nests also land one block apart between
 two runs of the same jar (Minecraft places them with an unseeded shuffle), so their place is not fixed from run to run.
 The 12 or 13 mud, sand and stone blocks on 1.20.1 to 1.20.4 are the ones the 15 jar gives on 1.20.1 too.
 
-The 21 Nether blocks on Fabric 26.2 are soul sand and soul soil in one world and netherrack in the other, at the
-bottom of chunk (6266, 6225). They come from Minecraft's biome lookup, not from the terrain path. Minecraft finds a
+In an earlier run of 15.1 on Fabric 26.2, 21 Nether blocks differed: soul sand and soul soil in one world and
+netherrack in the other, at the bottom of chunk (6266, 6225). They come from Minecraft's biome lookup, not from the
+terrain path, and this run of the final jar did not show them. Minecraft finds a
 biome by searching its biome tree from the last result of the same thread, and keeps that result when another biome is
 exactly as close. Where two biomes are exactly as close, the first biome cell a chunk fills therefore depends on what
 that thread looked up before. That is the case at this chunk's corner: the Nether's climate is the same at every
@@ -303,6 +305,70 @@ the fix at work. The mods' fix is the same code on every version; the plugin can
 the chunks where these structures can start instead. Fortresses keep their state the same way and are now laid out
 one at a time too; no fortress came out differently in these tests.
 
+### Players who see a replaced chunk
+
+With `skip_existing_chunks=false`, a run replaces chunks the server holds and sends them again to the players who see
+them; Forge 1.20.2 gave that call another name at run time ([changelog](CHANGELOG.md#151)). A small test client that
+speaks Minecraft's protocol (not the game itself) joined each server as a plain Minecraft client, stood at
+x = z = 100,000 and got the chunks around it; a gold block went in above it at y = 300, and a run of 1,000 × 1,000
+blocks went around it.
+
+| Server | The 81 chunks around the client | The gold block | Saved chunks |
+|---|---|---|---|
+| Forge 1.20, 1.20.1, 1.20.2, 1.20.3, 1.20.4 | ✅ all sent again during the run | gone on the server and in the chunk the client got | ✅ 4,096 |
+| Fabric 1.20.2, 1.20.4 | ✅ all sent again during the run | gone on the server and in the chunk the client got | ✅ 4,096 |
+| Forge 1.20.2, 1.20.4, with the default `skip_existing_chunks=true` | none sent again, as they are kept | stays | ✅ 4,096 |
+
+No run had an error in the log, and the client stayed connected.
+
+### Chunks the server holds during a run
+
+Around players and force-loaded chunks a server keeps chunks it has only part-generated. A run generates them and puts
+the result into the server's copy ([changelog](CHANGELOG.md#151)). On each server below, the same area was generated
+twice in a fresh world with seed 42: 1,000 × 1,000 blocks around x = z = 100,000 in 4 batches that meet at the center,
+once with nothing held, and once with 256 chunks force-loaded at the center and a view distance of 8, which leaves the
+1,408 chunks 11 to 21 chunks from the center held part-generated when the run reaches them. All 1,408 were full chunks
+in both worlds. Compared over those chunks, from the files of the stopped server:
+
+| Server | Chunks with the same blocks | Blocks that differ | Of those on the two lines where batches meet | Mobs, nothing held / held | Fluid ticks kept |
+|---|---|---|---|---|---|
+| Forge 1.20.1 | 1,374 | 491 | 83 | 117 / 117 | 9,524 of 9,524 |
+| Forge 1.20.4 | 1,375 | 487 | 81 | 112 / 112 | 9,060 of 9,060 |
+| Fabric 1.20 | 1,376 | 486 | 83 | 117 / 117 | 9,524 of 9,524 |
+| Fabric 1.20.1 | 1,376 | 486 | 83 | 117 / 117 | 9,524 of 9,524 |
+| Fabric 1.20.6 | 1,376 | 487 | 83 | 112 / 112 | 9,060 of 9,060 |
+| Fabric 1.21 | 1,376 | 487 | 83 | 112 / 112 | 9,056 of 9,056 |
+| Fabric 1.21.1 | 1,374 | 491 | 83 | 112 / 112 | 9,056 of 9,056 |
+| NeoForge 1.21 | 1,377 | 485 | 83 | 112 / 112 | 9,056 of 9,056 |
+| NeoForge 1.21.1 | 1,376 | 486 | 83 | 112 / 112 | 9,056 of 9,056 |
+| NeoForge 26.1.2 | 1,385 | 316 | 59 | 122 / 122 | 9,840 of 9,840 |
+| NeoForge 26.2 | 1,385 | 316 | 59 | 122 / 122 | 9,850 of 9,850 |
+| Fabric 26.1 | 1,385 | 316 | 59 | 122 / 122 | 9,841 of 9,841 |
+| Fabric 26.2 | 1,385 | 316 | 59 | 122 / 122 | 9,851 of 9,851 |
+| SpongeVanilla 26.2 | 1,385 | 316 | 59 | 122 / 122 | 9,851 of 9,851 |
+
+Before the fixes, on Fabric 1.21.1, 5 to 7 of the 112 mobs were left, and 84 chunks with 31,800 blocks differed along
+the two lines. The Bukkit plugin leaves such chunks to the server and has none of this.
+
+What still differs is mostly mushrooms: about two thirds of the 491 blocks on Fabric 1.21.1 and most of the 316 on Fabric
+26.2 became mushrooms in the world with chunks held. The rest on Fabric 1.21.1 is the leaves, vines and logs of some trees, some seagrass, and bee nests, which
+also land apart between two runs of the same jar. The trees and the seagrass are next to the chunks the server generated
+itself, 10 chunks from the center and closer, whose features ran in an order of the server's. The mushrooms stand under
+trees: a mushroom can only be placed where it is dark, batches with held chunks are lit in the server's light engine, and
+a later batch's features read that light where a world with nothing held has none yet. That reason comes from reading the
+code and was not tested on its own. In 44 of the 1,408 chunks the light is stored as not done, on purpose, and the server
+lights them when it loads them.
+
+`skip_existing_chunks=false` through the commands, on Forge and Fabric 1.20.1, Fabric and NeoForge 1.21.1, Fabric,
+NeoForge, SpongeVanilla, Spigot, Paper and Folia 26.2: `/pregen start 1` saved 4,096 chunks, the same area with the
+setting off generated and saved all 4,096 again, and `/pregen resume` then kept all 4,096.
+
+What the game draws from such chunks was looked at with a real client of each version, on all 27 servers and, with the mod
+in the game, in 22 singleplayer worlds. With the final jars, this was repeated on 11 servers and in 6 singleplayer worlds.
+In the ring of chunks the server had only started around the player, caves were dark as Minecraft lights them (66 to 81%
+dark pixels, where version 14 gave 0 to 6%), as they were under the player (97 to 99%), and a second run over the area,
+with `skip_existing_chunks=false`, changed the view by less than 2%.
+
 ### With C2ME
 
 C2ME changes Minecraft's light engine in two places that keep its results. 15 therefore lit every batch on the
@@ -331,11 +397,11 @@ The final 15.1 jars with C2ME: the fresh area, the area around spawn and the res
 
 | Server | Overworld | Nether | End | Around spawn | Restart |
 |---|---|---|---|---|---|
-| Fabric 1.20.1 | ✅ 131.5 | ✅ 187.0 | ✅ 782.6 | ✅ 123.6 | ✅ |
-| Fabric 1.21.1 | ✅ 117.8 | ✅ 285.3 | ✅ 651.6 | ✅ 109.7 | ✅ |
-| NeoForge 1.21.1 | ✅ 116.0 | ✅ 252.5 | ✅ 620.0 | ✅ 109.4 | ✅ |
-| NeoForge 26.1.2 | ✅ 178.7 | ✅ 361.6 | ✅ 591.4 | ✅ 140.4 | ✅ |
-| Fabric 26.2 | ✅ 156.6 | ✅ 353.6 | ✅ 471.3 | ✅ 127.6 | ✅ |
+| Fabric 1.20.1 | ✅ 130.1 | ✅ 184.9 | ✅ 792.7 | ✅ 126.7 | ✅ |
+| Fabric 1.21.1 | ✅ 119.6 | ✅ 289.0 | ✅ 638.6 | ✅ 107.4 | ✅ |
+| NeoForge 1.21.1 | ✅ 119.5 | ✅ 259.4 | ✅ 631.9 | ✅ 107.4 | ✅ |
+| NeoForge 26.1.2 | ✅ 175.1 | ✅ 356.0 | ✅ 567.8 | ✅ 138.9 | ✅ |
+| Fabric 26.2 | ✅ 163.4 | ✅ 353.5 | ✅ 468.4 | ✅ 127.6 | ✅ |
 
 The lighting on the worker threads stayed on in all of them. C2ME logs warnings of its own at start (optional classes
 of other mods it does not find), and on NeoForge 1.21.1 errors about client classes on a dedicated server; none of
@@ -351,17 +417,33 @@ plugin on Spigot and with the 15.1 Sponge build, the two worlds compared block f
 
 | Server | Overworld | Nether | End | Stopped and continued |
 |---|---|---|---|---|
-| CraftBukkit 26.2 | ✅ 117.7 | ✅ 237.5 | ✅ 468.5 | – |
-| Spigot 26.2 | ✅ 116.8 | ✅ 240.6 | ✅ 494.6 | ✅ |
-| Paper 26.2 | ✅ 134.2 | ✅ 325.4 | ✅ 731.7 | ✅ |
-| Folia 26.2 | ✅ 143.9 | ✅ 327.4 | ✅ 752.2 | ✅ |
-| SpongeVanilla 26.2 | ✅ 140.8 | ✅ 250.1 | ✅ 597.4 | – |
+| CraftBukkit 26.2 | ✅ 116.4 | ✅ 235.4 | ✅ 438.2 | – |
+| Spigot 26.2 | ✅ 121.4 | ✅ 243.5 | ✅ 462.8 | ✅ |
+| Paper 26.2 | ✅ 133.9 | ✅ 325.1 | ✅ 740.8 | ✅ |
+| Folia 26.2 | ✅ 143.4 | ✅ 328.7 | ✅ 752.1 | ✅ |
+| SpongeVanilla 26.2 | ✅ 147.0 | ✅ 258.2 | ✅ 562.3 | – |
 
-✅ and the numbers as above: every chunk fully generated, lit and readable, and no error in the log. In the End over
-3,000 × 3,000 blocks, the two worlds of each pair had the same blocks, light and structures, and the 10 End cities had
-the same pieces with the 15 plugin, the 15.1 plugin and the 15.1 Sponge build. The layout race of 15 did not show on
-Spigot, neither in these runs of the End alone nor with all three dimensions in one server
-([End cities and Nether fortresses](#end-cities-and-nether-fortresses)).
+✅ and the numbers as above: every chunk fully generated, lit and readable, and no error in the log. Over 3,000 × 3,000
+blocks, the light of the 748 chunks along the lines where batches meet is stored as not done, on purpose, and the server
+lights them when it loads them. In the End over 3,000 × 3,000 blocks, the two worlds of each pair had the same blocks,
+light and structures, and the 10 End cities had the same pieces with the 15 plugin, the 15.1 plugin and the 15.1 Sponge
+build. The layout race of 15 did not show on Spigot, neither in these runs of the End alone nor with all three dimensions
+in one server ([End cities and Nether fortresses](#end-cities-and-nether-fortresses)). Those runs of the End were on an
+earlier build of 15.1. Over 1,000 × 1,000 blocks in each dimension, the final jars on Spigot and SpongeVanilla gave that
+build's blocks and light in all 4,096 chunks of each.
+
+#### On other Minecraft versions
+
+The plugin jars run on Minecraft 26.2 only. On each server below, with a fresh world and the jar installed, the server
+started and went on running, and no chunk was written at the area asked for:
+
+| Server | The jar | `/pregen` |
+|---|---|---|
+| Paper 26.1.2 build 74, Folia 26.1.2 build 8 | the server refuses it: `Unsupported API version 26.2` | unknown command |
+| Paper 26.3 build 231, Folia 26.3 build 6 | logs that it is for Minecraft 26.2 and what this server lacks, and disables itself | "plugin is disabled" |
+| SpongeVanilla 26.1.2 (RC2762), 26.3 (RC2764) | applies none of its mixins and logs that it is for Minecraft 26.2 | unknown command |
+
+CraftBukkit and Spigot were not tried on these versions.
 
 ## Known limits
 
@@ -422,14 +504,14 @@ Version 15.1, the six mod jars and the two plugin jars: [Version 15.1](#version-
 
 | File | SHA-1 |
 |---|---|
-| `ultrafastpregen-bukkit-26.2-15.1.jar` | `60314c701c76077eaf9fb42ae67079a96c5442a4` |
-| `ultrafastpregen-fabric-1.20.x-15.1.jar` | `7b2381430d284d04ce5964ebc5ed761a7a8dd482` |
-| `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` | `527c1600f2345f0f07188e6317ae77fe7b3db9ef` |
-| `ultrafastpregen-fabric-26.1-26.2-15.1.jar` | `8449f821f38e6ee6c60cd297ac4cb0866bc4416e` |
-| `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` | `8c77928c425351841f0687c720a22025b8cd2a37` |
-| `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` | `ffca704e49247456c8b553592e8446895019b05d` |
-| `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` | `4600190babdf7d44ab1fea95128e73cdd5626fd8` |
-| `ultrafastpregen-sponge-26.2-15.1.jar` | `097c0734d688758359b1ca3afdbc61ba5a0ee866` |
+| `ultrafastpregen-bukkit-26.2-15.1.jar` | `8b445681dedd031ad4a5c5727a964006a1246d48` |
+| `ultrafastpregen-fabric-1.20.x-15.1.jar` | `79785f1fe99c4b3c1e93f1ef8153d3d0d8e75dcc` |
+| `ultrafastpregen-fabric-1.21-1.21.1-15.1.jar` | `2868575ed3809ff6e7ae565cd5cc01eded5d1023` |
+| `ultrafastpregen-fabric-26.1-26.2-15.1.jar` | `33e56406a9177e9fb40ab5bdbb44b01f790383bf` |
+| `ultrafastpregen-forge-1.20-1.20.4-15.1.jar` | `5949248751da357b61ea46df79d1ca0985e47630` |
+| `ultrafastpregen-neoforge-1.21-1.21.1-15.1.jar` | `d1c15d7cf7e40f225f7db918148c597459ea93ab` |
+| `ultrafastpregen-neoforge-26.1.2-26.2-15.1.jar` | `8b0210dcc8d5b58f57064e6251c364e67efa67d8` |
+| `ultrafastpregen-sponge-26.2-15.1.jar` | `39b2706073b0de0d5fba2e782142256a31d25ecf` |
 
 Version 14.1 (the released jars), for the modpacks' comparison.
 

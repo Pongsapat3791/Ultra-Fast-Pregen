@@ -1,0 +1,20 @@
+modLoader="javafml"
+loaderVersion="[46,)"
+license="LGPL-3.0"
+
+[[mods]]
+modId="ufpmanager"
+version="${version}"
+displayName="Ultra Fast Pregen Manager"
+description='''A web page to run Ultra Fast Pregen and Ultra Fast Pregen Link by clicking.'''
+logoFile="assets/ufpmanager/icon.png"
+authors="Pongsapat"
+# Server side only: players join with or without it.
+displayTest="IGNORE_ALL_VERSION"
+
+[[dependencies.ufpmanager]]
+modId="ultrafastpregen"
+mandatory=false
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"

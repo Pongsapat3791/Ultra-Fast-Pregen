@@ -41,6 +41,7 @@ final class Platform {
 
     /** Looks up the server internals a run uses, so a server whose internals differ fails at start-up. */
     static void checkInternals() {
+        ServerAccess.check();
         if (MOONRISE) {
             MoonriseAccess.check();
         } else {
@@ -60,6 +61,11 @@ final class Platform {
     /** The dimension's chunk storage. */
     static ChunkStorage storage(ServerLevel level) {
         return MOONRISE ? new MoonriseChunkIO(level) : WorldChunkIO.forLevel(level);
+    }
+
+    /** The dimension's storage of mobs and other entities, for writeFrames. */
+    static ChunkStorage entityStorage(ServerLevel level) throws java.io.IOException {
+        return MOONRISE ? new MoonriseChunkIO(level, MoonriseAccess.ENTITY_DATA) : new WorldChunkIO(ServerAccess.entityWorker(level));
     }
 
     /** The dimension's folder, which holds its region folder and its data folder. */

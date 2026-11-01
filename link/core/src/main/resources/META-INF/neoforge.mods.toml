@@ -1,0 +1,18 @@
+modLoader="javafml"
+loaderVersion="[1,)"
+license="LGPL-3.0"
+
+[[mods]]
+modId="ufplink"
+version="${version}"
+displayName="Ultra Fast Pregen Link"
+description='''Generates the world on other servers with Ultra Fast Pregen, then adds only the chunks this world does not have.'''
+logoFile="assets/ufplink/icon.png"
+authors="Pongsapat"
+
+[[dependencies.ufplink]]
+modId="ultrafastpregen"
+type="required"
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"

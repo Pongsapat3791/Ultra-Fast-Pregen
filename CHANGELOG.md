@@ -2,8 +2,10 @@
 
 ## 15.1
 
-Each mod jar now runs on every Minecraft version in its name, and End cities and Nether fortresses are laid out as
-Minecraft lays them out, in every build including the Bukkit and Sponge plugins.
+Each mod jar now runs on every Minecraft version in its name, End cities and Nether fortresses are laid out as Minecraft
+lays them out in every build including the Bukkit and Sponge plugins, chunks the server was holding during a run come out
+complete, with their springs, mobs and the features of neighboring batches, and `skip_existing_chunks=false` goes over the
+whole area.
 
 | Jar | Minecraft | The 15 jar |
 |---|---|---|
@@ -62,6 +64,12 @@ jar too), where the 0.5.5 of NeoForge 26.1.2 and 26.2 reads them.
   the ship and with 78 pieces in 3 of 3 runs of the jar before the fix on Fabric 1.21, and whole in all 7 runs of
   15.1. On 26.2 it did not show before the fix either, although Minecraft keeps the same static fields there, and no
   fortress came out differently ([details](COMPATIBILITY.md#end-cities-and-nether-fortresses)).
+- **Fixed: the plugin jars on another Minecraft version.** Fabric, Forge and NeoForge refuse a mod on a version it does
+  not declare; SpongeVanilla loads the Sponge jar anyway, and Bukkit servers refuse a plugin only on older versions. The
+  Sponge jar's mixins kept a 26.1.2 or 26.3 server from starting, and the Bukkit jar enabled itself on Paper and Folia
+  26.3 and then failed on the first tick and at `/pregen`. Both now check at start-up: the log says the jar is for
+  Minecraft 26.2, the plugin does nothing, and the server goes on. No chunk was written on these servers before the
+  fix either ([details](COMPATIBILITY.md#on-other-minecraft-versions)).
 - **Faster with C2ME: lighting stays on the worker threads.** 15 lights each batch on the worker threads unless another
   mod changes Minecraft's light engine, and C2ME changes it in two places that keep its results: each light storage's
   update runs under that storage's own lock, and the server's light engine schedules its next update when a task ends.
@@ -70,6 +78,43 @@ jar too), where the 0.5.5 of NeoForge 26.1.2 and 26.2 reads them.
   chunk has the same blocks and light as before (Overworld, Nether and End, 4,096 chunks each), and runs went from 143
   to 182 chunks/s in the Overworld, 185 to 358 in the Nether and 362 to 591 in the End (Xeon E5-2670 v2, 20 threads,
   1,000 × 1,000 blocks).
+- **Springs in chunks the server was holding:** chunks the server had only part-generated around players and force-loaded
+  chunks lost their scheduled ticks when a run replaced them. Water and lava springs there did not flow, and leaves and
+  falling blocks were not updated, until something changed next to them. Those chunks now keep their ticks. The mods had
+  this since version 12, and the Sponge build, which is the mod's code, since 15; the Bukkit plugin leaves such chunks to
+  the server and never had it. Chunks made by older versions stay as they are unless they are generated again.
+- **Mobs in the same chunks:** the mobs placed when a chunk is generated, and those of structures, were lost with them: with
+  chunks held around the center of a run, 5 to 7 of the 112 mobs of the chunks around them were left. They now go to the
+  world's entity storage. The Bukkit plugin never had this either.
+- **Features across a batch edge in the same chunks:** features near a batch's edge write into the chunks of the next
+  batch. Where the server held such a chunk those writes were dropped, or lost at the server's next save, and ore and stone
+  blobs ended at the edge: 84 chunks and 31,800 blocks of 1,408 around a held center on Minecraft 1.21.1. They now reach
+  the server's copy of the chunk, and the batch that generates it later.
+- **Features across a batch edge through caves:** a kept copy of a saved chunk turned cave air into plain air, so a block
+  a later batch placed in a cave there was taken for a block changed meanwhile and left out. The copy now keeps it.
+- **`skip_existing_chunks=false` goes over the whole area:** chunks in the save file were skipped, whole batches and single
+  chunks, although the setting, the README and the log said the area is regenerated; `/pregen reset` was needed first. A new
+  run now forgets what the save file has for its area. `/pregen resume` and the automatic continuation after a restart
+  still keep what that run saved.
+- **Fixed: `skip_existing_chunks=false` on Sponge with a player in the area.** A chunk saved as fully generated that the
+  server had loaded again, but not made full, has no level for its scheduled ticks yet, and Sponge tracks every tick with
+  that level. Replacing such a chunk failed with a `NullPointerException`, and the run ended with an error when the batch
+  failed again the way Minecraft generates. Such a chunk now gets the level while its ticks are replaced.
+- **API version 2:** `PregenApi.worlds()` gives other mods what they need to bring chunks into a world from elsewhere,
+  in plain Java types, so such a mod can be one jar for every Minecraft version and loader: the world's folders, what
+  generation depends on, separate worlds that generate like a dimension, chunks read and written through the server's
+  own storage, and commands. `PregenRequest.withBatchSize` and `keepingExistingChunks`, and the events `onServerStarted`
+  and `onServerStopping`, are new too. See [API.md](API.md#worlds).
+- **Fixed: a run could leave the fast paths at its first structures.** Minecraft fills a rotation's table of directions on
+  first use, and with many threads a jigsaw structure could read it half filled. The batch failed with a
+  `NullPointerException` in `FrontAndTop`, and the rest of the run went on the way Minecraft generates, much slower. It
+  was seen once, on NeoForge 1.21.1 just after a server start, and the chunks were right. The tables are now filled before
+  a run starts.
+- **Fixed: a fast path could turn off at random.** Before using a fast path, the mod asks Mixin what other mods change in
+  the code it replaces. Mixin 0.17, which current Fabric Loader and NeoForge 26 use, can answer nothing for a class while
+  another thread is adding it, and the class then counted as changed by an unknown mod: the log said `other mods modify
+  density functions [unknown (NullPointerException)]` with no such mod installed. It was seen in 4 of about 1,800 test
+  logs, all on Fabric, at worst until the server restarted, and the chunks were right. The mod now asks again.
 
 ### Tested
 - **Every Minecraft version of every jar, 22 in all**, each on a dedicated server of its own (Forge, NeoForge, or Fabric
@@ -81,9 +126,9 @@ jar too), where the 0.5.5 of NeoForge 26.1.2 and 26.2 reads them.
 - **The fast terrain path against Minecraft's own biome, noise and surface steps** (`terrain_pipeline=vanilla`), the
   same 4,096 chunks block for block in each dimension, on 15 of the versions. In the Overworld only bee nests differ
   (none on 26.x), one block apart, as they also do between two runs of the same jar; on 1.20.1 to 1.20.4 also 12 or
-  13 surface blocks (mud, sand), and the 15 jar gives the same 13 on 1.20.1. The Nether and the End are identical,
-  apart from 21 blocks at the bottom of one Nether chunk on 26.2, which come from Minecraft's own biome lookup and can
-  come out either way in Minecraft too ([details](COMPATIBILITY.md#version-151)).
+  13 surface blocks (mud, sand), and the 15 jar gives the same 13 on 1.20.1. The Nether and the End are identical; in
+  an earlier run, 21 blocks at the bottom of one Nether chunk differed on 26.2, which come from Minecraft's own biome
+  lookup and can come out either way in Minecraft too ([details](COMPATIBILITY.md#version-151)).
 - **With C2ME**, on each version that has a C2ME build (Fabric 1.20.1, 1.21.1 and 26.2, NeoForge 1.21.1 and 26.1.2):
   the 15.1 jar against the same jar without the C2ME change, block for block in the Overworld, the Nether and the End,
   and over existing chunks and across a restart ([details](COMPATIBILITY.md#with-c2me)). The two worlds had the same
@@ -91,6 +136,17 @@ jar too), where the 0.5.5 of NeoForge 26.1.2 and 26.2 reads them.
   1.21.1 also one End city, laid out by the race fixed above; with the final jar and C2ME, NeoForge 1.21.1 gave that
   city its 88 pieces in 3 of 3 runs. The final jars passed every run with C2ME, with lighting on the worker threads
   throughout.
+- **Chunks replaced under a player** on Forge 1.20 to 1.20.4 and Fabric 1.20.2 and 1.20.4: with
+  `skip_existing_chunks=false`, a test client standing in the area got all 81 chunks around it sent again during the
+  run, with the regenerated blocks; with the default, none ([details](COMPATIBILITY.md#players-who-see-a-replaced-chunk)).
+- **Chunks the server holds during a run** on 14 of the versions, the ends of each jar's range and the Sponge build: the same
+  run with nothing held and with 1,408 part-generated chunks held, compared chunk by chunk. All mobs and all fluid ticks
+  were there, and 1,374 to 1,385 of the chunks had the same blocks; along the two lines where batches meet, 59 to 83
+  blocks differ, where it was 31,800 on Fabric 1.21.1 before the fix
+  ([details](COMPATIBILITY.md#chunks-the-server-holds-during-a-run)).
+- **`skip_existing_chunks=false` through the commands** on 10 servers, Fabric, Forge, NeoForge, Sponge, Spigot, Paper and
+  Folia: a run saved 4,096 chunks, the same area with the setting off generated all 4,096 again, and `/pregen resume`
+  kept them.
 - **Static checks against every version each jar declares:** every class, method, field and mixin target the jar refers
   to exists in that version's game and loader files, apart from 4 calls on the Fabric jar's path for 1.20 to 1.20.4,
   which it does not take on 1.20.5 and 1.20.6.

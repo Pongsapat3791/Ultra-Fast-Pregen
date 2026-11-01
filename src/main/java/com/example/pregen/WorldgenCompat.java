@@ -426,8 +426,7 @@ public final class WorldgenCompat {
             Set<String> configs = new TreeSet<>();
             for (Class<?> target : List.of(ChunkGenerator.class, WorldgenRandom.class)) {
                 try {
-                    ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
-                    for (Object registered : (Set<?>) registeredMixins().get(info)) {
+                    for (Object registered : (Set<?>) registeredMixins().get(classInfo(target))) {
                         IMixinInfo mixin = (IMixinInfo) registered;
                         String config = mixin.getConfig().getName();
                         if (OWN_MIXIN_CONFIG.equals(config) || PARALLEL_SAFE_FEATURE_MIXINS.contains(mixin.getClassName())
@@ -714,7 +713,7 @@ public final class WorldgenCompat {
     private static Set<String> originalMethods(Class<?> target) {
         Set<String> methods = new HashSet<>();
         boolean own = true;
-        for (ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/')); info != null; info = info.getSuperClass()) {
+        for (ClassInfo info = classInfo(target); info != null; info = info.getSuperClass()) {
             for (ClassInfo.Method method : info.getMethods()) {
                 if (own && method.isInjected()) continue;
                 methods.add(method.getName() + method.getDesc());
@@ -769,10 +768,20 @@ public final class WorldgenCompat {
         return known.isEmpty() ? null : known;
     }
 
+    /**
+     * Mixin's record of the class. Mixin 0.17, which Fabric Loader and NeoForge 26 use, looks in its cache twice and answers null
+     * when another thread adds the class between the two, as workers reaching one of these checks together do: the class then
+     * counted as unknown, which turned a fast path off at random. Asking again finds it.
+     */
+    private static ClassInfo classInfo(Class<?> target) {
+        String name = target.getName().replace('.', '/');
+        ClassInfo info = ClassInfo.forName(name);
+        return info != null ? info : ClassInfo.forName(name);
+    }
+
     static List<IMixinInfo> mixinsTargeting(Class<?> target) throws ReflectiveOperationException {
-        ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
         List<IMixinInfo> mixins = new ArrayList<>();
-        for (Object mixin : (Set<?>) registeredMixins().get(info)) mixins.add((IMixinInfo) mixin);
+        for (Object mixin : (Set<?>) registeredMixins().get(classInfo(target))) mixins.add((IMixinInfo) mixin);
         return mixins;
     }
 

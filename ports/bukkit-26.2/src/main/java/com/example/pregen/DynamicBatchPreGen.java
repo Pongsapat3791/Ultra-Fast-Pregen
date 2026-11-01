@@ -63,6 +63,8 @@ public class DynamicBatchPreGen {
     private volatile boolean releaseMemoryEachBatch = true;
     /** Keep chunks that exist on disk or in the server's memory (skip_existing_chunks); off for direct API use. */
     private volatile boolean skipExistingChunks;
+    /** A new run with skip_existing_chunks=false: chunks the save file has are generated again too. */
+    private volatile boolean regenerateRecorded;
     /** With skipExistingChunks: per region, the chunks stored when the run started. */
     private WorldChunkIO.StoredChunks storedAtStart = WorldChunkIO.StoredChunks.NONE;
     /** Feature writes across batch boundaries (see SeamWrites). */
@@ -357,6 +359,11 @@ public class DynamicBatchPreGen {
     /** Keep every chunk that already exists instead of overwriting it; call before start(). */
     void setSkipExistingChunks(boolean skip) {
         skipExistingChunks = skip;
+    }
+
+    /** Forget what the save file has for the area, so the run goes over all of it; call before start(). */
+    void setRegenerateRecorded(boolean regenerate) {
+        regenerateRecorded = regenerate;
     }
 
     void setParallelSteps(boolean parallel) {
@@ -826,6 +833,7 @@ public class DynamicBatchPreGen {
                 log(String.format("[Ultra Fast Pregen] Save file loaded into RAM: %d chunks already generated in this world (%s).",
                         record.doneChunks(), record.file()));
             }
+            if (regenerateRecorded) record.forget(batchPlan);
             record.setLastRun(worldSizeBlocks, centerX, centerZ, batchPlan.shape(), false);
             record.setLastStopped(false);
             saveFile = record;

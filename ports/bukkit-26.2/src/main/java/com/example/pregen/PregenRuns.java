@@ -1,7 +1,12 @@
 package com.example.pregen;
 
+import com.mojang.math.OctahedralGroup;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 
@@ -54,6 +59,7 @@ public final class PregenRuns {
             // Only the server thread calls this; set once the check is done, which the tests wait for.
             checkedForResume = ticking;
         }
+        PregenApiImpl.fireServerStarted();
     }
 
     /** Whether the server's first tick has checked for a run to continue (see onServerTick). */
@@ -91,7 +97,7 @@ public final class PregenRuns {
                 PreGenMod.LOGGER.warn("[PreGen] Could not write the save file {}", record.file(), failure);
             }
             Result started = start(level, record.lastSizeBlocks(), record.lastShape(), record.lastCenterX(),
-                    record.lastCenterZ(), false);
+                    record.lastCenterZ(), false, 0, false, true);
             String message = started.started()
                     ? "Continuing the run cut short by the last server stop (" + area + "); /pregen stop stops it."
                     : "Could not continue the run (" + area + "): " + started.message();
@@ -110,6 +116,7 @@ public final class PregenRuns {
      * singleplayer world opened next starts without it); the API has no server until the next one.
      */
     public static void onServerStopping(MinecraftServer stopping) {
+        PregenApiImpl.fireServerStopping();
         if (server == stopping) server = null;
         DynamicBatchPreGen task = activeTask;
         if (task == null) return;
@@ -161,9 +168,30 @@ public final class PregenRuns {
         return task != null && task.isRunning();
     }
 
+    /**
+     * Minecraft fills a rotation's table of directions on first use, and another thread can read it half filled: the
+     * first jigsaw structures of a run, on many threads at once, failed on that.
+     */
+    private static void fillRotationTables() {
+        for (OctahedralGroup group : OctahedralGroup.values()) group.rotate(Direction.NORTH);
+    }
+
+    /** A copy of the server's worlds: their list is the server thread's, and a separate world can open or close during a walk. */
+    static List<ServerLevel> levels(MinecraftServer server) {
+        for (int attempt = 0; ; attempt++) {
+            try {
+                List<ServerLevel> levels = new ArrayList<>();
+                for (ServerLevel level : server.getAllLevels()) levels.add(level);
+                return levels;
+            } catch (ConcurrentModificationException changed) {
+                if (attempt == 8) throw changed;
+            }
+        }
+    }
+
     /** The loaded dimension with that id ("minecraft:overworld"), or null. */
     static ServerLevel level(MinecraftServer server, String dimension) {
-        for (ServerLevel level : server.getAllLevels()) {
+        for (ServerLevel level : levels(server)) {
             if (level.dimension().identifier().toString().equals(dimension)) return level;
         }
         return null;
@@ -186,6 +214,18 @@ public final class PregenRuns {
      */
     static synchronized Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
                                      boolean profile) {
+        return start(level, sizeBlocks, shape, x, z, profile, 0, false);
+    }
+
+    /** batchSize: the request's, or 0 for the config's; keepExisting: keep chunks whatever the config says. */
+    static synchronized Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
+                                     boolean profile, int batchSize, boolean keepExisting) {
+        return start(level, sizeBlocks, shape, x, z, profile, batchSize, keepExisting, false);
+    }
+
+    /** continuing: a run that goes on from its save file, so what that has for the area stays also when regenerating. */
+    private static Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
+                                boolean profile, int batchSize, boolean keepExisting, boolean continuing) {
         if (isRunning()) {
             return Result.refused("A pre-generation task is already currently running!");
         }
@@ -198,27 +238,31 @@ public final class PregenRuns {
         // Batch size and threads come only from the config file, re-read on every start.
         PreGenConfig config = PreGenConfig.load();
         long freeHeap = PreGenConfig.freeHeapBytes();
-        int batch = PreGenConfig.fitBatchToHeap(config.batchSizeBlocks, freeHeap);
-        if (batch != config.batchSizeBlocks) {
+        int wanted = batchSize > 0 ? batchSize : config.batchSizeBlocks;
+        boolean skipExisting = keepExisting || config.skipExistingChunks;
+        int batch = PreGenConfig.fitBatchToHeap(wanted, freeHeap);
+        if (batch != wanted) {
             PreGenMod.LOGGER.warn(String.format(
                     "[PreGen] Only %.1f GB of heap is free, too little for batch_size=%d; using %d (a little slower). Give Minecraft more memory (-Xmx on a server, the launcher's memory setting in singleplayer) to use the configured size.",
-                    freeHeap / 1073741824.0, config.batchSizeBlocks, batch));
+                    freeHeap / 1073741824.0, wanted, batch));
         }
         // Players see the boss bar; the settings go to the server log and console.
         PreGenMod.LOGGER.info(String.format(
             "[PreGen] Starting generation for %s in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s (change in %s)",
             areaText(sizeBlocks, shape), level.dimension().identifier(), x, z, batch, batch,
             config.threads, config.threadsFromCpuCount ? " (max)" : "",
-            config.skipExistingChunks ? "kept" : "overwritten", PreGenMod.configFileText()));
+            skipExisting ? "kept" : "overwritten", PreGenMod.configFileText()));
 
         // The engine logs each event; players follow the run on the boss bar, not in chat.
+        fillRotationTables();
         DynamicBatchPreGen task = DynamicBatchPreGen.area(level, sizeBlocks, shape, batch, config.threads, x, z, msg -> {});
         task.setTerrainPipeline(PregenApiImpl.minecraftTerrainReason() != null
                 ? PreGenConfig.TerrainPipeline.VANILLA : config.terrainPipeline);
         task.setParallelSteps(config.parallelSteps);
         task.setAlwaysParallelFeatures(config.alwaysParallelFeatures);
         task.setReleaseMemoryEachBatch(config.releaseMemoryEachBatch);
-        task.setSkipExistingChunks(config.skipExistingChunks);
+        task.setSkipExistingChunks(skipExisting);
+        task.setRegenerateRecorded(!skipExisting && !continuing);
         if (!PreGenConfig.overlapFits(batch, freeHeap)) task.setOverlapBatches(false);
         if (profile) task.enableProfiling();
         activeTask = task;
@@ -242,7 +286,7 @@ public final class PregenRuns {
                     + ". Start one with /pregen start <world_k>.");
         }
         Result started = start(level, record.lastSizeBlocks(), record.lastShape(), record.lastCenterX(),
-                record.lastCenterZ(), false);
+                record.lastCenterZ(), false, 0, false, true);
         if (started.started() && record.lastCompleted()) {
             return new Result(true, String.format("The last run (%s centered on [%d, %d]) already completed; every finished tile is skipped.",
                     areaText(record.lastSizeBlocks(), record.lastShape()), record.lastCenterX(), record.lastCenterZ()),

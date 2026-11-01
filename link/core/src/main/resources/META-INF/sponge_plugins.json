@@ -1,0 +1,32 @@
+{
+  "loader": {
+    "name": "java_plain",
+    "version": "1.0"
+  },
+  "license": "LGPL-3.0",
+  "global": {
+    "version": "${version}",
+    "contributors": [
+      {
+        "name": "Pongsapat",
+        "description": "Author"
+      }
+    ],
+    "dependencies": [
+      {
+        "id": "ultrafastpregen",
+        "version": "*",
+        "load-order": "after",
+        "optional": false
+      }
+    ]
+  },
+  "plugins": [
+    {
+      "id": "ufplink",
+      "name": "Ultra Fast Pregen Link",
+      "entrypoint": "io.github.pongsapat3791.ufplink.entry.SpongeEntry",
+      "description": "Generates the world on other servers with Ultra Fast Pregen."
+    }
+  ]
+}

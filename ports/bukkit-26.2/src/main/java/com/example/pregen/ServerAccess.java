@@ -14,14 +14,17 @@ import java.util.function.Supplier;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.StructureManager;
 import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.storage.EntityStorage;
 import net.minecraft.world.level.chunk.storage.IOWorker;
 import net.minecraft.world.level.chunk.storage.RegionFile;
 import net.minecraft.world.level.chunk.storage.RegionFileStorage;
 import net.minecraft.world.level.chunk.storage.SimpleRegionStorage;
+import net.minecraft.world.level.entity.PersistentEntitySectionManager;
 import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import net.minecraft.world.level.levelgen.RandomState;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -31,7 +34,7 @@ import net.minecraft.world.level.levelgen.blending.Blender;
  * 26.1 the server runs with Minecraft's own names, so the plugin sees the same fields and methods.
  * Those every server has are looked up when the class loads, Minecraft's own chunk system (which
  * Paper replaces) when first used; a server whose internals differ fails with a clear error when
- * the plugin is enabled (see checkVanilla).
+ * the plugin is enabled (see check and checkVanilla).
  */
 final class ServerAccess {
     private static final MethodHandles.Lookup LOOKUP = MethodHandles.lookup();
@@ -52,6 +55,9 @@ final class ServerAccess {
      */
     private static final class Vanilla {
         static final VarHandle WORKER = field(SimpleRegionStorage.class, "worker");
+        static final VarHandle ENTITY_MANAGER = field(ServerLevel.class, "entityManager");
+        static final VarHandle PERMANENT_STORAGE = field(PersistentEntitySectionManager.class, "permanentStorage");
+        static final VarHandle ENTITY_REGIONS = field(EntityStorage.class, "simpleRegionStorage");
         static final VarHandle STORAGE = field(IOWorker.class, "storage");
         static final VarHandle PENDING_WRITES = field(IOWorker.class, "pendingWrites");
         static final MethodHandle SUBMIT_TASK = method(IOWorker.class, "submitTask", Supplier.class);
@@ -65,6 +71,9 @@ final class ServerAccess {
     }
 
     private ServerAccess() {}
+
+    /** Forces the lookups every server needs (the plugin's start-up). */
+    static void check() {}
 
     /** Forces the lookups of Minecraft's own chunk system (the plugin's start-up on Spigot and CraftBukkit). */
     static void checkVanilla() {
@@ -126,6 +135,15 @@ final class ServerAccess {
     /** The dimension's IO worker; ChunkMap extends SimpleRegionStorage. */
     static IOWorker worker(ChunkMap chunkMap) {
         return (IOWorker) Vanilla.WORKER.get((SimpleRegionStorage) chunkMap);
+    }
+
+    /** The IO worker of the dimension's entities. */
+    static IOWorker entityWorker(ServerLevel level) throws java.io.IOException {
+        Object storage = Vanilla.PERMANENT_STORAGE.get((PersistentEntitySectionManager<?>) Vanilla.ENTITY_MANAGER.get(level));
+        if (!(storage instanceof EntityStorage entities)) {
+            throw new java.io.IOException("Another plugin replaced the entities storage of " + level.dimension().identifier() + ".");
+        }
+        return (IOWorker) Vanilla.WORKER.get((SimpleRegionStorage) Vanilla.ENTITY_REGIONS.get(entities));
     }
 
     /** Only from a task the worker runs (see submitTask). */

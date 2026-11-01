@@ -4,6 +4,9 @@
 	"package": "com.example.pregen.mixin",
 	"compatibilityLevel": "JAVA_17",
 	"mixins": [
+		"MinecraftServerAccessor",
+		"ServerLevelAccessor",
+		"PersistentEntitySectionManagerAccessor",
 		"CommandsMixin",
 		"WorldGenRegionMixin",
 		"WorldGenRegionChunkCacheMixin",

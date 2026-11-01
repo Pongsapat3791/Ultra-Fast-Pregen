@@ -293,13 +293,14 @@ final class SeamWrites {
      * source instead and corrupts the copy; copies made by copy() are only safe to read.
      */
     static PalettedContainer<BlockState> writableCopy(PalettedContainer<BlockState> source) {
-        PalettedContainer<BlockState> copy = new PalettedContainer<>(Blocks.AIR.defaultBlockState(), STATES);
-        if (!source.maybeHas(state -> !state.isAir())) return copy;
+        BlockState air = Blocks.AIR.defaultBlockState();
+        PalettedContainer<BlockState> copy = new PalettedContainer<>(air, STATES);
+        if (!source.maybeHas(state -> state != air)) return copy;
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     BlockState state = source.get(x, y, z);
-                    if (!state.isAir()) copy.getAndSetUnchecked(x, y, z, state);
+                    if (state != air) copy.getAndSetUnchecked(x, y, z, state);
                 }
             }
         }

@@ -2,6 +2,8 @@ package com.example.pregen.forge;
 
 import com.example.pregen.PreGenMod;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.loading.FMLPaths;
@@ -14,9 +16,12 @@ public final class ForgeEntrypoint {
         String version = ModList.get().getModContainerById(PreGenMod.MOD_ID)
                 .map(mod -> mod.getModInfo().getVersion().toString()).orElse("unknown");
         PreGenMod.init(FMLPaths.CONFIGDIR.get(), version);
+        Map<String, String> mods = new TreeMap<>();
         for (IModInfo mod : ModList.get().getMods()) {
             readCompatibility(mod);
+            mods.put(mod.getModId(), mod.getVersion().toString());
         }
+        PreGenMod.platform("forge", mods);
     }
 
     /**

@@ -1,0 +1,18 @@
+modLoader="javafml"
+loaderVersion="[1,)"
+license="LGPL-3.0"
+
+[[mods]]
+modId="ufpmanager"
+version="${version}"
+displayName="Ultra Fast Pregen Manager"
+description='''A web page to run Ultra Fast Pregen and Ultra Fast Pregen Link by clicking.'''
+logoFile="assets/ufpmanager/icon.png"
+authors="Pongsapat"
+
+[[dependencies.ufpmanager]]
+modId="ultrafastpregen"
+type="optional"
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"

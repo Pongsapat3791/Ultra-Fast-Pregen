@@ -1,0 +1,51 @@
+plugins {
+    id 'java'
+}
+
+version = project.mod_version
+group = 'io.github.pongsapat3791.ufplink'
+
+base {
+    archivesName = 'ufplink'
+}
+
+// One jar for every loader: Minecraft 1.20 needs Java 17 class files.
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+sourceSets {
+    // Stand-ins for the few classes of the loaders and of slf4j this mod names. They are not in the jar: each game has its own.
+    stubs
+}
+
+dependencies {
+    compileOnly sourceSets.stubs.output
+    // Ultra Fast Pregen's API uses plain Java types, so any jar with API version 2 will do.
+    compileOnly files('../../ports/fabric-1.21.1/build/libs/ultrafastpregen-fabric-1.21-1.21.1-15.1.jar')
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+    options.encoding = 'UTF-8'
+}
+
+processResources {
+    def version = project.version
+    inputs.property 'version', version
+    filesMatching(['fabric.mod.json', 'plugin.yml', 'ufplink-version.txt', 'META-INF/mods.toml', 'META-INF/neoforge.mods.toml', 'META-INF/sponge_plugins.json']) {
+        expand 'version': version
+    }
+}
+
+jar {
+    from('../../LICENSE') {
+        rename { "${it}_ufplink" }
+    }
+    manifest {
+        attributes(
+            'Implementation-Title': 'Ultra Fast Pregen Link',
+            'Implementation-Version': project.version,
+            'Automatic-Module-Name': 'io.github.pongsapat3791.ufplink',
+            'Main-Class': 'io.github.pongsapat3791.ufplink.tool.MergeTool'
+        )
+    }
+}

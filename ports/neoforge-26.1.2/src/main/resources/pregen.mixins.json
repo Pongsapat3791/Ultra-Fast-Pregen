@@ -5,6 +5,11 @@
   "plugin": "com.example.pregen.mixin.PregenMixinPlugin",
   "compatibilityLevel": "JAVA_21",
   "mixins": [
+    "MinecraftServerAccessor",
+    "ServerLevelAccessor",
+    "PersistentEntitySectionManagerAccessor",
+    "EntityStorageAccessor",
+    "SimpleRegionStorageAccessor",
     "WorldGenRegionMixin",
     "WorldGenRegionChunkCacheMixin",
     "NoiseBasedChunkGeneratorInvoker",

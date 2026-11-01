@@ -12,6 +12,9 @@ public final class PreGenMod {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
     /** The loader's config folder, set by its entry point. */
     static volatile Path configDirectory = Path.of("config");
+    /** The loader's name and every mod on it, id to version, set by its entry point (see PregenWorlds.ServerFacts). */
+    static volatile String loader = "unknown";
+    static volatile java.util.Map<String, String> mods = java.util.Map.of();
 
     private PreGenMod() {}
 
@@ -24,6 +27,12 @@ public final class PreGenMod {
         configDirectory = configFolder;
         PregenApiImpl.install(version);
         LOGGER.info("{} loaded.", NAME);
+    }
+
+    /** Called by the loader's entry point: who runs this game. */
+    public static void platform(String loaderName, java.util.Map<String, String> loadedMods) {
+        loader = loaderName;
+        mods = java.util.Map.copyOf(loadedMods);
     }
 
     /**

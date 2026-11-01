@@ -4,11 +4,17 @@ package io.github.pongsapat3791.ultrafastpregen.api;
  * Events of Ultra Fast Pregen's runs, added with {@link PregenApi#addListener}. Every method has
  * an empty default, so implement only what you need.
  *
- * <p>The methods are called on Ultra Fast Pregen's own threads, never the server thread: keep
- * them short, and hand work that touches the game to the server (for example
+ * <p>The methods are called on Ultra Fast Pregen's own threads, not the server thread unless a method
+ * says so: keep them short, and hand work that touches the game to the server (for example
  * {@code server.execute(...)}). An exception thrown by a listener is logged and does not stop the run.
  */
 public interface PregenListener {
+    /** A server (dedicated, or a singleplayer world's) ticks for the first time. On the server thread. Since API version 2. */
+    default void onServerStarted() {}
+
+    /** The server starts stopping. On the server thread. Since API version 2. */
+    default void onServerStopping() {}
+
     /** A run started (from a command, the API or a resume). */
     default void onStart(PregenStatus status) {}
 

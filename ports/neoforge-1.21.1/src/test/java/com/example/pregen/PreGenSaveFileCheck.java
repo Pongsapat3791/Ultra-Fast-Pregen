@@ -40,6 +40,10 @@ public final class PreGenSaveFileCheck {
                     "Recorded chunks must be found");
             require(!loaded.isDone(0, 0) && !loaded.isDone(-33, -1) && !loaded.isDone(7, 5),
                     "Chunks never recorded must not be found");
+            PreGenSaveFile forgotten = PreGenSaveFile.load(file, 42L);
+            forgotten.forget(new ChunkBatchPlan(32, 32, 88, 120));
+            require(forgotten.doneChunks() == 1024 + 2 - 1 && !forgotten.isDone(5, 7) && forgotten.isDone(31, 0) && forgotten.isDone(-1, -1),
+                    "Only the chunks of the area must be forgotten");
             LongSet among = loaded.doneAmong(new long[]{ChunkPos.asLong(5, 7), ChunkPos.asLong(6, 7)});
             require(among.size() == 1 && among.contains(ChunkPos.asLong(5, 7)), "doneAmong must return only recorded chunks");
             require(loaded.hasLastRun() && loaded.lastSizeBlocks() == 10_500 && loaded.lastCenterX() == 120

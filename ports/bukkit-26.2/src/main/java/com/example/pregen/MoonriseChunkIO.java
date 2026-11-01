@@ -1,5 +1,8 @@
 package com.example.pregen;
 
+import io.github.pongsapat3791.ultrafastpregen.api.PregenWorlds;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import java.util.Arrays;
 import it.unimi.dsi.fastutil.longs.LongCollection;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -32,6 +35,8 @@ import net.minecraft.world.level.chunk.storage.RegionFileVersion;
 final class MoonriseChunkIO implements ChunkStorage {
     private final ServerLevel level;
     private final Path regionFolder;
+    /** MoonriseAccess.CHUNK_DATA, or ENTITY_DATA for writeFrames of a chunk's mobs. */
+    private final Object fileType;
     /** Writes and edge merges in the order they were asked for, each finishing before the next. */
     private final ExecutorService writer = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "PreGen-Moonrise-IO");
@@ -40,8 +45,13 @@ final class MoonriseChunkIO implements ChunkStorage {
     });
 
     MoonriseChunkIO(ServerLevel level) {
+        this(level, MoonriseAccess.CHUNK_DATA);
+    }
+
+    MoonriseChunkIO(ServerLevel level, Object fileType) {
         this.level = level;
         this.regionFolder = MoonriseAccess.regionFolder(level);
+        this.fileType = fileType;
     }
 
     @Override
@@ -174,6 +184,41 @@ final class MoonriseChunkIO implements ChunkStorage {
             return result;
         }, writer);
         return new WorldChunkIO.PendingWrite(result, done);
+    }
+
+    /** Paper's IO has no way to check and write in one step: the caller leaves out what the server holds first. */
+    @Override
+    public PregenWorlds.WriteResult writeFrames(List<PregenWorlds.ChunkWrite> chunks, PregenWorlds.WriteRule rule, boolean dryRun)
+            throws IOException {
+        List<CompletableFuture<Optional<CompoundTag>>> stored = new ArrayList<>(chunks.size());
+        for (PregenWorlds.ChunkWrite chunk : chunks) {
+            stored.add(MoonriseAccess.load(level, ChunkPos.getX(chunk.chunk()), ChunkPos.getZ(chunk.chunk()), fileType));
+        }
+        LongArrayList written = new LongArrayList();
+        int replaced = 0;
+        int kept = 0;
+        for (int i = 0; i < chunks.size(); i++) {
+            PregenWorlds.ChunkWrite chunk = chunks.get(i);
+            CompoundTag existing = PregenWorldsImpl.join(stored.get(i)).orElse(null);
+            if (existing != null) {
+                boolean replace = switch (rule) {
+                    case ABSENT -> false;
+                    case ABSENT_OR_PART_GENERATED -> chunk.fullyGenerated() && !WorldChunkIO.isFullyGenerated(existing);
+                    case ABSENT_OR_UNCHANGED -> chunk.baseHash() != null && Arrays.equals(WorldChunkIO.hash(existing), chunk.baseHash());
+                };
+                if (!replace) {
+                    kept++;
+                    continue;
+                }
+                replaced++;
+            }
+            written.add(chunk.chunk());
+            if (!dryRun) {
+                MoonriseAccess.scheduleSave(level, ChunkPos.getX(chunk.chunk()), ChunkPos.getZ(chunk.chunk()), WorldChunkIO.decodeFrame(chunk.frame()), fileType);
+            }
+        }
+        if (!dryRun) MoonriseAccess.flush(level, fileType);
+        return new PregenWorlds.WriteResult(written.toLongArray(), replaced, kept);
     }
 
     @Override

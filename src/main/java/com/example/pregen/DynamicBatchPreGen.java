@@ -62,6 +62,8 @@ public class DynamicBatchPreGen {
     private volatile boolean releaseMemoryEachBatch = true;
     /** Keep chunks that exist on disk or in the server's memory (skip_existing_chunks); off for direct API use. */
     private volatile boolean skipExistingChunks;
+    /** A new run with skip_existing_chunks=false: chunks the save file has are generated again too. */
+    private volatile boolean regenerateRecorded;
     /** With skipExistingChunks: per region, the chunks stored when the run started. */
     private WorldChunkIO.StoredChunks storedAtStart = WorldChunkIO.StoredChunks.NONE;
     /** Feature writes across batch boundaries (see SeamWrites). */
@@ -344,6 +346,11 @@ public class DynamicBatchPreGen {
     /** Keep every chunk that already exists instead of overwriting it; call before start(). */
     void setSkipExistingChunks(boolean skip) {
         skipExistingChunks = skip;
+    }
+
+    /** Forget what the save file has for the area, so the run goes over all of it; call before start(). */
+    void setRegenerateRecorded(boolean regenerate) {
+        regenerateRecorded = regenerate;
     }
 
     void setParallelSteps(boolean parallel) {
@@ -642,7 +649,9 @@ public class DynamicBatchPreGen {
                             : "")
                     + (skipExistingChunks
                         ? ". Chunks that already exist (on disk or loaded) are kept; only missing chunks are generated."
-                        : ". skip_existing_chunks=false: every chunk in the area is regenerated and overwritten.")
+                        : regenerateRecorded
+                            ? ". skip_existing_chunks=false: every chunk in the area is regenerated and overwritten."
+                            : ". skip_existing_chunks=false: chunks this run has not saved yet are regenerated and overwritten.")
                     + (overlapBatches
                         ? " Each batch is lit and saved while the next one generates."
                         : " Batches run one at a time (too little free heap to hold two)."));
@@ -820,6 +829,7 @@ public class DynamicBatchPreGen {
                 log(String.format("[Ultra Fast Pregen] Save file loaded into RAM: %d chunks already generated in this world (%s).",
                         record.doneChunks(), record.file()));
             }
+            if (regenerateRecorded) record.forget(batchPlan);
             record.setLastRun(worldSizeBlocks, centerX, centerZ, batchPlan.shape(), false);
             record.setLastStopped(false);
             saveFile = record;
@@ -895,8 +905,8 @@ public class DynamicBatchPreGen {
      * generated before (kept core chunks, earlier batches, the stored world) get their final
      * blocks and take writes; halo chunks not generated yet are generated here and get the
      * writes earlier batches or stored part-generated chunks hold for them; new core chunks get
-     * theirs before their features. Chunks the server holds are left to the server. Returns
-     * those held chunks.
+     * theirs before their features. Chunks the server holds are left to the server, apart from
+     * those this run generated or will generate. Returns those held chunks.
      */
     private LongSet prepareNeighbors(InMemoryChunkGrid grid, LongSet done, LongSet keptCore, LongSet freshHalo) {
         long[] terrain = grid.getTerrainPositions();
@@ -912,7 +922,7 @@ public class DynamicBatchPreGen {
                 continue;
             }
             if (isCore) seams.take(pos);
-            if (held.contains(pos)) continue;
+            if (held.contains(pos) && (isCore || !generatedByThisRun(pos))) continue;
             SeamWrites.Final known = seams.finalOf(pos);
             if (known != null) {
                 grid.adoptSaved(pos, known);
@@ -961,6 +971,12 @@ public class DynamicBatchPreGen {
             if (!writes.isEmpty()) SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
         }
         return held;
+    }
+
+    /** A chunk of the area that this run generated or will generate, whether or not the server holds it. */
+    private boolean generatedByThisRun(long pos) {
+        if (!batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos))) return false;
+        return seams.isHandled(pos) ? seams.isGenerated(pos) : !generatedBefore(pos);
     }
 
     /** Stored part-generated when the run started and not read or replaced since. */
@@ -1275,7 +1291,7 @@ public class DynamicBatchPreGen {
                 LongArrayList border = new LongArrayList();
                 for (long pos : freshHalo) {
                     if (SeamWrites.joinStoredChunks && seams.hasPending(pos) && !seams.isMergeable(pos)
-                            && !WorldChunkIO.isStored(storedAtStart.full(), pos)) {
+                            && !WorldChunkIO.isStored(storedAtStart.full(), pos) && !held.contains(pos)) {
                         border.add(pos);
                         seams.markStoredRead(pos);
                     }
@@ -1325,6 +1341,7 @@ public class DynamicBatchPreGen {
                 if (!heldFull.isEmpty()) {
                     kept = new LongOpenHashSet(skip);
                     kept.addAll(heldFull);
+                    seams.keptByServer(heldFull);
                 }
             }
             grid.setLightOwnership(heldAtLight, replaced);
@@ -1349,6 +1366,7 @@ public class DynamicBatchPreGen {
             // overwrite ours; when keeping existing chunks, only part-way generated ones.
             dropTailIfDetached();
             LoadedChunkRegeneration.applyLit(level, grid, replaced);
+            LoadedChunkRegeneration.applyWrites(level, seams.intoGenerated(intoSaved));
             LOGGER.debug(grid.getEncodeDiagnostics() + String.format(" | Spawned mobs: %d", grid.getSpawnedEntities()));
             keptExistingChunks.addAndGet(kept.size());
             tail.writesQueued = true;

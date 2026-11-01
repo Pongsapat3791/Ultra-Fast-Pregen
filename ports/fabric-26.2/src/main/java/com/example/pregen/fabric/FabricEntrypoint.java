@@ -1,6 +1,8 @@
 package com.example.pregen.fabric;
 
 import com.example.pregen.PreGenMod;
+import java.util.Map;
+import java.util.TreeMap;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
@@ -14,9 +16,13 @@ public class FabricEntrypoint implements ModInitializer {
         String version = loader.getModContainer(PreGenMod.MOD_ID)
                 .map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
         PreGenMod.init(loader.getConfigDir(), version);
+        Map<String, String> mods = new TreeMap<>();
         for (ModContainer mod : loader.getAllMods()) {
             readCompatibility(mod);
+            // Mods bundled inside another mod's jar come with it; the outer mod names them.
+            if (mod.getContainingMod().isEmpty()) mods.put(mod.getMetadata().getId(), mod.getMetadata().getVersion().getFriendlyString());
         }
+        PreGenMod.platform("fabric", mods);
     }
 
     /**

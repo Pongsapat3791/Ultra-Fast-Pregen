@@ -18,7 +18,7 @@ package io.github.pongsapat3791.ultrafastpregen.api;
  */
 public final class UltraFastPregenApi {
     /** The API version: methods are only added within a version, never changed or removed. */
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     private static volatile PregenApi instance;
 

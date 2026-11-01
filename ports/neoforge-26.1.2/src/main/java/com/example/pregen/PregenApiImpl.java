@@ -4,6 +4,7 @@ import io.github.pongsapat3791.ultrafastpregen.api.PregenApi;
 import io.github.pongsapat3791.ultrafastpregen.api.PregenListener;
 import io.github.pongsapat3791.ultrafastpregen.api.PregenRequest;
 import io.github.pongsapat3791.ultrafastpregen.api.PregenStatus;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenWorlds;
 import io.github.pongsapat3791.ultrafastpregen.api.StartResult;
 import io.github.pongsapat3791.ultrafastpregen.api.UltraFastPregenApi;
 import java.util.List;
@@ -48,7 +49,7 @@ public final class PregenApiImpl implements PregenApi {
         ChunkBatchPlan.Shape shape = request.shape() == PregenRequest.Shape.CIRCLE ? ChunkBatchPlan.Shape.CIRCLE
                 : ChunkBatchPlan.Shape.SQUARE;
         return result(PregenRuns.start(level, Math.multiplyExact(request.radius(), 2), shape, request.centerX(),
-                request.centerZ(), false));
+                request.centerZ(), false, request.batchSize(), request.keepsExistingChunks()));
     }
 
     @Override
@@ -92,6 +93,11 @@ public final class PregenApiImpl implements PregenApi {
     }
 
     @Override
+    public PregenWorlds worlds() {
+        return PregenWorldsImpl.INSTANCE;
+    }
+
+    @Override
     public void declareCompatibleMixin(String mixinClassName) {
         WorldgenCompat.declareCompatibleMixin(mixinClassName, "API");
     }
@@ -117,6 +123,14 @@ public final class PregenApiImpl implements PregenApi {
     }
 
     // ------------------------------------------------------------------ events from DynamicBatchPreGen
+
+    static void fireServerStarted() {
+        INSTANCE.each(PregenListener::onServerStarted);
+    }
+
+    static void fireServerStopping() {
+        INSTANCE.each(PregenListener::onServerStopping);
+    }
 
     static void fireStart(DynamicBatchPreGen task) {
         INSTANCE.each(listener -> listener.onStart(status(task)));

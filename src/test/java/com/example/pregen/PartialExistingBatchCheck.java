@@ -140,6 +140,8 @@ public final class PartialExistingBatchCheck {
             if (only.contains("light")) checkLightParity(level, io, tasks);
             if (only.contains("spawn")) checkSpawnEdge(server, level, tasks);
             if (only.contains("held")) checkHeldDuringBatch(server, level, io, tasks);
+            if (only.contains("ring")) checkHeldRing(server, level, io, tasks);
+            if (only.contains("regenerate")) checkRegenerate(level, tasks);
             if (only.contains("safe")) checkSafeModeRetry(level, io, tasks);
             if (only.contains("tail")) checkTailFailureRetry(level, io, tasks);
             if (only.contains("api")) checkApi(level, tasks);
@@ -234,6 +236,8 @@ public final class PartialExistingBatchCheck {
         checkStoredBiomesMatchSampling(level);
         checkSkipExisting(server, level, io, tasks);
         checkHeldDuringBatch(server, level, io, tasks);
+        checkHeldRing(server, level, io, tasks);
+        checkRegenerate(level, tasks);
         checkBatchSeams(level, io, tasks);
         checkResumeEdges(level, io, tasks);
         checkSafeModeRetry(level, io, tasks);
@@ -1345,6 +1349,140 @@ public final class PartialExistingBatchCheck {
                 return null;
             }).get(10, TimeUnit.SECONDS);
         }
+    }
+
+    /**
+     * Part-generated chunks the server holds around a loaded chunk, where four batches meet. A run
+     * replaces them, and they must end up as the chunks it saved: with the edge writes of the
+     * batches after them, or the server's save loses those, and with their mobs, which that save
+     * leaves out of a full chunk.
+     */
+    private static void checkHeldRing(MinecraftServer server, ServerLevel level, IOWorker io,
+                                      List<DynamicBatchPreGen> tasks) throws Exception {
+        PreGenSaveFile.delete(level);
+        int center = 1_200_000;
+        ChunkPos middle = new ChunkPos(center >> 4, center >> 4);
+        int minChunk = middle.x - 16;
+        server.submit(() -> {
+            level.getChunkSource().addRegionTicket(net.minecraft.server.level.TicketType.FORCED, middle, 1, middle);
+            level.getChunk(middle.x, middle.z);
+            return null;
+        }).get(120, TimeUnit.SECONDS);
+        try {
+            // A step the server is running on a chunk can still write into it while the chunk is replaced.
+            String statuses = "";
+            for (int same = 0, tries = 0; same < 3 && tries < 60; tries++) {
+                Thread.sleep(1000);
+                String now = server.submit(() -> heldStatuses(level, minChunk)).get(10, TimeUnit.SECONDS);
+                same = now.equals(statuses) ? same + 1 : 0;
+                statuses = now;
+            }
+            System.out.println("HELD_RING " + statuses);
+            DynamicBatchPreGen task = DynamicBatchPreGen.area(level, 512, ChunkBatchPlan.Shape.SQUARE, 256, 4, center, center, System.out::println);
+            synchronized (tasks) {
+                tasks.add(task);
+            }
+            task.setSkipExistingChunks(true);
+            task.setReleaseMemoryEachBatch(false);
+            task.start();
+            require("Completed".equals(task.getCurrentStageName()), "A run over held chunks must complete");
+            List<ChunkPos> replaced = server.submit(() -> {
+                var map = (com.example.pregen.mixin.ChunkMapAccessor) level.getChunkSource().chunkMap;
+                List<ChunkPos> found = new ArrayList<>();
+                for (int x = minChunk; x < minChunk + 32; x++) {
+                    for (int z = minChunk; z < minChunk + 32; z++) {
+                        var holder = map.pregen$getVisibleChunk(ChunkPos.asLong(x, z));
+                        var chunk = holder == null ? null : holder.getLastAvailable();
+                        if (chunk instanceof net.minecraft.world.level.chunk.ProtoChunk
+                                && !(chunk instanceof net.minecraft.world.level.chunk.ImposterProtoChunk)
+                                && chunk.getStatus() == net.minecraft.world.level.chunk.ChunkStatus.FULL) {
+                            found.add(new ChunkPos(x, z));
+                        }
+                    }
+                }
+                return found;
+            }).get(10, TimeUnit.SECONDS);
+            require(replaced.size() > 100, "The run must replace the chunks held part-generated: " + replaced.size());
+            var entities = (net.minecraft.world.level.entity.EntitySectionStorage<?>) field(field(level, "entityManager"), "sectionStorage");
+            int mobs = 0;
+            for (ChunkPos pos : replaced) {
+                CompoundTag stored = io.loadAsync(pos).get(10, TimeUnit.SECONDS).orElseThrow();
+                SeamWrites.Final saved = SeamWrites.finalFromStored(stored, level.getMinSection(), level.getSectionsCount());
+                require(saved != null, "The run must have saved held chunk " + pos);
+                List<String> differing = server.submit(() -> differingBlocks(level, pos, saved)).get(10, TimeUnit.SECONDS);
+                require(differing.isEmpty(), "The held copy of " + pos + " must have the blocks saved: " + differing.size() + " differ, "
+                        + differing.subList(0, Math.min(8, differing.size())));
+                int inWorld = (int) server.submit(() -> entities.getExistingSectionsInChunk(pos.toLong())
+                        .mapToLong(section -> section.getEntities().count()).sum()).get(10, TimeUnit.SECONDS).longValue();
+                int inFile = stored.getList("entities", 10).size();
+                require(inWorld == inFile, "The mobs of held chunk " + pos + " must reach the world: " + inWorld + " of " + inFile);
+                mobs += inWorld;
+            }
+            require(mobs > 0, "The held chunks must have mobs");
+            long merged = ((SeamWrites) field(task, "seams")).mergedBack();
+            require(merged > 0, "The batches must write across their edges");
+            System.out.printf(java.util.Locale.ROOT, "HELD_RING_CHECK PASS held=%d mobs=%d edge_writes=%d%n", replaced.size(), mobs, merged);
+        } finally {
+            server.submit(() -> {
+                level.getChunkSource().removeRegionTicket(net.minecraft.server.level.TicketType.FORCED, middle, 1, middle);
+                return null;
+            }).get(10, TimeUnit.SECONDS);
+        }
+    }
+
+    private static String heldStatuses(ServerLevel level, int minChunk) {
+        var map = (com.example.pregen.mixin.ChunkMapAccessor) level.getChunkSource().chunkMap;
+        java.util.Map<String, Integer> counts = new java.util.TreeMap<>();
+        for (int x = minChunk; x < minChunk + 32; x++) {
+            for (int z = minChunk; z < minChunk + 32; z++) {
+                var holder = map.pregen$getVisibleChunk(ChunkPos.asLong(x, z));
+                var chunk = holder == null ? null : holder.getLastAvailable();
+                if (chunk != null) counts.merge(chunk.getClass().getSimpleName() + ":" + chunk.getStatus(), 1, Integer::sum);
+            }
+        }
+        return counts.toString();
+    }
+
+    private static List<String> differingBlocks(ServerLevel level, ChunkPos pos, SeamWrites.Final saved) {
+        var map = (com.example.pregen.mixin.ChunkMapAccessor) level.getChunkSource().chunkMap;
+        var sections = map.pregen$getVisibleChunk(pos.toLong()).getLastAvailable().getSections();
+        List<String> differing = new ArrayList<>();
+        for (int i = 0; i < sections.length; i++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        BlockState held = sections[i].getStates().get(x, y, z);
+                        BlockState file = saved.states()[i].get(x, y, z);
+                        if (held != file) differing.add(i + "/" + x + "," + y + "," + z + " " + held + " in the file " + file);
+                    }
+                }
+            }
+        }
+        return differing;
+    }
+
+    /**
+     * skip_existing_chunks=false: a new run goes over chunks the save file has, and a run that
+     * continues keeps what is saved.
+     */
+    private static void checkRegenerate(ServerLevel level, List<DynamicBatchPreGen> tasks) throws Exception {
+        PreGenSaveFile.delete(level);
+        int center = -1_200_000;
+        DynamicBatchPreGen first = DynamicBatchPreGen.area(level, 256, ChunkBatchPlan.Shape.SQUARE, 128, 4, center, center, System.out::println);
+        DynamicBatchPreGen again = DynamicBatchPreGen.area(level, 256, ChunkBatchPlan.Shape.SQUARE, 128, 4, center, center, System.out::println);
+        DynamicBatchPreGen continued = DynamicBatchPreGen.area(level, 256, ChunkBatchPlan.Shape.SQUARE, 128, 4, center, center, System.out::println);
+        synchronized (tasks) {
+            tasks.addAll(List.of(first, again, continued));
+        }
+        first.start();
+        int total = first.getTotalWorldChunks();
+        require(((AtomicInteger) field(first, "writtenChunks")).get() == total, "The first run must write every chunk");
+        again.setRegenerateRecorded(true);
+        again.start();
+        require(((AtomicInteger) field(again, "writtenChunks")).get() == total, "A new run must generate chunks the save file has");
+        continued.start();
+        require(((AtomicInteger) field(continued, "writtenChunks")).get() == 0, "A run that continues must keep what is saved");
+        System.out.println("REGENERATE_CHECK PASS chunks=" + total);
     }
 
     /**

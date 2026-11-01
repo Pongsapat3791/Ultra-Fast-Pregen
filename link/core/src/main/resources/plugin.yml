@@ -1,0 +1,8 @@
+name: UltraFastPregenLink
+version: '${version}'
+main: io.github.pongsapat3791.ufplink.entry.BukkitEntry
+api-version: '1.20'
+folia-supported: true
+description: Generates the world on other servers with Ultra Fast Pregen.
+author: Pongsapat
+depend: [UltraFastPregen]

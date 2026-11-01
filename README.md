@@ -136,7 +136,8 @@ instead of running out of memory. With room for two batches (about 3.8 GB for ba
 
 `<world>/data/ultrafastpregen.dat` (other dimensions in their own folder) records which chunks Ultra Fast Pregen generated,
 1 bit per chunk, saved after every batch that reached the disk. `/pregen resume` continues from it.
-Stopping and resuming gives the blocks of an uninterrupted run.
+Stopping and resuming gives the blocks of an uninterrupted run. With `skip_existing_chunks=false`, a new `/pregen start` forgets
+what the file has for its area, and `/pregen resume` keeps what that run saved.
 
 ## How it works
 

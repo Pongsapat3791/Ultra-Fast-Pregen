@@ -1,0 +1,29 @@
+{
+	"schemaVersion": 1,
+	"id": "ufpmanager",
+	"version": "${version}",
+	"name": "Ultra Fast Pregen Manager",
+	"description": "A web page to run Ultra Fast Pregen and Ultra Fast Pregen Link by clicking.",
+	"authors": [
+		"Pongsapat"
+	],
+	"contact": {
+		"sources": "https://github.com/Pongsapat3791/Ultra-Fast-Pregen"
+	},
+	"license": "LGPL-3.0",
+	"icon": "assets/ufpmanager/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"io.github.pongsapat3791.ufpmanager.entry.FabricEntry"
+		]
+	},
+	"depends": {
+		"fabricloader": ">=0.14.0",
+		"java": ">=17"
+	},
+	"suggests": {
+		"ultrafastpregen": "*",
+		"ufplink": "*"
+	}
+}

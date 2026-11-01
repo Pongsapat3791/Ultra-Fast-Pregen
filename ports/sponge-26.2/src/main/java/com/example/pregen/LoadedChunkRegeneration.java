@@ -1,27 +1,35 @@
 package com.example.pregen;
 
 import com.example.pregen.mixin.ChunkMapAccessor;
+import com.example.pregen.mixin.LevelChunkTicksAccessor;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.ProblemReporter;
+import net.minecraft.world.entity.EntitySpawnReason;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.ImposterProtoChunk;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.ProtoChunk;
+import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.ticks.ProtoChunkTicks;
 import net.minecraft.world.ticks.SavedTick;
@@ -100,6 +108,53 @@ final class LoadedChunkRegeneration {
         }
     }
 
+    /**
+     * Edge writes from a later batch into chunks this run generated (see SeamWrites#route): those
+     * the server holds get them too, or its next save overwrites them in the file.
+     */
+    static void applyWrites(ServerLevel level, Map<Long, List<SeamWrites.Write>> writes) {
+        MinecraftServer server = level.getServer();
+        long[] positions = writes.keySet().stream().mapToLong(Long::longValue).toArray();
+        for (int start = 0; start < positions.length; start += SLICE) {
+            if (!server.isRunning()) return;
+            int from = start;
+            int to = Math.min(positions.length, start + SLICE);
+            await(server.submit(() -> {
+                ChunkMapAccessor map = (ChunkMapAccessor) level.getChunkSource().chunkMap;
+                for (int index = from; index < to; index++) {
+                    ChunkHolder holder = holder(map, positions[index]);
+                    ChunkAccess held = holder == null ? null : holder.getLatestChunk();
+                    if (held instanceof ImposterProtoChunk imposter) held = imposter.getWrapped();
+                    if (held != null) write(level, held, writes.get(positions[index]));
+                }
+                return null;
+            }), "edge writes into held chunks");
+        }
+    }
+
+    /** Where the block still is what the write found, as SeamWrites#applyToSaved does in the file. */
+    private static void write(ServerLevel level, ChunkAccess held, List<SeamWrites.Write> writes) {
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        boolean changed = false;
+        for (SeamWrites.Write write : writes) {
+            pos.set(write.x(), write.y(), write.z());
+            if (held.getBlockState(pos) != write.before()) continue;
+            if (held instanceof LevelChunk) {
+                level.setBlock(pos, write.after(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
+            } else {
+                held.setBlockState(pos, write.after(), 0);
+                if (!write.after().getFluidState().isEmpty()) held.markPosForPostProcessing(pos.immutable());
+            }
+            held.removeBlockEntity(pos);
+            if (write.blockEntity() != null) held.setBlockEntityNbt(write.blockEntity().copy());
+            changed = true;
+        }
+        if (!changed || held instanceof LevelChunk) return;
+        // As in the file: the server lights the chunk again when it loads it.
+        held.setLightCorrect(false);
+        held.markUnsaved();
+    }
+
     private static <T> T await(CompletableFuture<T> future, String what) {
         try {
             return future.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -135,11 +190,11 @@ final class LoadedChunkRegeneration {
         return true;
     }
 
-    /** A proto chunk's saved ticks, scheduled in a live chunk's ticks as LevelChunkTicks#unpack schedules them. */
-    private static <T> void scheduleSaved(TickContainerAccess<T> saved, TickContainerAccess<T> live, long gameTime) {
+    /** A proto chunk's saved ticks, scheduled in another chunk's ticks as LevelChunkTicks#unpack schedules them. */
+    private static <T> void scheduleSaved(TickContainerAccess<T> saved, TickContainerAccess<T> target, long gameTime) {
         List<SavedTick<T>> ticks = ((ProtoChunkTicks<T>) saved).scheduledTicks();
         int subTick = -ticks.size();
-        for (SavedTick<T> tick : ticks) live.schedule(tick.unpack(gameTime, subTick++));
+        for (SavedTick<T> tick : ticks) target.schedule(tick.unpack(gameTime, subTick++));
     }
 
     private static void replace(ServerLevel level, ChunkAccess held, ProtoChunk generated) {
@@ -162,6 +217,10 @@ final class LoadedChunkRegeneration {
         held.setLightCorrect(generated.isLightCorrect());
         if (live != null) {
             LevelChunk fresh = new LevelChunk(level, generated, null);
+            // A saved full chunk the server holds below full status has no level for its ticks
+            // yet, and Sponge tracks every tick with that level. It gets one until the ticks are in.
+            boolean outsideLevel = ((LevelChunkTicksAccessor<?>) live.getBlockTicks()).pregen$getOnTickAdded() == null;
+            if (outsideLevel) live.registerTickContainerInLevel(level);
             live.unpackTicks(level.getGameTime());
             ChunkPos pos = live.getPos();
             BoundingBox bounds = new BoundingBox(pos.getMinBlockX(), level.getMinY(), pos.getMinBlockZ(),
@@ -174,6 +233,7 @@ final class LoadedChunkRegeneration {
             // chunk's ticks with the level they are registered in, and the fresh chunk's never are.
             scheduleSaved(generated.getBlockTicks(), live.getBlockTicks(), level.getGameTime());
             scheduleSaved(generated.getFluidTicks(), live.getFluidTicks(), level.getGameTime());
+            if (outsideLevel) live.unregisterTickContainerFromLevel(level);
             live.registerAllBlockEntitiesAfterLevelLoad();
             for (int section = 0; section < live.getSections().length; section++) {
                 level.getPoiManager().checkConsistencyWithBlocks(
@@ -186,6 +246,18 @@ final class LoadedChunkRegeneration {
         } else {
             generated.getBlockEntities().values().forEach(held::setBlockEntity);
             generated.getBlockEntityNbts().values().forEach(held::setBlockEntityNbt);
+            // Springs and falling blocks wait on these; a proto chunk keeps them until it goes live.
+            scheduleSaved(generated.getBlockTicks(), held.getBlockTicks(), level.getGameTime());
+            scheduleSaved(generated.getFluidTicks(), held.getFluidTicks(), level.getGameTime());
+            // The server's save of a full chunk leaves a proto chunk's mobs out (see
+            // InMemoryChunkGrid#encodeForSaving), so they go to the world's entity storage now.
+            ((ProtoChunk) held).getEntities().clear();
+            if (!generated.getEntities().isEmpty()) {
+                try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(held.problemPath(), PreGenMod.LOGGER)) {
+                    level.addWorldGenChunkEntities(EntityType.loadEntitiesRecursive(
+                            TagValueInput.create(reporter, level.registryAccess(), generated.getEntities()), level, EntitySpawnReason.LOAD));
+                }
+            }
             ((ProtoChunk) held).setLightEngine(level.getChunkSource().getLightEngine());
             // The server may still have generation steps queued for this chunk; they must not
             // redo terrain or features on it now (see ChunkStepMixin). Light steps still run.

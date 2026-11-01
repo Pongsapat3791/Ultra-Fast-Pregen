@@ -9,6 +9,7 @@ it how their own world generation changes interact with its fast paths.
 - [Quick start](#quick-start)
 - [Runs](#runs)
 - [Events](#events)
+- [Worlds](#worlds)
 - [Compatibility declarations](#compatibility-declarations)
 - [Reference](#reference)
 - [Recipes](#recipes)
@@ -30,7 +31,8 @@ Minecraft version, loader and server Ultra Fast Pregen is built for.
 | `PregenRequest` | The area of a run: a square or a circle around a center, in one dimension |
 | `PregenStatus` | A snapshot of a run: where, how far, how fast, and its state |
 | `StartResult` | Whether a start or resume started a run, and why not |
-| `PregenListener` | Events of runs: start, progress, chunks saved, finish |
+| `PregenListener` | Events of runs: start, progress, chunks saved, finish; and of the server: started, stopping |
+| `PregenWorlds` | The running server's worlds, for mods that bring chunks into a world from elsewhere (API version 2) |
 
 ## Setup
 
@@ -222,6 +224,8 @@ pregen.addListener(new PregenListener() {
 | `onProgress(PregenStatus)` | About every 3 seconds while a run is active |
 | `onChunksSaved(String dimension, long[] chunks)` | A batch of chunks reached the region files, fully generated and lit. Chunks that already existed and were kept are not included. From here the server loads them from disk like any saved chunk |
 | `onFinish(PregenStatus)` | A run ended: `status.state()` is `COMPLETED`, `STOPPED` or `FAILED` |
+| `onServerStarted()` | A server, dedicated or a singleplayer world's, ticks for the first time. On the server thread. API version 2 |
+| `onServerStopping()` | The server starts stopping. On the server thread. API version 2 |
 
 Every method has an empty default: implement only what you need. `addListener` with the same listener twice has
 no effect; `removeListener` removes it.
@@ -229,6 +233,39 @@ no effect; `removeListener` removes it.
 **Threads:** listeners are called on Ultra Fast Pregen's own threads, never on the server thread. Keep them short,
 and hand anything that touches the game to the server, for example `server.execute(() -> ...)`. A listener that
 throws is logged and the run goes on; each listener gets its own copy of the `chunks` array.
+
+## Worlds
+
+`PregenApi.worlds()`, from 15.1 (API version 2), gives what a mod needs to bring chunks into a world from elsewhere,
+without naming a Minecraft class: folders, what generation depends on, separate worlds, and chunks read and written
+through the server's own storage. Everything that depends on Minecraft's version or the loader is behind it, so such a
+mod can be one jar for every version. Ultra Fast Pregen Link is built this way.
+
+```java
+PregenApi pregen = UltraFastPregenApi.get();
+if (pregen.apiVersion() < 2) return;                   // an Ultra Fast Pregen before 15.1
+PregenWorlds worlds = pregen.worlds();
+
+// A world of its own that generates like the overworld. Fill its folder first, if the run must join chunks you have.
+Path folder = worlds.separateWorldFolder("minecraft:overworld", "mymod:scratch");
+String separate = worlds.openSeparateWorld("minecraft:overworld", "mymod:scratch");   // Bukkit gives it another id
+pregen.start(PregenRequest.square(separate, 5000, 5000, 512).withBatchSize(1024).keepingExistingChunks());
+
+// When onFinish comes: close it, read its region files, and write what you want into the real dimension.
+worlds.closeSeparateWorld(separate);
+worlds.writeChunks("minecraft:overworld", PregenWorlds.Store.CHUNKS, chunks, PregenWorlds.WriteRule.ABSENT, false);
+```
+
+- **Separate worlds** open with the same generator and seed as the dimension they copy, and what their folder already
+  holds is part of them. They are not saved in the server's list of worlds: a separate world still open when the server
+  stops is closed with it and does not open again by itself. Folia cannot create a world while it runs, so
+  `openSeparateWorld` throws `IOException` there.
+- **Where a separate world is** depends on the server: use `separateWorldFolder`, which creates nothing, and never build
+  the path yourself. On Bukkit `openSeparateWorld` returns another id than the one asked for.
+- **Writes** go through the thread that owns the store, in short tasks, so the server's own loads and saves run in
+  between. A chunk the server is saving always stays. Leave out `heldChunks` before writing: on Paper and Folia the check
+  and the write of a chunk are two steps, so a chunk the server holds could be overwritten otherwise.
+- **Frames:** a chunk's `frame` is its record in a region file, `[length][compression id][compressed NBT]`.
 
 ## Compatibility declarations
 
@@ -281,7 +318,7 @@ still force Minecraft's steps for everything with `terrain_pipeline=vanilla`.
 
 | Member | Description |
 |---|---|
-| `static final int VERSION` | The API version (now 1). Methods are only added within a version, never changed or removed |
+| `static final int VERSION` | The API version (now 2: 15 has 1). Methods are only added, never changed or removed. A mod that needs a later version compares `apiVersion()` |
 | `static PregenApi get()` | The API; throws `IllegalStateException` before Ultra Fast Pregen has initialized |
 
 ### `PregenApi`
@@ -296,6 +333,7 @@ still force Minecraft's steps for everything with `terrain_pipeline=vanilla`.
 | `boolean isRunning()` | Whether a run is active |
 | `Optional<PregenStatus> status()` | The active run, or else the last one since the server started |
 | `void addListener(PregenListener)` / `removeListener` | Events of every later run |
+| `PregenWorlds worlds()` | See [Worlds](#worlds). API version 2 |
 | `void declareCompatibleMixin(String mixinClassName)` | See [Compatibility declarations](#compatibility-declarations) |
 | `void requireMinecraftTerrain(String modId, String reason)` | See [Compatibility declarations](#compatibility-declarations) |
 
@@ -307,7 +345,10 @@ Every method is thread-safe.
 |---|---|
 | `static PregenRequest square(String dimension, int centerX, int centerZ, int radius)` | Blocks `center - radius` to `center + radius - 1` on both axes |
 | `static PregenRequest circle(String dimension, int centerX, int centerZ, int radius)` | Every chunk whose center lies within the radius |
+| `PregenRequest withBatchSize(int blocks)` | This run's batch size instead of the config's, for a run that must be one batch. A batch too large for the free heap still shrinks. API version 2 |
+| `PregenRequest keepingExistingChunks()` | Keeps chunks that exist, whatever `skip_existing_chunks` says, for a run that must join chunks written beforehand. API version 2 |
 | `dimension()`, `centerX()`, `centerZ()`, `radius()`, `shape()` | The request; `shape()` is `Shape.SQUARE` or `Shape.CIRCLE` |
+| `batchSize()`, `keepsExistingChunks()` | What the two above asked for; `batchSize()` is 0 for the config's |
 | `static final int MAX_RADIUS` | 50,000 blocks: an area 100,000 blocks across, like `/pregen start 100` |
 
 The factories throw `IllegalArgumentException` for a radius outside 1..`MAX_RADIUS`, and
@@ -337,8 +378,31 @@ status when it started).
 
 ### `PregenListener`
 
-`onStart(PregenStatus)`, `onProgress(PregenStatus)`, `onChunksSaved(String dimension, long[] chunks)` and
-`onFinish(PregenStatus)`, all with empty defaults. See [Events](#events).
+`onStart(PregenStatus)`, `onProgress(PregenStatus)`, `onChunksSaved(String dimension, long[] chunks)`,
+`onFinish(PregenStatus)`, `onServerStarted()` and `onServerStopping()`, all with empty defaults. See [Events](#events).
+
+### `PregenWorlds`
+
+Any thread, unless a method says otherwise; methods that wait for the server or the disk block. Methods that need a
+server throw `IllegalStateException` when none is running.
+
+| Method | Description |
+|---|---|
+| `boolean serverRunning()` | Whether a server is running |
+| `Path worldFolder()` | The world's folder, the one with level.dat |
+| `Path serverFolder()` | The folder relative paths in commands start from |
+| `List<String> dimensions()` | The ids of the dimensions loaded now |
+| `Path dimensionFolder(String dimension)` | The folder with a loaded dimension's region and entities folders |
+| `ServerFacts facts()` | Minecraft's version, the chunk format, the seed, the loader, every mod or plugin, the datapacks, and a hash of each dimension's generator and of what it gives at 64 places. Can take a second or two |
+| `int dataVersion()` | Minecraft's chunk format, at once |
+| `int neighborChunks()` | How far around an area chunks shape what a run generates |
+| `String openSeparateWorld(String like, String id)` | Opens a separate world and returns its id: the same, unless the platform names worlds itself |
+| `Path separateWorldFolder(String like, String id)` | The folder `openSeparateWorld` will use. Nothing is created |
+| `void closeSeparateWorld(String id)` | Saves and closes it. Its folder stays |
+| `List<StoredChunk> readChunks(String dimension, long[] chunks)` | The chunks the store has of these, with a save the server has queued |
+| `long[] heldChunks(String dimension, long[] chunks)` | Of these, those the server holds in memory in any state |
+| `WriteResult writeChunks(String dimension, Store store, List<ChunkWrite> chunks, WriteRule rule, boolean dryRun)` | Writes chunks or a chunk's mobs (`Store.CHUNKS`, `Store.ENTITIES`). `WriteRule.ABSENT` only where the store has nothing; `ABSENT_OR_PART_GENERATED` also over a part-generated chunk when the new one is full; `ABSENT_OR_UNCHANGED` also over a chunk that still has the hash in `ChunkWrite.baseHash` |
+| `void addCommand(String name, CommandHandler handler)` | Adds a command for operators and the owner of a singleplayer world. Call it while your mod initializes |
 
 ## Recipes
 

@@ -3,7 +3,8 @@
 One plugin jar for **CraftBukkit, Spigot, Paper and Folia** on Minecraft 26.2, with the commands, the config file and the
 save file of the mod: see the [main README](../../README.md).
 
-- **Requires:** a CraftBukkit, Spigot, Paper or Folia 26.2 server and Java 25
+- **Requires:** a CraftBukkit, Spigot, Paper or Folia 26.2 server and Java 25; on another version the plugin does not
+  run, and the log says why ([tests](../../COMPATIBILITY.md#on-other-minecraft-versions))
 - **File:** `build/libs/ultrafastpregen-bukkit-26.2-15.1.jar`; `15.1` is the update round, the same for every build
 - **Install:** put the jar in the server's `plugins` folder; players do not need anything
 - **Permission:** `ultrafastpregen.command` for `/pregen` and for seeing a run's boss bar (operators have it by default);
@@ -62,19 +63,32 @@ CraftBukkit and Spigot 26.2 (BuildTools, 4648-96ae8cd), Paper 26.2 build 134 and
 with an Intel Xeon E5-2670 v2 (10 cores / 20 threads) and a 10 GB heap; a fresh world with seed 42, around
 x = z = 100,000.
 
-**15.1** (the jar with SHA-1 `60314c701c76077eaf9fb42ae67079a96c5442a4`), on the same servers:
+**15.1** (the jar with SHA-1 `8b445681dedd031ad4a5c5727a964006a1246d48`), on the same servers:
 
 - **1,000 × 1,000 blocks in each dimension:** every chunk fully generated, lit and readable, no error in the log;
-  Overworld, Nether and End in chunks/s: CraftBukkit 117.7, 237.5, 468.5; Spigot 116.8, 240.6, 494.6; Paper 134.2,
-  325.4, 731.7; Folia 143.9, 327.4, 752.2.
+  Overworld, Nether and End in chunks/s: CraftBukkit 116.4, 235.4, 438.2; Spigot 121.4, 243.5, 462.8; Paper 133.9,
+  325.1, 740.8; Folia 143.4, 328.7, 752.1.
 - **Stopping the server during a run** (3,000 × 3,000 blocks, stopped after 3 of 9 batches): the run continued after the
-  restart, and all 35,344 chunks were generated (Spigot 141.1, Paper 155.5, Folia 153.5 chunks/s).
+  restart, and all 35,344 chunks were generated (Spigot 141.7, Paper 162.5, Folia 152.0 chunks/s, with other servers
+  running on the machine).
+- **`skip_existing_chunks=false` through the commands** on Spigot, Paper and Folia: a run saved 4,096 chunks, the same
+  area with the setting off generated all 4,096 again, and `/pregen resume` kept them.
+- **In the game** with a real client on all four servers: a player in the area during a run, and a second run with
+  `skip_existing_chunks=false`.
+- **Against the build of 15.1 tested below** (SHA-1 `64abd888d12609ec325400b2cf937493b1f5d53b`), on Spigot,
+  1,000 × 1,000 blocks in each dimension: the same blocks and light in all 4,096 chunks of each.
+
+That earlier build of 15.1:
+
 - **The End over 3,000 × 3,000 blocks**, twice with the 15 jar and twice with 15.1 on Spigot: the two worlds of each
   pair were the same block for block, and the 10 End cities had the same pieces with both jars.
 - **All three dimensions in one server**, three times with the 15 jar and three times with 15.1 on Spigot: the End city
   at chunk (6224, 6222) had its 88 pieces every time. The End city race fixed in 15.1
   ([changelog](../../CHANGELOG.md#151)) did not show with the 15 plugin in these tests, so they do not show the fix at
   work; it showed in the tests of the mods on Fabric 1.21.
+- **On other Minecraft versions** (Paper and Folia 26.1.2 and 26.3): the server started and went on running, no chunk
+  was written, and on 26.3 the plugin logged why it cannot run and disabled itself
+  ([details](../../COMPATIBILITY.md#on-other-minecraft-versions)).
 
 **15** (the jar with SHA-1 `c13d8f059539aa04628db6f7282e9ffa624ba9d6`), the tests below:
 

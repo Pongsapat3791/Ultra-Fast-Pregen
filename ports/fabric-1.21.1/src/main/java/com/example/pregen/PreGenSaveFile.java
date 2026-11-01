@@ -146,6 +146,25 @@ final class PreGenSaveFile {
         }
     }
 
+    /** Forgets the chunks of an area, for a run that generates them again. */
+    synchronized void forget(ChunkBatchPlan plan) {
+        var entries = regions.long2ObjectEntrySet().iterator();
+        while (entries.hasNext()) {
+            Long2ObjectMap.Entry<long[]> entry = entries.next();
+            int regionX = ChunkPos.getX(entry.getLongKey());
+            int regionZ = ChunkPos.getZ(entry.getLongKey());
+            long[] bits = entry.getValue();
+            for (int x = 0; x < 32; x++) {
+                for (int z = 0; z < 32; z++) {
+                    if (!plan.containsChunk(regionX << 5 | x, regionZ << 5 | z)) continue;
+                    int bit = bitIndex(x, z);
+                    bits[bit >>> 6] &= ~(1L << bit);
+                }
+            }
+            if (Arrays.stream(bits).allMatch(word -> word == 0L)) entries.remove();
+        }
+    }
+
     synchronized long doneChunks() {
         long count = 0;
         for (long[] bits : regions.values()) {

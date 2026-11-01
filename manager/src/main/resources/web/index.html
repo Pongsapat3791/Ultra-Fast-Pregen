@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UFP Manager</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><span class="mark" aria-hidden="true"></span>Ultra Fast Pregen <span class="brand-sub">Manager</span></div>
+    <nav class="tabs" role="tablist" aria-label="Sections">
+      <button class="tab" role="tab" data-tab="pregen" id="tab-pregen" hidden>Pregen</button>
+      <button class="tab" role="tab" data-tab="link" id="tab-link" hidden>Link</button>
+      <button class="tab" role="tab" data-tab="server" id="tab-server">Server</button>
+    </nav>
+    <div class="health" id="health"><span class="dot" id="dot"></span><span id="health-text">Connecting</span></div>
+  </header>
+
+  <main class="layout">
+    <section class="mapbox" aria-label="World map">
+      <canvas id="map"></canvas>
+      <div class="map-top">
+        <label class="sr-only" for="dimension">World</label>
+        <select id="dimension" class="control"></select>
+        <div class="zoom">
+          <button class="icon wide" id="terrain" aria-pressed="false" title="Show the chunks on disk as they look from above">Terrain</button>
+          <button class="icon" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+          <button class="icon" id="zoom-out" title="Zoom out" aria-label="Zoom out">&minus;</button>
+          <button class="icon wide" id="fit" title="Show the whole area">Fit</button>
+        </div>
+      </div>
+      <div class="map-note" id="map-note"></div>
+      <div class="map-bottom">
+        <div class="legend" id="legend"></div>
+        <div class="coords" id="coords"></div>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="panel" id="panel-pregen" role="tabpanel" hidden>
+        <section class="card" id="run-card" hidden>
+          <div class="card-head">
+            <h2>Current run</h2>
+            <span class="badge" id="run-state"></span>
+          </div>
+          <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="run-meter"><span id="run-bar"></span></div>
+          <div class="big" id="run-percent"></div>
+          <dl class="stats">
+            <div><dt>Speed</dt><dd id="run-speed"></dd></div>
+            <div><dt>Time left</dt><dd id="run-eta"></dd></div>
+            <div><dt>Elapsed</dt><dd id="run-elapsed"></dd></div>
+            <div><dt>Chunks</dt><dd id="run-chunks"></dd></div>
+            <div><dt>Kept</dt><dd id="run-kept"></dd></div>
+            <div><dt>World</dt><dd id="run-world"></dd></div>
+          </dl>
+          <p class="muted" id="run-stage"></p>
+          <div class="row">
+            <button class="danger" id="stop">Stop after this batch</button>
+            <button id="resume" hidden>Resume</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <h2>New run</h2>
+          <p class="hint">Click the map to set the center.</p>
+          <div class="field">
+            <span class="label">Shape</span>
+            <div class="segments" role="radiogroup" aria-label="Shape">
+              <button class="segment" role="radio" data-shape="square">Square</button>
+              <button class="segment" role="radio" data-shape="circle">Circle</button>
+            </div>
+          </div>
+          <div class="grid2">
+            <label class="field"><span class="label">Center X</span><input id="center-x" type="number" step="1" value="0"></label>
+            <label class="field"><span class="label">Center Z</span><input id="center-z" type="number" step="1" value="0"></label>
+          </div>
+          <label class="field"><span class="label" id="size-label">Width in blocks</span>
+            <input id="size" type="number" min="2" max="100000" step="100" value="2000">
+          </label>
+          <div class="chips" id="presets"></div>
+          <p class="estimate" id="estimate"></p>
+          <button class="primary" id="start">Start</button>
+        </section>
+
+        <section class="card" id="finished-card" hidden>
+          <h2>Finished</h2>
+          <ul class="list" id="finished"></ul>
+        </section>
+      </div>
+
+      <div class="panel" id="panel-link" role="tabpanel" hidden>
+        <section class="card" id="setup-card" hidden>
+          <h2>Set up a network</h2>
+          <p class="hint">Make the server players play on the host, then join it from the others. Every machine needs the same Minecraft version, seed, mods and datapacks.</p>
+          <button class="primary" id="become-host">Make this server the host</button>
+          <label class="field"><span class="label">Or paste the invite of a host</span><input id="join-code" type="text" autocomplete="off" spellcheck="false"></label>
+          <button id="join">Join that host</button>
+        </section>
+
+        <section class="card" id="invite-card" hidden>
+          <h2>Invite a machine</h2>
+          <p class="hint">Run this line on the other server, or paste it in its Link tab. Keep it private: anyone with it can send chunks here.</p>
+          <textarea id="invite-code" rows="4" readonly spellcheck="false"></textarea>
+          <button class="primary" id="copy-invite">Copy</button>
+          <label class="field"><span class="label">Address they reach this server at</span><input id="invite-address" type="text" autocomplete="off" spellcheck="false" placeholder="All of this machine's addresses"></label>
+          <p class="hint" id="invite-port"></p>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Machines</h2>
+            <span class="badge" id="link-role"></span>
+          </div>
+          <p class="hint" id="link-role-text"></p>
+          <ul class="machines" id="machines"></ul>
+          <div id="refused-box" hidden>
+            <h3>Refused</h3>
+            <ul class="list" id="refused"></ul>
+          </div>
+          <button id="leave" hidden>Leave the network</button>
+        </section>
+
+        <section class="card" id="link-run-card" hidden>
+          <div class="card-head">
+            <h2>Distributed run</h2>
+            <span class="badge" id="link-run-state"></span>
+          </div>
+          <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="link-meter"><span id="link-bar"></span></div>
+          <div class="big" id="link-percent"></div>
+          <dl class="stats">
+            <div><dt>Tiles</dt><dd id="link-tiles"></dd></div>
+            <div><dt>Time left</dt><dd id="link-eta"></dd></div>
+            <div><dt>Elapsed</dt><dd id="link-elapsed"></dd></div>
+            <div><dt>New chunks</dt><dd id="link-written"></dd></div>
+            <div><dt>Joined at edges</dt><dd id="link-replaced"></dd></div>
+            <div><dt>Left alone</dt><dd id="link-kept"></dd></div>
+          </dl>
+          <p class="muted" id="link-waiting"></p>
+          <div class="row"><button class="danger" id="link-stop">Stop after these tiles</button></div>
+        </section>
+
+        <section class="card" id="plan-card" hidden>
+          <h2>Plan</h2>
+          <p class="hint" id="plan-hint">Choose the area, then make a plan. Click the map to set the center.</p>
+          <div class="grid3">
+            <label class="field"><span class="label">Center X</span><input id="link-x" type="number" step="1" value="0"></label>
+            <label class="field"><span class="label">Center Z</span><input id="link-z" type="number" step="1" value="0"></label>
+            <label class="field"><span class="label">Size, 1000s</span><input id="link-size" type="number" min="1" max="100" step="1" value="2"></label>
+          </div>
+          <button id="make-plan">Make a plan</button>
+          <div id="plan-box" hidden>
+            <h3>Who generates what</h3>
+            <p class="hint">Pick a machine, then drag over tiles on the map. Right-drag moves the map.</p>
+            <ul class="brushes" id="brushes"></ul>
+            <label class="check"><input id="help-others" type="checkbox" checked><span>Machines with nothing left take tiles of the others</span></label>
+            <div class="row">
+              <button class="primary" id="plan-start">Start this plan</button>
+              <button id="plan-clear">Discard</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card" id="client-card" hidden>
+          <h2>This client</h2>
+          <dl class="stats" id="client-stats"></dl>
+        </section>
+
+        <section class="card" id="local-card" hidden>
+          <h2>This server alone</h2>
+          <p class="hint">Generates the area above in a separate world, then adds the chunks this world lacks.</p>
+          <p class="muted" id="local-activity"></p>
+          <div class="row">
+            <button id="local-start">Start here</button>
+            <button id="local-resume">Resume</button>
+            <button class="danger" id="local-stop">Stop</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="panel" id="panel-server" role="tabpanel" hidden>
+        <section class="card" id="settings-card" hidden>
+          <h2>Pregen settings</h2>
+          <p class="hint">Used from the next run on, like /pregen set.</p>
+          <label class="field"><span class="label">Batch size in blocks (512 to 10,000)</span><input id="set-batch_size" type="number" min="512" max="10000" step="100"></label>
+          <label class="field"><span class="label">Threads (max, or 1 to 128)</span><input id="set-threads" type="text" spellcheck="false"></label>
+          <label class="field"><span class="label">Features on all threads</span>
+            <select id="set-parallel_features"><option value="auto">Auto</option><option value="always">Always</option></select>
+          </label>
+          <label class="field"><span class="label">Terrain path</span>
+            <select id="set-terrain_pipeline"><option value="auto">Auto</option><option value="fused">Fast path</option><option value="vanilla">Minecraft's own</option></select>
+          </label>
+          <label class="check"><input id="set-skip_existing_chunks" type="checkbox"><span>Keep chunks that exist</span></label>
+          <label class="check"><input id="set-resume_after_restart" type="checkbox"><span>Continue a run after a restart</span></label>
+          <label class="check"><input id="set-release_memory_each_batch" type="checkbox"><span>Free memory after each batch</span></label>
+          <button class="primary" id="save-settings">Save</button>
+        </section>
+        <section class="card">
+          <h2>This server</h2>
+          <dl class="stats" id="server-stats"></dl>
+        </section>
+        <section class="card">
+          <button id="forget">Log out of this browser</button>
+        </section>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="login">
+    <form method="dialog" id="login-form">
+      <h2>Log in</h2>
+      <p class="hint">Run <code>/ufpmanager</code> on the server and enter the code it shows. The line <code>token=</code> of <code>ufpmanager.conf</code> works too. This browser stays logged in.</p>
+      <label class="field"><span class="label">Code or token</span><input id="token" type="text" autocomplete="off" spellcheck="false" required></label>
+      <p class="error" id="login-error" hidden>That was refused. A code works once, for 10 minutes.</p>
+      <button class="primary" id="login-go" type="submit">Open</button>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

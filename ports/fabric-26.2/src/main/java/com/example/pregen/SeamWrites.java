@@ -69,6 +69,8 @@ final class SeamWrites {
     /** Per region, the chunks this run handled (written or kept) and the ones it wrote. */
     private final Map<Long, long[]> handled = new HashMap<>();
     private final Map<Long, long[]> written = new HashMap<>();
+    /** Per region, the chunks this run wrote and the server did not keep as its own meanwhile. */
+    private final Map<Long, long[]> generated = new HashMap<>();
     /**
      * A saved chunk as a later batch's halo needs it: final block states (by section index), the
      * heightmaps it was saved with, and the writes merged into it since (see InMemoryChunkGrid
@@ -94,13 +96,35 @@ final class SeamWrites {
         pending.clear();
         handled.clear();
         written.clear();
+        generated.clear();
         finals.clear();
         storedRead.clear();
     }
 
     synchronized void markHandled(long chunk, boolean wrote) {
         set(handled, chunk);
-        if (wrote) set(written, chunk);
+        if (wrote) {
+            set(written, chunk);
+            set(generated, chunk);
+        }
+    }
+
+    /** Chunks of a batch that the server finished itself meanwhile: its blocks stay, not this run's. */
+    synchronized void keptByServer(Iterable<Long> chunks) {
+        for (long chunk : chunks) clear(generated, chunk);
+    }
+
+    synchronized boolean isGenerated(long chunk) {
+        return isSet(generated, chunk);
+    }
+
+    /** The writes for chunks this run generated (see LoadedChunkRegeneration#applyWrites). */
+    synchronized Map<Long, List<Write>> intoGenerated(Map<Long, List<Write>> writes) {
+        Map<Long, List<Write>> ours = new HashMap<>();
+        for (Map.Entry<Long, List<Write>> entry : writes.entrySet()) {
+            if (isSet(generated, entry.getKey())) ours.put(entry.getKey(), entry.getValue());
+        }
+        return ours;
     }
 
     /** A fully generated chunk this run did not write but may merge writes into (see class doc). */
@@ -155,7 +179,7 @@ final class SeamWrites {
      * Routes one batch's writes into its neighbors. Returns the writes for stored, fully
      * generated chunks (saved by this run or before it), to merge into them. Writes for chunks
      * not generated yet are kept: for chunks of later batches until those run, and for every
-     * one of them in the part-generated chunk saved with them. Writes for chunks the server
+     * one of them in the part-generated chunk saved with them. Writes for other chunks the server
      * holds, or kept chunks that cannot take writes, are dropped.
      */
     synchronized Map<Long, List<Write>> route(Map<Long, List<Write>> writes, ChunkBatchPlan plan,
@@ -167,9 +191,8 @@ final class SeamWrites {
                 backToSaved.put(chunk, entry.getValue());
                 mergedBack += entry.getValue().size();
                 updateFinal(chunk, entry.getValue());
-            } else if (heldByServer.test(chunk)) {
-                continue;
-            } else if (!plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk)) || !isSet(handled, chunk)) {
+            } else if (plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
+                    ? !isSet(handled, chunk) : !heldByServer.test(chunk)) {
                 pending.computeIfAbsent(chunk, key -> new ArrayList<>()).addAll(entry.getValue());
             }
         }
@@ -293,13 +316,14 @@ final class SeamWrites {
      * source instead and corrupts the copy; copies made by copy() are only safe to read.
      */
     static PalettedContainer<BlockState> writableCopy(PalettedContainer<BlockState> source) {
-        PalettedContainer<BlockState> copy = new PalettedContainer<>(Blocks.AIR.defaultBlockState(), STATES);
-        if (!source.maybeHas(state -> !state.isAir())) return copy;
+        BlockState air = Blocks.AIR.defaultBlockState();
+        PalettedContainer<BlockState> copy = new PalettedContainer<>(air, STATES);
+        if (!source.maybeHas(state -> state != air)) return copy;
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     BlockState state = source.get(x, y, z);
-                    if (!state.isAir()) copy.getAndSetUnchecked(x, y, z, state);
+                    if (state != air) copy.getAndSetUnchecked(x, y, z, state);
                 }
             }
         }
@@ -472,6 +496,14 @@ final class SeamWrites {
         int z = ChunkPos.getZ(chunk);
         int index = (x & 31) * 32 + (z & 31);
         bits.computeIfAbsent(ChunkPos.pack(x >> 5, z >> 5), key -> new long[16])[index >>> 6] |= 1L << index;
+    }
+
+    private static void clear(Map<Long, long[]> bits, long chunk) {
+        int x = ChunkPos.getX(chunk);
+        int z = ChunkPos.getZ(chunk);
+        long[] region = bits.get(ChunkPos.pack(x >> 5, z >> 5));
+        int index = (x & 31) * 32 + (z & 31);
+        if (region != null) region[index >>> 6] &= ~(1L << index);
     }
 
     private static boolean isSet(Map<Long, long[]> bits, long chunk) {

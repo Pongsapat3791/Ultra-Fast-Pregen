@@ -33,8 +33,17 @@ public final class UltraFastPregenPlugin extends JavaPlugin implements TabExecut
     public void onEnable() {
         server = ((CraftServer) getServer()).getServer();
         Platform.plugin = this;
+        try {
+            Platform.checkInternals();
+        } catch (IllegalStateException | LinkageError failure) {
+            // api-version keeps the jar off older servers only; the plugin stops here on a later one.
+            Throwable cause = failure.getCause() != null ? failure.getCause() : failure;
+            getLogger().severe("This jar is for Minecraft 26.2 and cannot run on this server: " + cause.getMessage());
+            server = null;
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         PreGenMod.init(getDataFolder().toPath(), getDescription().getVersion());
-        Platform.checkInternals();
         getLogger().info("Running on " + Platform.name() + ".");
         PregenRuns.onServerCreated(server);
         PreGenCommand.register(dispatcher);
@@ -49,6 +58,13 @@ public final class UltraFastPregenPlugin extends JavaPlugin implements TabExecut
         Platform.runEveryTick(this, () -> {
             if (PregenRuns.isRunning()) ServerAccess.keepAwake(server);
         });
+    }
+
+    /** A command of another plugin or mod (see PregenWorlds.addCommand), through the server's own command map. */
+    static void addCommand(Command command) {
+        CraftServer server = (CraftServer) Platform.plugin.getServer();
+        server.getCommandMap().register("ufp", command);
+        server.syncCommands();
     }
 
     @Override

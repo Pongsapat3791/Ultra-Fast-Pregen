@@ -47,12 +47,13 @@ public class PreGenCommand {
      * the command would look missing, so the owner may pregenerate anyway. Other players (a server,
      * LAN guests) need op level 2.
      */
-    private static boolean isSingleplayerOwner(CommandSourceStack source) {
+    static boolean isSingleplayerOwner(CommandSourceStack source) {
         net.minecraft.server.level.ServerPlayer player = source.getPlayer();
         return player != null && source.getServer().isSingleplayerOwner(player.getGameProfile());
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext buildContext, Commands.CommandSelection selection) {
+        PregenWorldsImpl.INSTANCE.registerCommands(dispatcher);
         dispatcher.register(Commands.literal("pregen")
             .requires(source -> source.hasPermission(2) || isSingleplayerOwner(source))
             .then(Commands.literal("start")

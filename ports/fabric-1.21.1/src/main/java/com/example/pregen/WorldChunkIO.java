@@ -7,7 +7,9 @@ import com.example.pregen.mixin.RegionFileInvoker;
 import com.example.pregen.mixin.RegionFileStorageAccessor;
 import com.example.pregen.mixin.PendingStoreAccessor;
 import com.mojang.datafixers.util.Either;
+import io.github.pongsapat3791.ultrafastpregen.api.PregenWorlds;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongCollection;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
@@ -532,6 +534,129 @@ final class WorldChunkIO {
         if (ours != null && storage.pregen$getRegionCache().get(regionKey) == ours) {
             storage.pregen$getRegionCache().remove(regionKey);
             ours.close();
+        }
+    }
+
+    /** See PregenWorlds.writeChunks. */
+    PregenWorlds.WriteResult writeFrames(List<PregenWorlds.ChunkWrite> chunks, PregenWorlds.WriteRule rule, boolean dryRun)
+            throws IOException {
+        Map<Long, List<PregenWorlds.ChunkWrite>> byRegion = new LinkedHashMap<>();
+        for (PregenWorlds.ChunkWrite chunk : chunks) {
+            ChunkPos pos = new ChunkPos(chunk.chunk());
+            byRegion.computeIfAbsent(ChunkPos.asLong(pos.getRegionX(), pos.getRegionZ()), key -> new ArrayList<>()).add(chunk);
+        }
+        return dryRun ? findWritable(byRegion, rule) : writeRegions(byRegion, rule);
+    }
+
+    /** Nothing is created: only each stored chunk's status is read. A check does not compare hashes. */
+    private PregenWorlds.WriteResult findWritable(Map<Long, List<PregenWorlds.ChunkWrite>> byRegion, PregenWorlds.WriteRule rule)
+            throws IOException {
+        StoredChunks stored = PregenWorldsImpl.join(findStoredInRegions(new LongOpenHashSet(byRegion.keySet())));
+        LongArrayList written = new LongArrayList();
+        int replaced = 0;
+        int kept = 0;
+        for (List<PregenWorlds.ChunkWrite> region : byRegion.values()) {
+            for (PregenWorlds.ChunkWrite chunk : region) {
+                if (!isStored(stored.present(), chunk.chunk())) {
+                    written.add(chunk.chunk());
+                } else if (rule == PregenWorlds.WriteRule.ABSENT_OR_PART_GENERATED && chunk.fullyGenerated()
+                        && !isStored(stored.full(), chunk.chunk())) {
+                    written.add(chunk.chunk());
+                    replaced++;
+                } else {
+                    kept++;
+                }
+            }
+        }
+        return new PregenWorlds.WriteResult(written.toLongArray(), replaced, kept);
+    }
+
+    private PregenWorlds.WriteResult writeRegions(Map<Long, List<PregenWorlds.ChunkWrite>> byRegion, PregenWorlds.WriteRule rule)
+            throws IOException {
+        LongArrayList written = new LongArrayList();
+        int[] counts = new int[2];
+        for (Map.Entry<Long, List<PregenWorlds.ChunkWrite>> region : byRegion.entrySet()) {
+            List<PregenWorlds.ChunkWrite> chunks = region.getValue();
+            for (int start = 0; start < chunks.size(); start += writeBatch) {
+                List<PregenWorlds.ChunkWrite> batch = chunks.subList(start, Math.min(chunks.size(), start + writeBatch));
+                boolean lastOfRegion = start + writeBatch >= chunks.size();
+                PregenWorldsImpl.join(thread.<Boolean>submit(() -> {
+                    try {
+                        writeFrameBatch(region.getKey(), batch, lastOfRegion, rule, written, counts);
+                        return Either.left(true);
+                    } catch (IOException | RuntimeException failure) {
+                        return Either.right(failure);
+                    }
+                }));
+            }
+        }
+        return new PregenWorlds.WriteResult(written.toLongArray(), counts[0], counts[1]);
+    }
+
+    /** On the storage thread, so the check and the write of a chunk are one step. */
+    private void writeFrameBatch(long regionKey, List<PregenWorlds.ChunkWrite> chunks, boolean lastOfRegion,
+                                 PregenWorlds.WriteRule rule, LongArrayList written, int[] counts) throws IOException {
+        RegionFileStorageAccessor storage = thread.storage();
+        try {
+            RegionFile region = fastHandle(storage, regionKey);
+            for (PregenWorlds.ChunkWrite chunk : chunks) {
+                ChunkPos pos = new ChunkPos(chunk.chunk());
+                if (thread.queued(pos) != null) {
+                    // The server is saving this chunk: its save would follow ours, so it stays.
+                    counts[1]++;
+                    continue;
+                }
+                if (region.hasChunk(pos)) {
+                    if (!mayReplace(region, pos, chunk, rule)) {
+                        counts[1]++;
+                        continue;
+                    }
+                    counts[0]++;
+                }
+                ((RegionFileInvoker) region).pregen$write(pos, chunk.frame().duplicate());
+                written.add(chunk.chunk());
+            }
+        } finally {
+            if (lastOfRegion) releaseFastHandle(storage, regionKey);
+        }
+    }
+
+    private static boolean mayReplace(RegionFile region, ChunkPos pos, PregenWorlds.ChunkWrite chunk, PregenWorlds.WriteRule rule)
+            throws IOException {
+        return switch (rule) {
+            case ABSENT -> false;
+            case ABSENT_OR_PART_GENERATED -> chunk.fullyGenerated() && !isFullyGenerated(region, pos);
+            case ABSENT_OR_UNCHANGED -> {
+                if (chunk.baseHash() == null) yield false;
+                try (DataInputStream stream = region.getChunkDataInputStream(pos)) {
+                    yield stream != null && java.util.Arrays.equals(hash(NbtIo.read(stream)), chunk.baseHash());
+                }
+            }
+        };
+    }
+
+    /** A chunk as a region frame, compressed with zlib (Minecraft's default). */
+    static ByteBuffer encode(CompoundTag tag) throws IOException {
+        java.io.ByteArrayOutputStream compressed = new java.io.ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(RegionFileVersion.VERSION_DEFLATE.wrap(compressed))) {
+            NbtIo.write(tag, out);
+        }
+        byte[] data = compressed.toByteArray();
+        ByteBuffer frame = ByteBuffer.allocate(5 + data.length);
+        frame.putInt(1 + data.length).put((byte) RegionFileVersion.VERSION_DEFLATE.getId()).put(data).flip();
+        return frame;
+    }
+
+    /** SHA-256 of the chunk's NBT: what tells whether a stored chunk changed since it was read. */
+    static byte[] hash(CompoundTag tag) throws IOException {
+        java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+        try (DataOutputStream out = new DataOutputStream(bytes)) {
+            NbtIo.write(tag, out);
+        }
+        try {
+            return java.security.MessageDigest.getInstance("SHA-256").digest(bytes.toByteArray());
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
         }
     }
 

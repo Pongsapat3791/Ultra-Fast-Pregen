@@ -44,6 +44,11 @@ public interface PregenApi {
 
     void removeListener(PregenListener listener);
 
+    // ------------------------------------------------------------------ worlds
+
+    /** The running server's worlds, for mods that bring chunks into a world from elsewhere. Since API version 2. */
+    PregenWorlds worlds();
+
     // ------------------------------------------------------------------ compatibility
 
     /**

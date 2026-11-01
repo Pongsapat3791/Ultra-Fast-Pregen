@@ -1,6 +1,8 @@
 package com.example.pregen;
 
+import io.github.pongsapat3791.ultrafastpregen.api.PregenWorlds;
 import it.unimi.dsi.fastutil.longs.LongCollection;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +35,9 @@ interface ChunkStorage {
      * is written (a player's) is kept.
      */
     WorldChunkIO.PendingWrite write(List<WorldChunkIO.EncodedChunk> chunks, boolean overwrite);
+
+    /** See PregenWorlds.writeChunks. */
+    PregenWorlds.WriteResult writeFrames(List<PregenWorlds.ChunkWrite> chunks, PregenWorlds.WriteRule rule, boolean dryRun) throws IOException;
 
     /**
      * Applies feature writes from a later batch to chunks this run already saved (see

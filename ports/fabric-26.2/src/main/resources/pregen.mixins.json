@@ -6,6 +6,11 @@
   "compatibilityLevel": "JAVA_21",
   "mixins": [
     "CommandsMixin",
+    "MinecraftServerAccessor",
+    "ServerLevelAccessor",
+    "PersistentEntitySectionManagerAccessor",
+    "EntityStorageAccessor",
+    "SimpleRegionStorageAccessor",
     "WorldGenRegionMixin",
     "WorldGenRegionChunkCacheMixin",
     "NoiseBasedChunkGeneratorInvoker",

@@ -3,6 +3,8 @@ package com.example.pregen.neoforge;
 import com.example.pregen.PreGenCommand;
 import com.example.pregen.PreGenMod;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLPaths;
@@ -17,9 +19,12 @@ public final class NeoForgeEntrypoint {
         String version = ModList.get().getModContainerById(PreGenMod.MOD_ID)
                 .map(mod -> mod.getModInfo().getVersion().toString()).orElse("unknown");
         PreGenMod.init(FMLPaths.CONFIGDIR.get(), version);
+        Map<String, String> mods = new TreeMap<>();
         for (IModInfo mod : ModList.get().getMods()) {
             readCompatibility(mod);
+            mods.put(mod.getModId(), mod.getVersion().toString());
         }
+        PreGenMod.platform("neoforge", mods);
         NeoForge.EVENT_BUS.addListener(RegisterCommandsEvent.class, event ->
                 PreGenCommand.register(event.getDispatcher(), event.getBuildContext(), event.getCommandSelection()));
     }

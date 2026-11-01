@@ -1,0 +1,8 @@
+name: UltraFastPregenManager
+version: '${version}'
+main: io.github.pongsapat3791.ufpmanager.entry.BukkitEntry
+api-version: '1.20'
+folia-supported: true
+description: A web page to run Ultra Fast Pregen by clicking.
+author: Pongsapat
+softdepend: [UltraFastPregen]

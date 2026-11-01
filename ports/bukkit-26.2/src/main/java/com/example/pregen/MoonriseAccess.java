@@ -20,7 +20,8 @@ final class MoonriseAccess {
     private static final String IO = "ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO";
     private static final Class<?> FILE_TYPE = type(IO + "$RegionFileType");
     /** RegionFileType.CHUNK_DATA: the chunks themselves (not POI or entities). */
-    private static final Object CHUNK_DATA = chunkData();
+    static final Object CHUNK_DATA = fileType("CHUNK_DATA");
+    static final Object ENTITY_DATA = fileType("ENTITY_DATA");
     private static final MethodHandle SCHEDULE_SAVE = staticMethod(IO, "scheduleSave",
             MethodType.methodType(void.class, ServerLevel.class, int.class, int.class, CompoundTag.class, FILE_TYPE));
     private static final MethodHandle LOAD_DATA_ASYNC = staticMethod(IO, "loadDataAsync",
@@ -46,11 +47,11 @@ final class MoonriseAccess {
         }
     }
 
-    private static Object chunkData() {
+    private static Object fileType(String name) {
         for (Object constant : FILE_TYPE.getEnumConstants()) {
-            if (((Enum<?>) constant).name().equals("CHUNK_DATA")) return constant;
+            if (((Enum<?>) constant).name().equals(name)) return constant;
         }
-        throw new IllegalStateException("This server's Moonrise has no RegionFileType.CHUNK_DATA");
+        throw new IllegalStateException("This server's Moonrise has no RegionFileType." + name);
     }
 
     private static MethodHandle staticMethod(String owner, String name, MethodType type) {
@@ -86,8 +87,12 @@ final class MoonriseAccess {
 
     /** Queues the chunk's data to be written; a later save of the same chunk replaces an earlier one. */
     static void scheduleSave(ServerLevel level, int chunkX, int chunkZ, CompoundTag data) {
+        scheduleSave(level, chunkX, chunkZ, data, CHUNK_DATA);
+    }
+
+    static void scheduleSave(ServerLevel level, int chunkX, int chunkZ, CompoundTag data, Object fileType) {
         try {
-            SCHEDULE_SAVE.invoke(level, chunkX, chunkZ, data, CHUNK_DATA);
+            SCHEDULE_SAVE.invoke(level, chunkX, chunkZ, data, fileType);
         } catch (Throwable failure) {
             throw rethrow(failure);
         }
@@ -95,13 +100,17 @@ final class MoonriseAccess {
 
     /** A stored chunk's data, including a save queued and not written yet. */
     static CompletableFuture<Optional<CompoundTag>> load(ServerLevel level, int chunkX, int chunkZ) {
+        return load(level, chunkX, chunkZ, CHUNK_DATA);
+    }
+
+    static CompletableFuture<Optional<CompoundTag>> load(ServerLevel level, int chunkX, int chunkZ, Object fileType) {
         CompletableFuture<Optional<CompoundTag>> loaded = new CompletableFuture<>();
         BiConsumer<CompoundTag, Throwable> done = (data, failure) -> {
             if (failure != null) loaded.completeExceptionally(failure);
             else loaded.complete(Optional.ofNullable(data));
         };
         try {
-            Object ignored = LOAD_DATA_ASYNC.invoke(level, chunkX, chunkZ, CHUNK_DATA, done, false);
+            Object ignored = LOAD_DATA_ASYNC.invoke(level, chunkX, chunkZ, fileType, done, false);
         } catch (Throwable failure) {
             loaded.completeExceptionally(failure);
         }
@@ -110,8 +119,12 @@ final class MoonriseAccess {
 
     /** Waits until every chunk save queued for the level is written. */
     static void flush(ServerLevel level) {
+        flush(level, CHUNK_DATA);
+    }
+
+    static void flush(ServerLevel level, Object fileType) {
         try {
-            FLUSH.invoke(level, CHUNK_DATA);
+            FLUSH.invoke(level, fileType);
         } catch (Throwable failure) {
             throw rethrow(failure);
         }

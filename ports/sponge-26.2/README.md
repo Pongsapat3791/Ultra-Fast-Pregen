@@ -3,7 +3,8 @@
 The Fabric 26.2 build of Ultra Fast Pregen as a Sponge plugin, with the commands (including `/pregen set` and the boss
 bar), the config file and the save file: see the [main README](../../README.md).
 
-- **Requires:** SpongeVanilla 26.2 (Sponge API 20) and Java 25
+- **Requires:** SpongeVanilla 26.2 (Sponge API 20) and Java 25; on another version the jar does nothing, and the log
+  says so ([tests](../../COMPATIBILITY.md#on-other-minecraft-versions))
 - **File:** `build/libs/ultrafastpregen-sponge-26.2-15.1.jar`; `15.1` is the update round, the same for every build
 - **Install:** put the jar in the server's `mods` folder; players do not need anything
 - **Commands:** operator level 2, as in the mod; **config file:** `config/ultrafastpregen.conf`
@@ -19,23 +20,42 @@ including the fast terrain path, the cell-skipping fill and the surface shortcut
   The check of other mods' mixins knows them, so the fast paths stay on.
 - The jar is compiled against Sponge's Mixin (0.8.7), not Fabric's version of it: Fabric's stores the target of a
   `@Redirect` in a form that the MixinExtras SpongeVanilla ships cannot read, and the server failed at start-up.
+- **Other Minecraft versions:** SpongeVanilla applies a plugin's mixins on any Minecraft version, and one that does not
+  fit stops the server. The jar first looks for a class of Minecraft 26.2 that 26.1.2 and 26.3 do not have; without it,
+  it applies none of its mixins and does nothing.
 - **Chunks the server holds** get the generated blocks as in the mod. The scheduled ticks of the generated chunk go
   straight into the server's chunk: Sponge tracks every scheduled tick with the level of the chunk it is scheduled
   in, and failed on the temporary chunk the Fabric build copies them through. Found with a player in the area: that
-  batch was not saved, which the safety net now handles too (see the changelog).
+  batch was not saved, which the safety net now handles too (see the changelog). For the same reason, a saved full chunk
+  that the server has loaded but not made full again gets its level's tick lists while its ticks are replaced.
 
 ## Tests (Minecraft 26.2)
 
 SpongeVanilla 26.2-20.0.0-RC2754 on a test server with an Intel Xeon E5-2670 v2 (10 cores / 20 threads) and a 10 GB
 heap; a fresh world with seed 42, around x = z = 100,000.
 
-**15.1** (the jar with SHA-1 `097c0734d688758359b1ca3afdbc61ba5a0ee866`):
+**15.1** (the jar with SHA-1 `39b2706073b0de0d5fba2e782142256a31d25ecf`):
 
 - **1,000 × 1,000 blocks in each dimension:** every chunk fully generated, lit and readable, no error in the log;
-  140.8, 250.1 and 597.4 chunks/s (Overworld, Nether, End).
+  147.0, 258.2 and 562.3 chunks/s (Overworld, Nether, End).
+- **Chunks the server holds during a run:** the same run with nothing held and with 1,408 part-generated chunks held,
+  compared chunk by chunk. All mobs and all fluid ticks were there, and 1,385 of the 1,408 chunks had the same blocks
+  ([details](../../COMPATIBILITY.md#chunks-the-server-holds-during-a-run)).
+- **`skip_existing_chunks=false` through the commands:** a run saved 4,096 chunks, the same area with the setting off
+  generated all 4,096 again, and `/pregen resume` kept them.
+- **In the game** with a real client: a player in the area during a run, caves dark as Minecraft lights them in the
+  chunks around the player, and a second run with `skip_existing_chunks=false`.
+- **Against the earlier build below,** 1,000 × 1,000 blocks in each dimension: the same blocks and light in all 4,096
+  chunks of each.
+
+An earlier build of 15.1 (SHA-1 `ab283a94abc488a9ca80825d15a8ba957bc0a8eb`):
+
 - **The End over 3,000 × 3,000 blocks**, twice: the two worlds were the same block for block, with the same pieces in
   all 10 End cities as with the Bukkit plugin. The End city and Nether fortress fix of 15.1 is the mods' own
   ([changelog](../../CHANGELOG.md#151)), tested with the mods in all three dimensions.
+- **On other Minecraft versions** (SpongeVanilla 26.1.2 and 26.3): the server started and went on running with none of
+  the jar's mixins applied, no chunk was written, and the log said the jar is for Minecraft 26.2
+  ([details](../../COMPATIBILITY.md#on-other-minecraft-versions)).
 
 **15** (the jar with SHA-1 `41d7bea835b25c8588df2b344892b05f5f7a24bd`), the tests below:
 
