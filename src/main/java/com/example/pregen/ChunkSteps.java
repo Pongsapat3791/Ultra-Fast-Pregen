@@ -1,6 +1,5 @@
 package com.example.pregen;
 
-import com.mojang.datafixers.util.Either;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
@@ -8,11 +7,9 @@ import java.lang.reflect.Proxy;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.function.Function;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
-import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ThreadedLevelLightEngine;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -51,14 +48,12 @@ abstract class ChunkSteps {
      */
     abstract boolean needsNeighborBiomes();
 
-    /** 1.20 to 1.20.4: the calls this jar is compiled with. */
+    /** 1.20 to 1.20.4: the calls this jar is compiled with (see LegacyCalls). */
     private static final class Legacy extends ChunkSteps {
         private final ServerLevel level;
         private final ChunkGenerator generator;
         private final StructureTemplateManager templates;
         private final ThreadedLevelLightEngine light;
-        private final Function<ChunkAccess, CompletableFuture<Either<ChunkAccess, ChunkHolder.ChunkLoadingFailure>>> fullChunk =
-                c -> CompletableFuture.completedFuture(Either.left(c));
 
         Legacy(ServerLevel level, ChunkGenerator generator, StructureTemplateManager templates, ThreadedLevelLightEngine light) {
             this.level = level;
@@ -68,15 +63,13 @@ abstract class ChunkSteps {
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         CompletableFuture<Object> generate(ChunkStatus status, Executor executor, List<ChunkAccess> cache) {
-            return (CompletableFuture<Object>) (CompletableFuture<?>) status.generate(executor, level, generator, templates,
-                    light, fullChunk, cache);
+            return LegacyCalls.generate(status, executor, level, generator, templates, light, cache);
         }
 
         @Override
         CompoundTag blockEntityNbt(ProtoChunk chunk, BlockPos pos) {
-            return chunk.getBlockEntityNbtForSaving(pos);
+            return LegacyCalls.blockEntityNbt(chunk, pos);
         }
 
         @Override

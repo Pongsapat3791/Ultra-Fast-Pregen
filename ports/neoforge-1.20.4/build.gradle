@@ -1,0 +1,80 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version "${moddev_version}"
+}
+
+// NeoForge for Minecraft 1.20.2 to 1.20.4 runs on Mojang's names (the Forge jar of 1.20 to 1.20.4 runs on Forge's
+// own). The source is the Fabric build's two folders up, as for that Forge jar; only the entry point is this tree's.
+def shared = file('../..')
+
+version = project.version
+group = project.group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+sourceSets {
+    main {
+        java {
+            srcDir new File(shared, 'src/main/java')
+            // Link and Manager, parts of the mod on every loader and version.
+            srcDir new File(shared, 'shared/java')
+            exclude 'com/example/pregen/fabric/**'
+        }
+        resources {
+            srcDir new File(shared, 'src/main/resources')
+            srcDir new File(shared, 'shared/resources')
+            exclude 'fabric.mod.json'
+        }
+    }
+}
+
+neoForge {
+    enable {
+        version = project.neo_version
+        // Only compiled classes are needed; skips decompiling and recompiling Minecraft.
+        disableRecompilation = true
+    }
+
+    mods {
+        ultrafastpregen {
+            sourceSet sourceSets.main
+        }
+    }
+
+    runs {
+        server {
+            server()
+            gameDirectory = file('run')
+            programArgument '--nogui'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+    options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+tasks.named('processResources') {
+    def props = [version: project.version, neo_version_range: project.neo_version_range,
+                 minecraft_version_range: project.minecraft_version_range]
+    inputs.properties props
+    filesMatching('META-INF/mods.toml') {
+        expand props
+    }
+}
+
+jar {
+    // NeoForge of these versions loads a jar's mixins from this attribute, as Forge does.
+    manifest.attributes('MixinConfigs': 'pregen.mixins.json',
+            // java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+            'Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+    from(new File(shared, 'LICENSE')) {
+        rename { "${it}_ultrafastpregen" }
+    }
+}

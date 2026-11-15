@@ -1,5 +1,6 @@
 package com.example.pregen.mixin;
 
+import com.example.pregen.Mc;
 import it.unimi.dsi.fastutil.longs.Long2ObjectLinkedOpenHashMap;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -17,7 +18,7 @@ public interface RegionFileStorageAccessor {
     @Accessor("folder")
     Path pregen$getFolder();
 
-    /** Open region files keyed by ChunkPos.pack(regionX, regionZ). */
+    /** Open region files keyed by Mc.pack(regionX, regionZ). */
     @Accessor("regionCache")
     Long2ObjectLinkedOpenHashMap<RegionFile> pregen$getRegionCache();
 

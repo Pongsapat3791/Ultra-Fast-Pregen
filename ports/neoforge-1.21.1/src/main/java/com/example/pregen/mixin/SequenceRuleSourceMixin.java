@@ -1,5 +1,6 @@
 package com.example.pregen.mixin;
 
+import com.example.pregen.terrain.DeepSurface;
 import com.example.pregen.terrain.SurfaceRulePruning;
 import java.util.List;
 import net.minecraft.world.level.levelgen.SurfaceRules;
@@ -16,8 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * SurfaceRulePruning). Priority above C2ME's, which replaces apply: this stays at its head.
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceRules$SequenceRuleSource", priority = 1500)
-public abstract class SequenceRuleSourceMixin {
+public abstract class SequenceRuleSourceMixin implements DeepSurface.SequenceSource {
     @Shadow @Final private List<SurfaceRules.RuleSource> sequence;
+
+    @Override
+    public List<SurfaceRules.RuleSource> pregen$sequence() {
+        return sequence;
+    }
 
     @Inject(method = "apply(Lnet/minecraft/world/level/levelgen/SurfaceRules$Context;)Lnet/minecraft/world/level/levelgen/SurfaceRules$SurfaceRule;",
             at = @At("HEAD"), cancellable = true)

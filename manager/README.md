@@ -1,5 +1,9 @@
 # Ultra Fast Pregen Manager
 
+> **From Ultra Fast Pregen 16 on, the Manager is built into Ultra Fast Pregen** (turn it on with
+> `/pregen ufpmanager on`; its code is in [shared/](../shared/java/io/github/pongsapat3791/ultrafastpregen/manager)).
+> This folder is the standalone mod for Ultra Fast Pregen 15.1 and gets no new versions.
+
 A web page inside your server: pick an area on a map, press Start, and watch the run. It drives
 [Ultra Fast Pregen](../README.md) and Ultra Fast Pregen Link through their APIs, and shows the machines of a Link
 network and which of them generates what.

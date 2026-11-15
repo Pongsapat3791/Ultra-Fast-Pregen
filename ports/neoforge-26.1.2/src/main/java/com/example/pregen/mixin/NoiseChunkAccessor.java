@@ -22,9 +22,6 @@ public interface NoiseChunkAccessor {
     @Accessor("blockStateRule")
     NoiseChunk.BlockStateFiller pregen$getBlockStateRule();
 
-    @Accessor("fullNoiseDensity")
-    DensityFunction pregen$getFullNoiseDensity();
-
     @Accessor("beardifier")
     DensityFunctions.BeardifierOrMarker pregen$getBeardifier();
 
@@ -39,6 +36,16 @@ public interface NoiseChunkAccessor {
 
     @Accessor("cellCountXZ")
     int pregen$getCellCountXZ();
+
+    /** The corner of the cell being filled (see CellBeards). */
+    @Accessor("cellStartBlockX")
+    int pregen$getCellStartBlockX();
+
+    @Accessor("cellStartBlockY")
+    int pregen$getCellStartBlockY();
+
+    @Accessor("cellStartBlockZ")
+    int pregen$getCellStartBlockZ();
 
     @Accessor("interpolationCounter")
     long pregen$getInterpolationCounter();

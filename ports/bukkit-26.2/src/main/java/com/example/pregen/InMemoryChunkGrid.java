@@ -1340,6 +1340,10 @@ public class InMemoryChunkGrid {
         for (Map.Entry<BlockPos, CompoundTag> pending : List.copyOf(chunk.getBlockEntityNbts().entrySet())) {
             if (!"DUMMY".equals(pending.getValue().getStringOr("id", ""))) continue;
             BlockPos pos = pending.getKey();
+            // Where generation went on to fill the block entity (a chest's loot table, a spawner's mob, a nest's
+            // bees), WorldGenRegion#getBlockEntity made the real one already, and ProtoChunk#setBlockEntity leaves
+            // the placeholder where it was. That block entity is the chunk's: a new one would be saved empty.
+            if (chunk.getBlockEntity(pos) != null) continue;
             BlockState state = chunk.getBlockState(pos);
             BlockEntity blockEntity = state.hasBlockEntity() && state.getBlock() instanceof EntityBlock block
                     ? block.newBlockEntity(pos, state) : null;

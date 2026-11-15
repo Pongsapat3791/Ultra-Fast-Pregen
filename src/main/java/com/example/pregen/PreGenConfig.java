@@ -21,6 +21,9 @@ import java.util.function.Consumer;
 final class PreGenConfig {
     enum TerrainPipeline { AUTO, FUSED, VANILLA }
 
+    /** How far a run generates each chunk (see the depth key). */
+    enum Depth { FULL, FEATURES, TERRAIN }
+
     static final String FILE_NAME = "ultrafastpregen.conf";
     /** Earlier names of this file, newest first; the first one found is taken over. */
     static final List<String> LEGACY_FILE_NAMES = List.of("inmemory-pregen.conf", "inmemory-pregen.properties");
@@ -89,6 +92,24 @@ final class PreGenConfig {
     private static final Map<String, String> SECTIONS = new LinkedHashMap<>();
 
     static {
+        SECTIONS.put("ufp", """
+
+                # ufp, ufplink, ufpmanager: the parts of the mod, each on or off. Also set, at once and
+                #   without a restart, by /pregen ufp|ufplink|ufpmanager on|off.
+                #   ufp        - Ultra Fast Pregen itself. Off: no run starts or continues, and the two
+                #                parts below wait for it. Default: on.
+                ufp=on
+                """);
+        SECTIONS.put("ufplink", """
+                #   ufplink    - Ultra Fast Pregen Link: pregen in a separate world of this server or on
+                #                other servers (/ufplink). Default: off.
+                ufplink=off
+                """);
+        SECTIONS.put("ufpmanager", """
+                #   ufpmanager - Ultra Fast Pregen Manager: a web page to run pregens (/ufpmanager; its
+                #                own settings are in ufpmanager.conf). Default: off.
+                ufpmanager=off
+                """);
         SECTIONS.put("batch_size", """
 
                 # batch_size: edge of one tile in blocks; one tile at a time is generated in RAM.
@@ -124,8 +145,10 @@ final class PreGenConfig {
                 #   auto   - yes, except when another mod keeps state in feature placement (BCLib and
                 #            the mods built on it): then one chunk at a time, so their features land
                 #            where Minecraft puts them generating chunk by chunk (default)
-                #   always - on all threads anyway: much faster in such packs; those mods' features
-                #            land in other places, as random and valid as the usual ones
+                #   always - on all threads anyway: much faster in such packs, but the world is no longer the
+                #            one the pack makes by itself: those mods' features land in other places, and
+                #            some kinds come out far rarer (measured in Prominence II). Not for a world
+                #            that should look as the pack's own
                 parallel_features=auto
                 """);
         SECTIONS.put("release_memory_each_batch", """
@@ -142,6 +165,19 @@ final class PreGenConfig {
                 #   missing ones. A batch whose chunks all exist is skipped without generating it.
                 #   false regenerates and overwrites every chunk in the area. Default: true.
                 skip_existing_chunks=true
+                """);
+        SECTIONS.put("depth", """
+
+                # depth: how far a run generates each chunk.
+                #   full     - all the way: terrain, features, light and mobs, so chunks load at
+                #              once when players come (default)
+                #   features - terrain and features (trees, ores, structures); Minecraft adds
+                #              light and mobs when a chunk is first loaded. Faster.
+                #   terrain  - terrain and caves only; Minecraft adds features, light and mobs
+                #              when a chunk is first loaded. The fastest, and the most work left.
+                #   A run that stops early leaves alone every chunk stored that far or further,
+                #   whatever skip_existing_chunks says. Runs other mods start (Link) are always full.
+                depth=full
                 """);
         SECTIONS.put("terrain_pipeline", """
 
@@ -163,11 +199,17 @@ final class PreGenConfig {
     final boolean releaseMemoryEachBatch;
     final boolean skipExistingChunks;
     final TerrainPipeline terrainPipeline;
+    final Depth depth;
+    /** The switches of the mod's parts (see Parts). */
+    final boolean ufpOn;
+    final boolean linkOn;
+    final boolean managerOn;
 
     private PreGenConfig(int batchSizeBlocks, int threads, boolean threadsFromCpuCount, boolean resumeAfterRestart,
                          boolean parallelSteps,
                          boolean alwaysParallelFeatures,
-                         boolean releaseMemoryEachBatch, boolean skipExistingChunks, TerrainPipeline terrainPipeline) {
+                         boolean releaseMemoryEachBatch, boolean skipExistingChunks, TerrainPipeline terrainPipeline, Depth depth,
+                         boolean ufpOn, boolean linkOn, boolean managerOn) {
         this.batchSizeBlocks = batchSizeBlocks;
         this.threads = threads;
         this.threadsFromCpuCount = threadsFromCpuCount;
@@ -177,6 +219,10 @@ final class PreGenConfig {
         this.releaseMemoryEachBatch = releaseMemoryEachBatch;
         this.skipExistingChunks = skipExistingChunks;
         this.terrainPipeline = terrainPipeline;
+        this.depth = depth;
+        this.ufpOn = ufpOn;
+        this.linkOn = linkOn;
+        this.managerOn = managerOn;
     }
 
     static PreGenConfig load() {
@@ -258,8 +304,17 @@ final class PreGenConfig {
             warn.accept("Unknown terrain_pipeline '" + pipelineValue + "' in " + file + "; using auto");
             pipeline = TerrainPipeline.AUTO;
         }
+        String depthValue = properties.getProperty("depth", "full").trim().toUpperCase(Locale.ROOT);
+        Depth depth;
+        try {
+            depth = Depth.valueOf(depthValue);
+        } catch (IllegalArgumentException unknown) {
+            warn.accept("Unknown depth '" + depthValue + "' in " + file + "; using full");
+            depth = Depth.FULL;
+        }
         return new PreGenConfig(batch, threads, fromCpuCount, resumeAfterRestart, parallelSteps, alwaysParallelFeatures, releaseMemoryEachBatch,
-                skipExistingChunks, pipeline);
+                skipExistingChunks, pipeline, depth, readSwitch(properties, "ufp", true, file, warn),
+                readSwitch(properties, "ufplink", false, file, warn), readSwitch(properties, "ufpmanager", false, file, warn));
     }
 
     /**
@@ -287,6 +342,15 @@ final class PreGenConfig {
         }
         if (!found) lines.add(key + "=" + value);
         Files.write(file, lines, StandardCharsets.UTF_8);
+    }
+
+    /** A part's switch: on or off (true and false also read). */
+    private static boolean readSwitch(Properties properties, String key, boolean fallback, Path file, Consumer<String> warn) {
+        String value = properties.getProperty(key, fallback ? "on" : "off");
+        Boolean on = Parts.parse(value);
+        if (on != null) return on;
+        warn.accept(key + "='" + value.trim() + "' in " + file + " is not on or off; using " + (fallback ? "on" : "off"));
+        return fallback;
     }
 
     private static boolean readBoolean(Properties properties, String key, boolean fallback, Path file,

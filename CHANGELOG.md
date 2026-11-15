@@ -1,5 +1,275 @@
 # Changelog
 
+## 16
+
+Faster again, on every Minecraft version from 1.20 to 26.3 on Fabric, NeoForge and Forge, and one mod instead of
+three: Ultra Fast Pregen Link and Ultra Fast Pregen Manager are parts of it now. The Bukkit and Sponge builds stay
+at 15.1.
+
+| Jar | Minecraft |
+|---|---|
+| `ultrafastpregen-fabric-1.20.x-16.jar` | 1.20 to 1.20.6 |
+| `ultrafastpregen-fabric-1.21-1.21.1-16.jar` | 1.21 and 1.21.1 |
+| `ultrafastpregen-fabric-1.21.2-1.21.4-16.jar` | 1.21.2 to 1.21.4 |
+| `ultrafastpregen-fabric-1.21.5-16.jar` | 1.21.5 |
+| `ultrafastpregen-fabric-1.21.6-1.21.8-16.jar` | 1.21.6 to 1.21.8 |
+| `ultrafastpregen-fabric-1.21.9-1.21.10-16.jar` | 1.21.9 and 1.21.10 |
+| `ultrafastpregen-fabric-1.21.11-16.jar` | 1.21.11 |
+| `ultrafastpregen-fabric-26.1-26.2-16.jar` | 26.1 to 26.2 |
+| `ultrafastpregen-fabric-26.3-16.jar` | 26.3 |
+| `ultrafastpregen-neoforge-1.20.2-1.20.4-16.jar` | 1.20.2 to 1.20.4 (NeoForge for 1.20.1 takes the Forge jar) |
+| `ultrafastpregen-neoforge-1.20.5-1.20.6-16.jar` | 1.20.5 and 1.20.6 |
+| `ultrafastpregen-neoforge-1.21-1.21.1-16.jar` | 1.21 and 1.21.1 |
+| `ultrafastpregen-neoforge-1.21.2-1.21.4-16.jar` | 1.21.2 to 1.21.4 |
+| `ultrafastpregen-neoforge-1.21.5-16.jar` | 1.21.5 |
+| `ultrafastpregen-neoforge-1.21.6-1.21.8-16.jar` | 1.21.6 to 1.21.8 |
+| `ultrafastpregen-neoforge-1.21.9-1.21.10-16.jar` | 1.21.9 and 1.21.10 |
+| `ultrafastpregen-neoforge-1.21.11-16.jar` | 1.21.11 |
+| `ultrafastpregen-neoforge-26.1.2-26.2-16.jar` | 26.1.2 and 26.2 |
+| `ultrafastpregen-neoforge-26.3-16.jar` | 26.3 |
+| `ultrafastpregen-forge-1.20-1.20.4-16.jar` | 1.20 to 1.20.4, and NeoForge 1.20.1 |
+| `ultrafastpregen-forge-1.20.6-16.jar` | 1.20.6 (there is no Forge for 1.20.5) |
+| `ultrafastpregen-forge-1.21-1.21.1-16.jar` | 1.21 and 1.21.1 |
+| `ultrafastpregen-forge-1.21.3-1.21.4-16.jar` | 1.21.3 and 1.21.4 (there is no Forge for 1.21.2) |
+| `ultrafastpregen-forge-1.21.5-16.jar` | 1.21.5 |
+| `ultrafastpregen-forge-1.21.6-1.21.8-16.jar` | 1.21.6 to 1.21.8 |
+| `ultrafastpregen-forge-1.21.9-1.21.10-16.jar` | 1.21.9 and 1.21.10 |
+| `ultrafastpregen-forge-1.21.11-16.jar` | 1.21.11 |
+| `ultrafastpregen-forge-26.1-26.2-16.jar` | 26.1 to 26.2 |
+| `ultrafastpregen-forge-26.3-16.jar` | 26.3 |
+
+### One mod
+
+- **Link and Manager are built in.** Ultra Fast Pregen Link (pregen in a separate world of this server or on other
+  servers, `/ufplink`) and Ultra Fast Pregen Manager (a web page to run pregens, `/ufpmanager`) were mods of their
+  own. They are parts of this jar now and need no second or third file. Remove the old `ufplink` and `ufpmanager`
+  jars: while one of them is installed, the built-in part of the same name stays off and says so.
+- **Each part has a switch:** `/pregen ufp on|off`, `/pregen ufplink on|off`, `/pregen ufpmanager on|off` (without
+  `on` or `off` the command shows the state). The switches work at once, without a restart, and are kept in
+  `config/ultrafastpregen.conf` (`ufp`, `ufplink`, `ufpmanager`). **Link and Manager start off**; the server console
+  says so at every start, with the command that turns each on. With `ufp` off nothing of the mod runs: no run starts
+  or continues, and Link and Manager wait for it.
+- **Link: this server as host or as client,** `/ufplink set host [address]`, `/ufplink set client <invite>` and
+  `/ufplink set none`. The older spellings (`/ufplink invite`, `join`, `leave`) still work, and an invite of either
+  spelling is taken.
+- **Link's connection is encrypted** (AES-256-GCM with a new key for every connection and direction; a record that
+  was changed, left out, repeated or moved on the way ends the connection). A host and a client must both be this
+  version: an older Link says so and keeps trying.
+
+### New
+
+- **Every Minecraft version from 1.20 to 26.3,** on Fabric, NeoForge and Forge: 1.21.2 to 1.21.11 and 26.3 are new
+  for all three, Forge is new from 1.20.6 on, NeoForge is new for 1.20.1 to 1.20.6.
+- **Manager: a Health tab.** What could go wrong with a run, each line saying pass, warning or problem and what to
+  do about it: before a run (disk space for the area chosen, the server's memory, the world border, chunks that
+  exist already and whether the settings would replace them, settings that change the world), during a run (no
+  progress for five minutes, a speed that has dropped to under half, memory that stays full, a disk that will not
+  last), and for a Link host (a run with no machine, a silent or slow machine, chunks that were not taken, machines
+  that were refused). The tab's dot shows a warning from any other tab. It only reads, on a thread of its own;
+  `/api/health` answers the same as JSON with the page's token.
+- **How far a run generates:** `/pregen set depth full|features|terrain` (`depth` in the settings file).
+  - `full` is what every run did until now: terrain, features, light and mobs, so chunks load at once when players
+    come.
+  - `features` stops after the features (trees, ores, structures); Minecraft adds light and mobs when a chunk is
+    first loaded.
+  - `terrain` stops after terrain and caves; Minecraft adds the rest when a chunk is first loaded. The fastest, and
+    the most work left for later.
+
+  The chunks are saved as Minecraft itself saves a chunk it has not finished, and any server finishes them as its
+  own. A later `full` run over the same area completes them, to the same world a `full` run gives at once. A run
+  that stops early leaves alone every chunk stored that far or further.
+
+### Faster
+
+A whole Overworld run without other mods, 4,000 × 4,000 blocks on NeoForge 26.1.2 (Intel Xeon E5-2670 v2, 20
+threads, 16 GB heap, a fresh world; three runs of each jar, taking turns): **248 → 347 chunks/s (+40%)** against
+15.1. With the three corrections under [Fixed](#fixed) turned off the world is 15.1's block for block, with the same
+light, biomes, heightmaps and scheduled ticks; as shipped it differs from 15.1's where those corrections apply. The
+corrections cost 3% to 6% of the speed: before them the same files made 359 chunks/s here. NeoForge 1.21.1 makes 315
+and Fabric 1.20.1 330 chunks/s with the released files (15.1: 210 and 242, measured earlier). Measured before the
+corrections and not again: Forge 1.20.1 232 → 330, Fabric 26.2 259 → 328, the Nether +11% and the End +13%. All
+numbers: [COMPATIBILITY.md](COMPATIBILITY.md#speed-against-151).
+
+- **The terrain steps no longer wait for each other.** Structure starts, their references, biomes, noise, surface
+  and caves ran as stages, each waiting for the slowest chunk of the one before. Each chunk now takes its steps as
+  soon as what it needs is there, so one slow structure start no longer holds every worker.
+- **Below the ground, the surface step does only what can change a block.** Minecraft asks its whole rule list about
+  every stone block of a column, down to the bottom of the world. Far below the surface only the rules that look at
+  the height can place anything (deepslate, bedrock): those runs are written at once, the few heights where such a
+  rule draws a random number are asked alone, and the walk down the column ends where nothing is left to do.
+- **Noise is computed for fewer places.** Where the terrain's shape alone proves a whole column of cells is sky, the
+  cells are skipped without computing their corners; solid cells and cells near ore veins are decided from bounds;
+  the surface level the aquifers need is shared by the chunks of a batch; structure pieces are looked at only by the
+  cells they can reach. On 26.1 to 26.1.2 a value Minecraft computed twice per cell corner is computed once (26.2
+  does that itself).
+- **Blocks are written in runs,** not one at a time, where a cell or a column gets one block.
+- **Light is handed to the server one chunk at a time.** The server's light thread walked its whole queue again and
+  again while a batch's light was queued; the last batch's light alone took 6 to 8 seconds, now about 2.
+- **Ore attempts above the terrain** are answered without the search (they place nothing there).
+- **Terrain only where it is needed:** around chunks that already exist, in the corners of a circle and when a run
+  extends an older area, terrain is no longer computed for chunks that only take stored blocks. Extending a
+  1,000 × 1,000 area to 2,000 × 2,000 takes less than half the time.
+
+### Fixed
+
+Three corrections change the world a run makes, each towards the world a server with no mod generates by itself.
+They are on; `-Dfastpregen.edgeRing=false`, `-Dfastpregen.seamRelight=false` and `-Dfastpregen.darkFeatures=false`
+(Java arguments of the server) turn them off one by one, and with all three off the world is 15.1's, chunk for chunk,
+apart from the block entities 15.1 saved empty on Minecraft 1.20 to 1.21.1
+([tested](COMPATIBILITY.md#what-16-changes-in-the-world)). In a 2,000 × 2,000 block area they change 15% of the
+chunks: every chunk of the outermost row, about one chunk in ten inside (mushrooms and the trees beside them), and
+the light of some chunks where two batches meet.
+
+- **The edge of a pregenerated area, in every version up to 15.1.** Where the server later generated beyond the area
+  by itself, the area's outermost chunks lacked what the chunks outside place inward (a blob of tuff or granite, part
+  of a geode, a disk of sand or clay, seagrass, the leaves of a tree standing just outside), and roofed places near
+  the edge were lit too bright. Minecraft finishes a chunk only after its neighbors have placed their features; a
+  pregen finished its area first, and Minecraft does not let a chunk generated later place most features into a
+  finished one. Now a run also places the features of the one row of chunks around its area and saves those chunks
+  as Minecraft itself leaves the neighbors of finished chunks: not finished, with their features placed and the
+  light that reached them. The server completes them when someone goes there, and a later run that extends the area
+  finishes them as they are. The area's outermost chunks now hold what a chunk in the middle holds
+  ([measured](COMPATIBILITY.md#blocks-against-a-server-with-no-mod-and-the-edge-of-the-area)).
+- **Light where two batches meet.** The last row of chunks of a batch was lit before the chunks of the next batch
+  existed, and what the next batch's features placed into it (leaves over a clearing, a blob that closes a cave)
+  did not change its stored light. Those chunks are lit again once their neighbors are there. The same where the
+  tiles of two machines meet in a Link run: such chunks used to be saved for the server to light again when it
+  loads them, and some kept wrong light
+  ([measured](COMPATIBILITY.md#link-where-two-tiles-meet)).
+- **Mushrooms, and what grows beside them.** Minecraft places a chunk's features before the chunk has sky light of
+  its own, so brown and red mushrooms can be placed in the open; when a chunk first ticks, those standing in
+  daylight vanish and those in the shade stay. A batch's chunks read full daylight at that step, so no mushroom was
+  ever placed on plain ground: none where Minecraft's own world has 129 to 139 in 256 chunks of swamp. They are
+  placed now. A mushroom also keeps a tree, a bush or a pumpkin of a chunk decorated later from starting where it
+  stands, so those come out as in Minecraft's own world as well (in the same 256 chunks, firefly bushes 130 before,
+  94 now, 92 and 94 in two worlds of a server with no mod)
+  ([measured](COMPATIBILITY.md#mushrooms-and-what-grows-beside-them)).
+  **A pregenerated chunk that no server has loaded yet still holds the mushrooms the first tick removes** (about 25
+  times as many as stay), as a chunk Minecraft generated and never ticked does. Map and LoD mods that read
+  pregenerated chunks see them until then.
+- **`parallel_features=always`:** the settings file said that the world it gives is as valid as the usual one. In a
+  pack with BCLib it is not the pack's world (see Tested); the comment says so now.
+- **The Fabric jar for 1.20 to 1.20.6** names its version `1.20-1.20.6-16` to Fabric Loader, which could not read
+  `1.20.x-16` and said so in a warning at every start. The file name is unchanged.
+- **Chests without loot and spawners without a mob, on Minecraft 1.20 to 1.21.1, in every version up to 15.1.** A
+  block entity that generation fills in after placing it was saved empty there: chests, barrels, decorated pots and
+  dispensers had no loot table, monster spawners no mob, trial spawners no settings, suspicious sand and gravel no
+  loot, bee nests no bees, and other mods' blocks their default state. While a chunk is generated, those Minecraft
+  versions leave a placeholder beside such a block entity, and the mod's save made a new, empty block entity from
+  the placeholder. From Minecraft 1.21.2 on the placeholder is gone, so the 26.x builds and the plugins never
+  showed it. Now the block entity generation made is the one saved, on every version: in a square a server with no
+  mod generated too, every chest, barrel, pot, dispenser and suspicious block holds the same loot table and seed
+  ([the test](COMPATIBILITY.md#block-entities-against-a-world-with-no-mod)).
+
+  **A world pregenerated with 15.1 or older on Minecraft 1.20 to 1.21.1 keeps its empty containers and spawners:**
+  what they should hold was never stored, and installing 16 does not bring it back. The only repair is to generate
+  the area again with 16: `/pregen set skip_existing_chunks false`, then the same `/pregen start`. **That replaces
+  every chunk of the area with newly generated terrain: whatever players built, placed or took there is lost.** Do it
+  only where nobody has played yet, keep a copy of the world first, and set `skip_existing_chunks` back to `true`
+  afterwards. Chunks that existed before the pregen, and chunks the server generated itself, were never affected.
+  Tried on NeoForge 1.21.1 and Fabric 1.20.1 over a 15.1 world: afterwards the containers hold what a server with no
+  mod gives them ([the test](COMPATIBILITY.md#block-entities-against-a-world-with-no-mod)).
+- **A full run next to chunks a `terrain` or `features` run saved, or the server left part-generated,** reads their
+  stored blocks only where another chunk's features are already in them.
+- **Strongholds:** their pieces share one block chooser, which two worker threads could use at once. Each piece now
+  takes its turn.
+- **A storage task that fails during a run** (a full disk, a region file another program holds open) stops the run
+  with an error, as the log says. Before, the failure could reach the server thread and crash the server.
+- **A chunk too large for its region file** (over 1 MiB) stays readable when the server's `region-file-compression`
+  is `lz4` or `none`: the file beside the region file was marked with the server's setting, but always holds what
+  this mod writes (deflate).
+
+### Tested
+
+The first part of this section is of 16's files before the three corrections under Fixed, which came last; those
+files make 15.1's world. What was tested again with the corrections is listed after it.
+
+Every jar on a dedicated server of every loader build it names, 67 servers in all: each started, pregenerated on the
+fast paths, and every hook of the mod found its place in that Minecraft version. The worlds were compared chunk by
+chunk (blocks, biomes, light, heightmaps, block entities, entities, scheduled ticks) with the world 15.1 makes, or,
+for the versions 15.1 has no jar for, with the world the same jar makes on Minecraft's own terrain steps with every
+shortcut off: no chunk differs, apart from what differs between any two runs of Minecraft itself (the side of a bee
+nest on 1.21.1 and older, a biome tie in the Nether, a stronghold's bricks) and, on Minecraft 1.20 to 1.21.1, the
+block entities that 15.1 saved empty. A server with no mod then loaded 37 of the worlds without a complaint.
+
+With a player: the plain game joined each of the 67 servers, and the game with the mod in it made a singleplayer
+world with every one of the 29 jars; a test program played both through 18 cases each (a run around the player, what
+the player sees before and after, the Nether and the End, light in caves, the switches, a `depth terrain` run).
+1,204 of 1,206 cases passed on the servers and 540 of 540 in singleplayer; the two that did not are an error line
+NeoForge 1.21.9 writes at every start, with or without the mod, and a Forge 1.21.9 server that did not exit after
+`stop`.
+
+The automated test suite passed on the seven source trees that carry it. Its first run found that a finished run
+kept its last batch in memory (about 1 GB, where 15.1 keeps 0.3 GB); that was fixed before the release. A check of
+what the saved block entities hold is new in it, and fails with the fix taken out.
+
+Other mods: the 44 sets of version 15's tests on its six servers, in the Overworld, the Nether and the End: 132 of
+132 runs passed, on the same terrain paths as with 15.
+
+Modpacks, with the pack's own game as the player (All the Mods 10 and All the Mods 9; Prominence II's server
+alone): the pregenerated area against the same area the pack's server generates by itself, twice and in another
+order. Blocks, block entities, what the player sees and the server's tick time are within what the pack differs
+from itself, with two exceptions, both in All the Mods 9: the sky light in the area's outermost chunks, and one of
+six views (a coral reef: 3.1% of its pixels against a limit of 3.0%). The rules of this test were changed
+after results, more than once; COMPATIBILITY.md has the verdicts under the first rules beside the last. These tests found the
+empty block entities above, and they measured two things that are not new:
+
+- **The edge of a pregenerated area.** Where the server later generated beyond the area by itself, the area's
+  outermost chunks lacked the parts of features that belong to the chunks outside and reach in, and roofed spaces
+  close to the edge could be lit brighter than the server would light them. As old as the mod, and fixed in this
+  version (see Fixed).
+- **`parallel_features=always` in a pack with BCLib** (Prominence II) gives a world that is not the pack's own:
+  many features of other mods come out far rarer or in other amounts. The default, `auto`, gives the pack's world.
+
+A server with no mod does not make the same world twice either: where features of neighboring chunks overlap, the
+order of generation decides, and two runs of one server differed in 3,554 to 9,179 blocks of 256 chunks on the
+three servers tested (21,382 to 26,824 when the rows were asked for in another order; a pregenerated world 20,467
+to 24,341). A
+pregenerated world differs from it in about as many blocks as the server's own world in another order, with 15.1
+as with 16. One thing is not explained yet: on one of the three servers, 1% more andesite at the cost of granite and
+diorite
+([COMPATIBILITY.md](COMPATIBILITY.md#blocks-against-a-server-with-no-mod-and-the-edge-of-the-area)).
+
+**The corrections of the edge, of the seams and of the mushrooms (see Fixed) came after the tests above,** and the
+released files have them. Tested again with them:
+
+- the automated suite on its seven source trees: 27 to 29 checks each, three of them new (the light at the edge and
+  where batches meet, an area extended later, the light features find);
+- each of the 29 files started and pregenerating on a server it names, 30 servers;
+- six servers with the corrections off (the world of the files tested above, chunk for chunk) and on (what differs,
+  by place), the Nether and the End on two;
+- a run stopped and resumed (the same world as a run at once, to the block) and an area extended later (the same
+  light; other blocks along the old edge only, where the order of placing decides), on eight servers of five source
+  trees; the same command again over an area an older version made;
+- a 2 GB heap, Starlight and ScalableLux, and the seams between the tiles of a Link run;
+- the other mods again (the 44 sets on six servers, three dimensions each): 132 of 132 runs passed, every set on the
+  terrain path it had before, the safety net never used, and Moonrise refused in all 12;
+- the Manager's Health tab on six servers and the parts' switches on three;
+- Prominence II with the pack's own game, which could now be put together from the pack's launcher files: every
+  rule of that test passed, the geodes at the area's edge are whole, and the server ticks as with its own world.
+
+Not run again with the corrections: the player tests of the 67 servers and 30 games, and All the Mods 10 and All the
+Mods 9, whose results above (the sky light at the edge among them) are of the files before the corrections. Three
+rules written before these runs failed as written: inside an area only mushrooms would differ (the trees beside
+them do too), in the Nether only the two outermost rows (it is four), and a Link run would differ from one batch by
+no more than a repeat of itself (a repeat is identical). [COMPATIBILITY.md](COMPATIBILITY.md#what-16-changes-in-the-world)
+has each with its numbers.
+
+What the corrections cost, with the released files against the files before them, the jars taking turns three
+times on an idle server (Overworld, 4,000 × 4,000): NeoForge 26.1.2 359 → 347 chunks/s (-3%), NeoForge 1.21.1 327 →
+315 (-4%), Fabric 1.20.1 351 → 330 (-6%); Prominence II 30.6 → 29.5 (-4%). The profiler counts the same amount of
+work on NeoForge 26.1.2 with and without them: the time goes into waiting for the end of each batch, which now also
+lights the chunks beside the batch again. About 70 MB more of the heap stay in use, during a run and after it, the
+same for a run of 4 batches as of 16. On a 2 GB heap that can mean smaller batches (NeoForge 26.1.2: 750 blocks
+instead of 1,000, 144 against 166 chunks/s).
+
+The numbers, the scenarios (circles, extended areas, restarts, `depth` runs, chunks the server holds), the parts'
+switches, Link, the player tests and what was not tested are in [COMPATIBILITY.md](COMPATIBILITY.md#version-16).
+
+One thing the tests found is not the mod's: from Minecraft 1.21.6 on, NeoForge itself generates a slightly different
+world than Fabric and Forge do from the same seed, with or without this mod
+([details](COMPATIBILITY.md#a-neoforge-world-from-minecraft-1216-on)).
+
 ## 15.1
 
 Each mod jar now runs on every Minecraft version in its name, End cities and Nether fortresses are laid out as Minecraft

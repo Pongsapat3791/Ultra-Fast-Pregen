@@ -21,7 +21,8 @@ public final class PregenMixinPlugin implements IMixinConfigPlugin {
     /** The class that tells the versions apart, read without loading it (see MinecraftVersion). */
     static final String RECURSIVE_VISITOR = "net/minecraft/world/level/levelgen/DensityFunction$1RecursiveVisitor";
     private static final Set<String> BEFORE_26_2 = Set.of("HolderHolderMixin", "SplineFunctionMixin",
-            "SplineCoordinateMixin", "BiomeConditionSource261Mixin", "SurfaceRulesContext261Mixin", "SurfaceSystem261Mixin");
+            "SplineCoordinateMixin", "BiomeConditionSource261Mixin", "SurfaceRulesContext261Mixin", "SurfaceSystem261Mixin",
+            "BlendDensityAccessor");
     private static final Set<String> FROM_26_2 = Set.of("RecursiveVisitorMixin", "BiomeConditionSource262Mixin",
             "SurfaceRulesContext262Mixin", "SurfaceSystem262Mixin");
     private boolean minecraft262;

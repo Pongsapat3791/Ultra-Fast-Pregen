@@ -1,5 +1,6 @@
 package com.example.pregen.mixin;
 
+import com.example.pregen.terrain.DeepSurface;
 import com.example.pregen.terrain.SurfaceRulePruning;
 import net.minecraft.world.level.levelgen.SurfaceRules;
 import org.spongepowered.asm.mixin.Final;
@@ -15,9 +16,19 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * Priority above the default so that a mod replacing apply keeps this at its head.
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceRules$TestRuleSource", priority = 1500)
-public abstract class TestRuleSourceMixin {
+public abstract class TestRuleSourceMixin implements DeepSurface.TestSource {
     @Shadow @Final private SurfaceRules.ConditionSource ifTrue;
     @Shadow @Final private SurfaceRules.RuleSource thenRun;
+
+    @Override
+    public SurfaceRules.ConditionSource pregen$ifTrue() {
+        return ifTrue;
+    }
+
+    @Override
+    public SurfaceRules.RuleSource pregen$thenRun() {
+        return thenRun;
+    }
 
     @Inject(method = "apply(Lnet/minecraft/world/level/levelgen/SurfaceRules$Context;)Lnet/minecraft/world/level/levelgen/SurfaceRules$SurfaceRule;",
             at = @At("HEAD"), cancellable = true)

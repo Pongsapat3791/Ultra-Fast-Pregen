@@ -1,5 +1,6 @@
 package com.example.pregen.terrain;
 
+import com.example.pregen.Mc;
 import com.example.pregen.mixin.BiomeManagerAccessor;
 import java.util.Arrays;
 import java.util.concurrent.atomic.LongAdder;
@@ -92,15 +93,15 @@ public final class SurfaceBiomes implements Function<BlockPos, Holder<Biome>> {
         // Blocks minY to maxY look at the cells from (minY - 2) >> 2 to ((maxY - 2) >> 2) + 1.
         int minY = chunk.getMinY();
         int maxY = minY + chunk.getHeight() - 1;
-        originX = (pos.x() << 2) - 1;
-        originZ = (pos.z() << 2) - 1;
+        originX = (Mc.x(pos) << 2) - 1;
+        originZ = (Mc.z(pos) << 2) - 1;
         originY = (minY - 2) >> 2;
         layers = ((maxY - 2) >> 2) + 2 - originY;
         ChunkAccess[] neighbors = new ChunkAccess[9];
         try {
             for (int dz = -1; dz <= 1; dz++) {
                 for (int dx = -1; dx <= 1; dx++) {
-                    ChunkAccess neighbor = source.pregen$getBiomeChunk(pos.x() + dx, pos.z() + dz);
+                    ChunkAccess neighbor = source.pregen$getBiomeChunk(Mc.x(pos) + dx, Mc.z(pos) + dz);
                     if (neighbor == null) return false;
                     neighbors[(dz + 1) * 3 + dx + 1] = neighbor;
                 }

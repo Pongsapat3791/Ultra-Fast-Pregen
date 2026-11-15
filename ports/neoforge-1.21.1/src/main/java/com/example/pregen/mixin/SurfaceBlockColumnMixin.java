@@ -1,6 +1,7 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.WorldgenCompat;
+import com.example.pregen.terrain.DeepSurface;
 import com.example.pregen.terrain.FastBlockWrites;
 import com.example.pregen.terrain.SurfaceColumnCache;
 import com.example.pregen.terrain.TerrainGenerationContext;
@@ -18,9 +19,23 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  * column at a time (see SurfaceColumnCache), writes without the section lock (see FastBlockWrites).
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceSystem$1")
-public abstract class SurfaceBlockColumnMixin {
+public abstract class SurfaceBlockColumnMixin implements DeepSurface.FloorColumn {
     /** The column cache of this step's chunk; null until the first read decides it. */
     @Unique private SurfaceColumnCache pregen$column;
+    /** The known runs of this step's chunk (see DeepSurface.Columns#floor), asked for at the loop's first read. */
+    @Unique private DeepSurface.Columns pregen$deep;
+    @Unique private boolean pregen$deepAsked;
+
+    @Override
+    public int pregen$floor() {
+        if (!pregen$deepAsked) {
+            // The step's rule is built before its loop starts, so its known runs are there by now.
+            pregen$deepAsked = true;
+            pregen$deep = DeepSurface.columnsOfThisStep();
+        }
+        DeepSurface.Columns deep = pregen$deep;
+        return deep == null ? Integer.MIN_VALUE : deep.floor;
+    }
 
     @Unique
     private SurfaceColumnCache pregen$column(ChunkAccess chunk) {

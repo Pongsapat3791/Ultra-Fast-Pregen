@@ -129,21 +129,36 @@ public final class WorldgenCompat {
             "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceBlockStateRule",
             "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceMaterialRule",
             "com.ishland.c2me.opts.natives_math.mixin.MixinBiomeAccess");
-    /** The methods the surface shortcuts stand in for, of the classes surfaceShortcutsAllowed reads. */
-    private static final Set<String> SURFACE_CONTEXT_METHODS = Set.of("<init>", "updateY");
-    private static final Set<String> SURFACE_STEP_METHODS = Set.of("buildSurface");
-    private static final Set<String> BIOME_LOOKUP_METHODS = Set.of("getBiome");
-    private static final Set<String> NOISE_BIOME_METHODS = Set.of("getNoiseBiome", "getBiomeManager");
+    /**
+     * The methods the surface shortcuts stand in for, of the classes surfaceShortcutsAllowed reads, with their names
+     * in Fabric's intermediary mappings: the Fabric build for Minecraft 1.21.11 runs on those (26.x has no other names).
+     */
+    private static final Set<String> SURFACE_CONTEXT_METHODS = Set.of("<init>", "updateY", "method_39073");
+    private static final Set<String> SURFACE_STEP_METHODS = Set.of("buildSurface", "method_39106");
+    private static final Set<String> BIOME_LOOKUP_METHODS = Set.of("getBiome", "method_22393");
+    private static final Set<String> NOISE_BIOME_METHODS = Set.of("getNoiseBiome", "getBiomeManager", "method_16359", "method_22385");
     /** The condition SurfaceRules.isBiome builds, a local class. */
     private static final List<String> BIOME_CONDITION_CLASSES = List.of(
-            "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition");
+            "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition",
+            "net.minecraft.class_6686$class_6689$class_6690");
     private static volatile Boolean surfaceShortcutsAllowed;
+    /** What the surface shortcut below the ground (DeepSurface) reads or hooks of the rules' context and the step. */
+    private static final Set<String> DEEP_SURFACE_CONTEXT_METHODS = Set.of("updateXZ", "getMinSurfaceLevel", "method_39072", "method_39551");
+    private static final Set<String> DEEP_SURFACE_STEP_METHODS = Set.of("getSurfaceDepth", "method_39552");
+    /** The condition SurfaceRules.verticalGradient builds, a local class. */
+    private static final List<String> GRADIENT_CONDITION_CLASSES = List.of(
+            "net.minecraft.world.level.levelgen.SurfaceRules$VerticalGradientConditionSource$1VerticalGradientCondition",
+            "net.minecraft.class_6686$class_6775$class_6776");
+    private static volatile Boolean deepSurfaceAllowed;
+    private static volatile Boolean paletteGrowthAllowed;
+    private static volatile Boolean oreHeightsAllowed;
+    private static volatile Boolean blockBitsAllowed;
     /**
      * How named functions, splines and spline coordinates map, which NoiseChunkWrap's memo stands in
      * for: each one's own mapAll before 26.2, mapChildren under mapAll's one walk from 26.2. Each
      * version has only one of the two on these classes.
      */
-    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapAll", "mapChildren");
+    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapAll", "mapChildren", "method_40469", "method_41530");
     private static volatile Boolean noiseChunkWrapAllowed;
     /** Minecraft's light engine, which GridLight runs on its own and hands to the server's. */
     private static final List<Class<?>> LIGHT_ENGINE_CLASSES = List.of(
@@ -234,9 +249,13 @@ public final class WorldgenCompat {
      * doCreateBiomes, doFill and Minecraft's surface step itself, so other mods' changes to those
      * (and to the rest of the generator) apply on it as well.
      */
-    static final Set<String> FUSED_SKIPPED_GENERATOR_METHODS = Set.of("createBiomes", "fillFromNoise");
+    static final Set<String> FUSED_SKIPPED_GENERATOR_METHODS = Set.of("createBiomes", "fillFromNoise",
+            // Fabric's intermediary names (the Fabric build for 1.21.11 runs on them): the two methods and their lambdas.
+            "method_38275", "method_38333", "method_12088", "method_38332");
     /** Minecraft's generation steps the fused path does not run: it does their work itself. */
-    static final Set<String> FUSED_SKIPPED_STEPS = Set.of("generateBiomes", "generateNoise");
+    static final Set<String> FUSED_SKIPPED_STEPS = Set.of("generateBiomes", "generateNoise",
+            // Fabric's intermediary names: the two steps and generateNoise's lambda.
+            "method_57605", "method_57607", "method_57599");
 
     /**
      * Other mods' configs with mixins that change what the fused path skips: the generator's
@@ -387,6 +406,110 @@ public final class WorldgenCompat {
                         foreign, details);
             }
             surfaceShortcutsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * OreHeights stands in for the height lookups at the start of OreFeature#place and counts on the
+     * terrain heightmap standing still while features are placed, so another mod's change to the ore
+     * feature or to the heightmap turns it off.
+     */
+    public static boolean oreHeightsAllowed() {
+        Boolean allowed = oreHeightsAllowed;
+        if (allowed == null) {
+            Set<String> foreign = new TreeSet<>();
+            foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.levelgen.feature.OreFeature.class, Set.of()));
+            foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.levelgen.Heightmap.class, Set.of()));
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Ore height shortcut disabled: other mods modify the ore feature or heightmaps {}", foreign);
+            }
+            oreHeightsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * PaletteGrowth stands in for the copy of a one-value container into its first palette, so
+     * another mod's change to the classes of that copy turns it off.
+     */
+    public static boolean paletteGrowthAllowed() {
+        Boolean allowed = paletteGrowthAllowed;
+        if (allowed == null) {
+            Set<String> foreign = new TreeSet<>();
+            // By class, not by name: the names differ between mappings. The container's data record is not public.
+            Class<?> data = com.example.pregen.terrain.BlockBits.dataClass();
+            if (data == null) foreign.add("unknown (the container's data)");
+            else foreign.addAll(foreignMixinConfigs(data, Set.of()));
+            for (Class<?> target : List.of(net.minecraft.world.level.chunk.SingleValuePalette.class,
+                    net.minecraft.world.level.chunk.LinearPalette.class, net.minecraft.util.SimpleBitStorage.class,
+                    net.minecraft.util.ZeroBitStorage.class)) {
+                foreign.addAll(foreignMixinConfigs(target, Set.of()));
+            }
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Palette growth shortcut disabled: other mods modify block containers {}", foreign);
+            }
+            paletteGrowthAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * BlockBits stands in for runs of LevelChunkSection#setBlockState, writing a container's 4-bit
+     * storage itself, so another mod's change to the section, the container or the classes
+     * paletteGrowthAllowed reads turns it off (Lithium, for one, counts a section's blocks its own way).
+     */
+    public static boolean blockBitsAllowed() {
+        Boolean allowed = blockBitsAllowed;
+        if (allowed == null) {
+            allowed = paletteGrowthAllowed();
+            if (allowed) {
+                Set<String> foreign = new TreeSet<>();
+                foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.chunk.LevelChunkSection.class, Set.of()));
+                foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.chunk.PalettedContainer.class, Set.of()));
+                allowed = foreign.isEmpty();
+                if (!allowed) {
+                    PreGenMod.LOGGER.info("[PreGen] Writing runs of blocks at once disabled: other mods modify chunk sections {}", foreign);
+                }
+            }
+            blockBitsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * The surface shortcut below the ground (DeepSurface) stands in for the rules' height tests and
+     * reads the level of their preliminary-surface test from the rules' context. So besides what
+     * turns the other surface shortcuts off, another mod's change to those turns it off.
+     */
+    public static boolean deepSurfaceAllowed() {
+        Boolean allowed = deepSurfaceAllowed;
+        if (allowed == null) {
+            allowed = surfaceShortcutsAllowed();
+            if (allowed) {
+                List<String> details = new ArrayList<>();
+                Set<String> foreign = new TreeSet<>();
+                foreign.addAll(changingMixinConfigs(SurfaceRulePruning.contextClass(), DEEP_SURFACE_CONTEXT_METHODS, details,
+                        SURFACE_EQUIVALENT_MIXINS));
+                foreign.addAll(changingMixinConfigs(SurfaceSystem.class, DEEP_SURFACE_STEP_METHODS, details,
+                        SURFACE_EQUIVALENT_MIXINS));
+                for (String name : GRADIENT_CONDITION_CLASSES) {
+                    try {
+                        foreign.addAll(changingMixinConfigs(Class.forName(name, false, SurfaceRules.class.getClassLoader()),
+                                null, details, SURFACE_EQUIVALENT_MIXINS));
+                    } catch (ClassNotFoundException | LinkageError ignored) {
+                        // Named so in other mappings only.
+                    }
+                }
+                allowed = foreign.isEmpty();
+                if (!allowed) {
+                    PreGenMod.LOGGER.info("[PreGen] Surface shortcut below the ground disabled: other mods modify the surface"
+                            + " rules' context or height tests {}: {}", foreign, details);
+                }
+            }
+            deepSurfaceAllowed = allowed;
         }
         return allowed;
     }

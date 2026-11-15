@@ -94,7 +94,7 @@ final class C2meStorage implements WorldChunkIO.StorageThread {
 
     @Override
     public WorldChunkIO.QueuedSave queued(ChunkPos pos) {
-        long key = pos.pack();
+        long key = Mc.pack(pos);
         Object entry = cache.get(key);
         // Older versions hold a pending deletion as a null entry; newer ones as a future of null.
         if (entry == null && !cache.containsKey(key)) return null;

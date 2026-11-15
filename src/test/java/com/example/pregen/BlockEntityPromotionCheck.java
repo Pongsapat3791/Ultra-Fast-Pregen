@@ -31,8 +31,18 @@ public final class BlockEntityPromotionCheck {
         realData.putString("LootTable", "minecraft:chests/village/village_fisher");
         chunk.setBlockEntityNbt(realData);
 
+        // A block entity that generation made and went on to fill (a loot table, a spawner's mob) still has its
+        // placeholder: ProtoChunk#setBlockEntity leaves it. It must stay the chunk's block entity.
+        BlockPos filled = new BlockPos(-37, 70, 115);
+        chunk.setBlockState(filled, Blocks.CHEST.defaultBlockState(), false);
+        chunk.setBlockEntityNbt(placeholder(filled, "DUMMY"));
+        net.minecraft.world.level.block.entity.BlockEntity made =
+                ((net.minecraft.world.level.block.EntityBlock) Blocks.CHEST).newBlockEntity(filled, Blocks.CHEST.defaultBlockState());
+        chunk.setBlockEntity(made);
         int promoted = InMemoryChunkGrid.promoteDummyBlockEntities(chunk);
         require(promoted == 1, "Exactly the chest placeholder must be promoted, got " + promoted);
+        require(chunk.getBlockEntity(filled) == made,
+                "A block entity made during generation must not be replaced by a new one (it would be saved empty)");
         require(chunk.getBlockEntity(chest) instanceof ChestBlockEntity, "The chest must get a real block entity");
         require("minecraft:chest".equals(chunk.getBlockEntityNbtForSaving(chest).getString("id")),
                 "The chest must be saved with its real type, not DUMMY");
@@ -42,7 +52,7 @@ public final class BlockEntityPromotionCheck {
         for (BlockPos pos : chunk.getBlockEntitiesPos()) {
             require(!"DUMMY".equals(chunk.getBlockEntityNbtForSaving(pos).getString("id")), "No DUMMY may be saved");
         }
-        System.out.println("BLOCK_ENTITY_PROMOTION_CHECK PASS dummy_promoted=true dummy_without_block_dropped=true real_data_kept=true");
+        System.out.println("BLOCK_ENTITY_PROMOTION_CHECK PASS dummy_promoted=true dummy_without_block_dropped=true real_data_kept=true made_during_generation_kept=true");
     }
 
     private static CompoundTag placeholder(BlockPos pos, String id) {

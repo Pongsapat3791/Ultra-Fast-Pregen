@@ -33,6 +33,8 @@ public final class PreGenMod {
     public static void platform(String loaderName, java.util.Map<String, String> loadedMods) {
         loader = loaderName;
         mods = java.util.Map.copyOf(loadedMods);
+        // With the loaded mods known: the mod's parts (Link, Manager) and their switches.
+        Parts.start();
     }
 
     /**

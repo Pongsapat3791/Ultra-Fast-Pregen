@@ -21,7 +21,7 @@ import net.minecraft.world.level.Level;
  *   Example: /pregen start 20
  *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) come from
  *   config/ultrafastpregen.conf. "profile" saves a JFR recording of the run to the server directory.
- * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|resume_after_restart] [value]
+ * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|resume_after_restart|depth] [value]
  *   writes one setting into that file (without a value: shows the settings)
  * - /pregen start               the area chosen with /pregen radius (or /pregen worldborder)
  * - /pregen radius <blocks>      radius of the next start's area; /pregen shape square|circle its shape
@@ -32,6 +32,7 @@ import net.minecraft.world.level.Level;
  * - /pregen reset              forget which chunks Ultra Fast Pregen generated in the selected world
  * - /pregen stop
  * - /pregen status
+ * - /pregen ufp|ufplink|ufpmanager [on|off]   the mod's parts: Ultra Fast Pregen itself, its Link, its Manager (see Parts)
  */
 public class PreGenCommand {
     // Settings for the next /pregen start; a running task keeps the values it started with.
@@ -110,6 +111,9 @@ public class PreGenCommand {
             .then(Commands.literal("status")
                 .executes(ctx -> statusPreGen(ctx.getSource()))
             )
+            .then(part(Parts.Part.UFP))
+            .then(part(Parts.Part.LINK))
+            .then(part(Parts.Part.MANAGER))
             .then(Commands.literal("set")
                 .executes(ctx -> showConfig(ctx.getSource()))
                 .then(Commands.literal("batch_size")
@@ -152,8 +156,41 @@ public class PreGenCommand {
                                 Boolean.toString(BoolArgumentType.getBool(ctx, "resume"))))
                     )
                 )
+                .then(Commands.literal("depth")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.literal("full").executes(ctx -> setConfig(ctx.getSource(), "depth", "full")))
+                    .then(Commands.literal("features").executes(ctx -> setConfig(ctx.getSource(), "depth", "features")))
+                    .then(Commands.literal("terrain").executes(ctx -> setConfig(ctx.getSource(), "depth", "terrain")))
+                )
             )
         );
+    }
+
+    /** /pregen <part>: its state; /pregen <part> on|off: turns it, which takes operator level 4 (or the singleplayer world's owner). */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> part(Parts.Part part) {
+        return Commands.literal(part.key)
+                .executes(ctx -> showParts(ctx.getSource()))
+                .then(Commands.literal("on").executes(ctx -> setPart(ctx.getSource(), part, true)))
+                .then(Commands.literal("off").executes(ctx -> setPart(ctx.getSource(), part, false)));
+    }
+
+    private static int showParts(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal("§7[PreGen] " + Parts.describe()), false);
+        return 1;
+    }
+
+    private static int setPart(CommandSourceStack source, Parts.Part part, boolean on) {
+        if (!source.hasPermission(4) && !isSingleplayerOwner(source)) {
+            source.sendFailure(Component.literal("§c[PreGen] Turning a part of the mod on or off needs operator level 4."));
+            return 0;
+        }
+        Parts.Outcome outcome = Parts.set(part, on);
+        if (!outcome.done()) {
+            source.sendFailure(Component.literal("§c[PreGen] " + outcome.message()));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("§a[PreGen] " + outcome.message()), true);
+        return 1;
     }
 
     /** Writes one setting into the config file (the command arguments validate the value). */
@@ -176,9 +213,10 @@ public class PreGenCommand {
         PreGenConfig config = PreGenConfig.load();
         String threads = config.threadsFromCpuCount ? "max (" + config.threads + ")" : Integer.toString(config.threads);
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | resume_after_restart=%b §7(change with /pregen set <key> <value>; config/%s)",
+                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | resume_after_restart=%b | depth=%s §7(change with /pregen set <key> <value>; config/%s)",
                 config.batchSizeBlocks, threads, config.alwaysParallelFeatures ? "always" : "auto",
-                config.skipExistingChunks, config.resumeAfterRestart, PreGenConfig.FILE_NAME)), false);
+                config.skipExistingChunks, config.resumeAfterRestart,
+                config.depth.name().toLowerCase(java.util.Locale.ROOT), PreGenConfig.FILE_NAME)), false);
         return 1;
     }
 

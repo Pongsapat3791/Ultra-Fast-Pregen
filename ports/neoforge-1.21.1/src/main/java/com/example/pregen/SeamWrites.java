@@ -56,7 +56,13 @@ final class SeamWrites {
      * Off only in regressions that generate the same area again with overwrite: the first run's
      * part-generated border chunks would carry that run's writes into the next.
      */
-    static volatile boolean importStoredChunks = true;
+    static volatile boolean importStoredChunks = Boolean.parseBoolean(System.getProperty("fastpregen.importStoredChunks", "true"));
+    /**
+     * On only with -Dfastpregen.readBackAlways=true, the behaviour up to 15.1: every stored part-generated
+     * chunk is read back. Otherwise only one beside a chunk whose features ran and that the run leaves as
+     * it is (see DynamicBatchPreGen#readBack).
+     */
+    static volatile boolean readBackAlways = Boolean.getBoolean("fastpregen.readBackAlways");
     /**
      * Off only in the regression's baseline: stored chunks are neither joined nor read back, and
      * no border chunks are saved (the behaviour before 1.20.1-10).
@@ -86,6 +92,9 @@ final class SeamWrites {
     private long joinedExisting;
     private long importedWrites;
     private long borderChunksSaved;
+    private long ringChunksSaved;
+    private long continuedChunks;
+    private long relitChunks;
 
     /**
      * Forgets the edges this run keeps in memory (the counts stay): the run goes on from what is
@@ -153,6 +162,30 @@ final class SeamWrites {
         borderChunksSaved += chunks;
     }
 
+    synchronized void countRingSaved(int chunks) {
+        ringChunksSaved += chunks;
+    }
+
+    synchronized long ringChunksSaved() {
+        return ringChunksSaved;
+    }
+
+    synchronized void countContinued() {
+        continuedChunks++;
+    }
+
+    synchronized void countRelit(int chunks) {
+        relitChunks += chunks;
+    }
+
+    synchronized long relit() {
+        return relitChunks;
+    }
+
+    synchronized long continued() {
+        return continuedChunks;
+    }
+
     /**
      * Writes read back from a stored part-generated chunk ({@link #diffStored}); they reached it
      * before any write of this run.
@@ -190,7 +223,7 @@ final class SeamWrites {
                 backToSaved.put(chunk, entry.getValue());
                 mergedBack += entry.getValue().size();
                 updateFinal(chunk, entry.getValue());
-            } else if (plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
+            } else if (plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
                     ? !isSet(handled, chunk) : !heldByServer.test(chunk)) {
                 pending.computeIfAbsent(chunk, key -> new ArrayList<>()).addAll(entry.getValue());
             }
@@ -236,7 +269,19 @@ final class SeamWrites {
      */
     @SuppressWarnings("unchecked")
     static Final finalFromStored(CompoundTag chunk, int minSectionY, int sectionCount) {
-        if (storedStatus(chunk) != net.minecraft.world.level.chunk.status.ChunkStatus.FULL) return null;
+        return finalFromStored(chunk, minSectionY, sectionCount, net.minecraft.world.level.chunk.status.ChunkStatus.FULL);
+    }
+
+    /**
+     * from: the status from which the chunk's blocks are taken as final. A run that stops after features
+     * stores its chunks at that status: their features ran, and so they are for its later batches and runs
+     * what a fully generated chunk is for a full run.
+     */
+    @SuppressWarnings("unchecked")
+    static Final finalFromStored(CompoundTag chunk, int minSectionY, int sectionCount,
+                                 net.minecraft.world.level.chunk.status.ChunkStatus from) {
+        net.minecraft.world.level.chunk.status.ChunkStatus status = storedStatus(chunk);
+        if (status == null || !status.isOrAfter(from)) return null;
         PalettedContainer<BlockState>[] states = new PalettedContainer[sectionCount];
         ListTag sections = chunk.getList("sections", Tag.TAG_COMPOUND);
         for (int i = 0; i < sections.size(); i++) {
@@ -336,13 +381,13 @@ final class SeamWrites {
         return finals.get(chunk);
     }
 
-    /** Whether some chunk around this one lies in the area and is not handled yet. */
+    /** Whether some chunk around this one is one this run generates (the area, or its ring) and is not handled yet. */
     synchronized boolean hasUnhandledNeighbor(long chunk, ChunkBatchPlan plan) {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
         for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
-                if ((dx != 0 || dz != 0) && plan.containsChunk(x + dx, z + dz)
+                if ((dx != 0 || dz != 0) && plan.generates(x + dx, z + dz)
                         && !isSet(handled, ChunkPos.asLong(x + dx, z + dz))) return true;
             }
         }
@@ -355,12 +400,12 @@ final class SeamWrites {
      */
     synchronized void pruneFinals(ChunkBatchPlan plan) {
         finals.keySet().removeIf(chunk -> settled(chunk, plan));
-        pending.keySet().removeIf(chunk -> !plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
+        pending.keySet().removeIf(chunk -> !plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
                 && !hasUnhandledNeighbor(chunk, plan));
     }
 
     private boolean settled(long chunk, ChunkBatchPlan plan) {
-        boolean inArea = plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
+        boolean inArea = plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
         return (!inArea || isSet(handled, chunk)) && !hasUnhandledNeighbor(chunk, plan);
     }
 
@@ -464,6 +509,77 @@ final class SeamWrites {
         }
         chunk.put("Heightmaps", heightmaps);
         chunk.putBoolean("isLightOn", false);
+        return true;
+    }
+
+    /**
+     * Puts light into a stored chunk's sections. block, sky: layers by light section, the lowest (bottomSection)
+     * first; null for none.
+     * <ul>
+     * <li>brighterOnly false: these become the chunk's light (a part-generated chunk saved with the light that
+     * reached it; what its sections held before is dropped).</li>
+     * <li>brighterOnly true: per block the brighter of the stored light and this stays. For a lit chunk a section
+     * stored without a sky layer stays without one: there the engine answers from the layer above, which a
+     * layer of ours would hide.</li>
+     * </ul>
+     * Returns whether the chunk changed.
+     */
+    static boolean putLight(CompoundTag chunk, net.minecraft.world.level.chunk.DataLayer[] block,
+                            net.minecraft.world.level.chunk.DataLayer[] sky, int bottomSection, boolean brighterOnly,
+                            boolean litChunk) {
+        ListTag sections = chunk.getList("sections", net.minecraft.nbt.Tag.TAG_COMPOUND);
+        Map<Integer, CompoundTag> byY = new HashMap<>();
+        for (int i = 0; i < sections.size(); i++) {
+            CompoundTag section = sections.getCompound(i);
+            byY.put((int) section.getByte("Y"), section);
+        }
+        boolean changed = false;
+        if (!brighterOnly) {
+            for (CompoundTag section : byY.values()) {
+                if (section.contains("BlockLight")) {
+                    section.remove("BlockLight");
+                    changed = true;
+                }
+                if (section.contains("SkyLight")) {
+                    section.remove("SkyLight");
+                    changed = true;
+                }
+            }
+        }
+        int count = block != null ? block.length : sky != null ? sky.length : 0;
+        boolean added = false;
+        for (int i = 0; i < count; i++) {
+            int before = sections.size();
+            changed |= putLayer(sections, byY, bottomSection + i, "BlockLight", block == null ? null : block[i], brighterOnly, false);
+            changed |= putLayer(sections, byY, bottomSection + i, "SkyLight", sky == null ? null : sky[i], brighterOnly, litChunk);
+            added |= sections.size() != before;
+        }
+        if (added) chunk.put("sections", sections);
+        return changed;
+    }
+
+    private static boolean putLayer(ListTag sections, Map<Integer, CompoundTag> byY, int y, String key,
+                                    net.minecraft.world.level.chunk.DataLayer layer, boolean brighterOnly, boolean keepAbsent) {
+        // As Minecraft writes a chunk: every layer the engine holds data for. A sky layer of zeros matters: a
+        // section stored without one reads the layer above it.
+        if (layer == null || layer.isEmpty()) return false;
+        byte[] ours = layer.getData();
+        CompoundTag section = byY.get(y);
+        byte[] stored = section == null ? null : (section.contains(key, net.minecraft.nbt.Tag.TAG_BYTE_ARRAY) ? section.getByteArray(key) : null);
+        if (brighterOnly && stored != null && stored.length == ours.length) {
+            byte[] merged = GridLight.brighter(stored, ours);
+            if (java.util.Arrays.equals(merged, stored)) return false;
+            section.putByteArray(key, merged);
+            return true;
+        }
+        if (brighterOnly && keepAbsent) return false;
+        if (section == null) {
+            section = new CompoundTag();
+            section.putByte("Y", (byte) y);
+            sections.add(section);
+            byY.put(y, section);
+        }
+        section.putByteArray(key, ours.clone());
         return true;
     }
 

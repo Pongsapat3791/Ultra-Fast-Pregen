@@ -1,9 +1,11 @@
 package com.example.pregen.mixin;
 
+import com.example.pregen.Mc;
 import com.example.pregen.InMemoryChunkGrid;
 import com.example.pregen.WorldgenCompat;
 import com.example.pregen.terrain.BiomeChunkSource;
 import com.example.pregen.terrain.FeatureBiomes;
+import com.example.pregen.terrain.OreHeights;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -29,12 +31,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(WorldGenRegion.class)
-public abstract class WorldGenRegionMixin implements BiomeChunkSource {
+public abstract class WorldGenRegionMixin implements BiomeChunkSource, OreHeights.Region {
 
     @Shadow @Final private ServerLevel level;
     @Shadow @Final private StaticCache2D<GenerationChunkHolder> cache;
     @Shadow @Final @Mutable private BiomeManager biomeManager;
     @Shadow @Final private ChunkStep generatingStep;
+
+    /** The terrain heights ore attempts ask about, in a features step of this mod's batches (see OreHeights). */
+    @Unique private OreHeights pregen$oreHeights;
 
     @Shadow public abstract boolean hasChunk(int x, int z);
 
@@ -94,6 +99,19 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
         }
     }
 
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void pregen$oreHeights(CallbackInfo ci) {
+        if (OreHeights.enabled && generatingStep.targetStatus() == ChunkStatus.FEATURES && pregen$grid() != null
+                && WorldgenCompat.oreHeightsAllowed()) {
+            pregen$oreHeights = new OreHeights((WorldGenRegion) (Object) this);
+        }
+    }
+
+    @Override
+    public OreHeights pregen$oreHeights() {
+        return pregen$oreHeights;
+    }
+
     /** The chunk whose biomes the region's getNoiseBiome reads for its cells, found as LevelReader's does. */
     @Override
     public ChunkAccess pregen$getBiomeChunk(int chunkX, int chunkZ) {
@@ -105,7 +123,7 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
     private InMemoryChunkGrid pregen$grid() {
         ChunkPos center = this.getCenter();
         InMemoryChunkGrid grid = InMemoryChunkGrid.owning(this.level, this.cache, center);
-        return grid != null && grid.isInsideGrid(center.x(), center.z()) ? grid : null;
+        return grid != null && grid.isInsideGrid(Mc.x(center), Mc.z(center)) ? grid : null;
     }
 
     @Inject(
@@ -123,8 +141,8 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
         InMemoryChunkGrid grid = InMemoryChunkGrid.owning(this.level, this.cache, this.getCenter());
         if (grid != null) {
             ChunkPos center = this.getCenter();
-            if (grid.isInsideGrid(center.x(), center.z())) {
-                cir.setReturnValue(new DifficultyInstance(this.level.getDifficulty(), this.level.getOverworldClockTime(), 0L, this.level.getMoonBrightness(pos)));
+            if (grid.isInsideGrid(Mc.x(center), Mc.z(center))) {
+                cir.setReturnValue(Mc.regionDifficulty(this.level, pos));
             }
         }
     }

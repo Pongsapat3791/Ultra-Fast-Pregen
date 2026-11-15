@@ -146,9 +146,9 @@ public final class PregenApiImpl implements PregenApi {
 
     static void fireChunksSaved(ServerLevel level, List<ChunkPos> positions) {
         if (INSTANCE.listeners.isEmpty() || level == null || positions.isEmpty()) return;
-        String dimension = level.dimension().identifier().toString();
+        String dimension = Mc.id(level.dimension());
         long[] chunks = new long[positions.size()];
-        for (int i = 0; i < chunks.length; i++) chunks[i] = positions.get(i).pack();
+        for (int i = 0; i < chunks.length; i++) chunks[i] = Mc.pack(positions.get(i));
         // Each listener gets its own array, so one changing it does not affect the next.
         INSTANCE.each(listener -> listener.onChunksSaved(dimension, chunks.clone()));
     }

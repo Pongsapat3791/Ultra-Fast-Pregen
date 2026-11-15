@@ -24,6 +24,9 @@ public final class WorldgenLocks {
     /** NetherFortressPieces counts the rooms and bridges a layout placed in piece weights kept in static fields. */
     public static final ReentrantLock NETHER_FORTRESS_LAYOUT = new ReentrantLock();
 
+    /** The block a selector picked for this thread's piece, between the pick and its use (see StructurePieceSelectorMixin). */
+    public static final ThreadLocal<net.minecraft.world.level.block.state.BlockState> PICKED = new ThreadLocal<>();
+
     private WorldgenLocks() {}
 
     public static void acquire(ReentrantLock lock, String what) {

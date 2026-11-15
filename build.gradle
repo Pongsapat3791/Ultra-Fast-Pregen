@@ -74,7 +74,9 @@ dependencies {
 }
 
 processResources {
-	def version = project.version
+	// The jar keeps its name (…-fabric-1.20.x-16.jar); inside, the range is spelled out: Fabric Loader reads a mod's version as a
+	// semantic version, and "1.20.x-16" is none (a warning at every start, and an error from mods that compare versions).
+	def version = project.version.toString().replace('1.20.x', '1.20-1.20.6')
 	inputs.property "version", version
 
 	filesMatching("fabric.mod.json") {
@@ -101,12 +103,22 @@ java {
 	targetCompatibility = JavaVersion.VERSION_17
 }
 
+// Link and Manager, parts of the mod on every loader and version (see shared/).
+sourceSets.main {
+	java.srcDir 'shared/java'
+	resources.srcDir 'shared/resources'
+}
+
 jar {
 	def projectName = project.name
 	inputs.property "projectName", projectName
 
 	from("LICENSE") {
 		rename { "${it}_$projectName"}
+	}
+	manifest {
+		// java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+		attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
 	}
 }
 

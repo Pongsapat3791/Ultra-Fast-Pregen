@@ -41,6 +41,12 @@ final class PreGenSaveFile {
     private final long seed;
     /** Region key -> one bit per chunk of that region. */
     private final Long2ObjectMap<long[]> regions = new Long2ObjectOpenHashMap<>();
+    /**
+     * Region key -> one bit per chunk a run that stopped early saved there (depth features or terrain):
+     * not finished chunks, so not in {@code regions}. A later full run generates them again with the
+     * same features (see DynamicBatchPreGen#readBack). Marking a chunk done leaves its bit.
+     */
+    private final Long2ObjectMap<long[]> early = new Long2ObjectOpenHashMap<>();
     private final boolean seedChanged;
     private boolean hasLastRun;
     /** Side of the last run's square (diameter of its circle) in blocks. */
@@ -92,6 +98,12 @@ final class PreGenSaveFile {
             CompoundTag entry = partial.getCompound(i);
             long[] bits = entry.getLongArray("chunks");
             if (bits.length == REGION_WORDS) record.regions.put(entry.getLong("region"), bits);
+        }
+        ListTag earlyRegions = tag.getList("early", Tag.TAG_COMPOUND);
+        for (int i = 0; i < earlyRegions.size(); i++) {
+            CompoundTag entry = earlyRegions.getCompound(i);
+            long[] bits = entry.getLongArray("chunks");
+            if (bits.length == REGION_WORDS) record.early.put(entry.getLong("region"), bits);
         }
         if (tag.contains("last_run", Tag.TAG_COMPOUND)) {
             CompoundTag last = tag.getCompound("last_run");
@@ -148,9 +160,30 @@ final class PreGenSaveFile {
         }
     }
 
+    /** Chunks a run that stopped early saved (see {@code early}). */
+    synchronized void markEarly(Iterable<ChunkPos> positions) {
+        for (ChunkPos pos : positions) {
+            long[] bits = early.computeIfAbsent(ChunkPos.asLong(pos.x >> 5, pos.z >> 5), key -> new long[REGION_WORDS]);
+            int bit = bitIndex(pos.x, pos.z);
+            bits[bit >>> 6] |= 1L << bit;
+        }
+    }
+
+    /** Whether a run that stopped early saved this chunk, at any time since the area was last forgotten. */
+    synchronized boolean savedEarly(int chunkX, int chunkZ) {
+        long[] bits = early.get(ChunkPos.asLong(chunkX >> 5, chunkZ >> 5));
+        int bit = bitIndex(chunkX, chunkZ);
+        return bits != null && (bits[bit >>> 6] & 1L << bit) != 0;
+    }
+
     /** Forgets the chunks of an area, for a run that generates them again. */
     synchronized void forget(ChunkBatchPlan plan) {
-        var entries = regions.long2ObjectEntrySet().iterator();
+        forget(regions, plan);
+        forget(early, plan);
+    }
+
+    private static void forget(Long2ObjectMap<long[]> map, ChunkBatchPlan plan) {
+        var entries = map.long2ObjectEntrySet().iterator();
         while (entries.hasNext()) {
             Long2ObjectMap.Entry<long[]> entry = entries.next();
             int regionX = ChunkPos.getX(entry.getLongKey());
@@ -250,6 +283,14 @@ final class PreGenSaveFile {
         }
         tag.put("full", new LongArrayTag(full.toLongArray()));
         tag.put("partial", partial);
+        ListTag earlyRegions = new ListTag();
+        for (Long2ObjectMap.Entry<long[]> entry : early.long2ObjectEntrySet()) {
+            CompoundTag region = new CompoundTag();
+            region.putLong("region", entry.getLongKey());
+            region.put("chunks", new LongArrayTag(entry.getValue().clone()));
+            earlyRegions.add(region);
+        }
+        tag.put("early", earlyRegions);
         if (hasLastRun) {
             CompoundTag last = new CompoundTag();
             last.putInt("size_blocks", lastSizeBlocks);

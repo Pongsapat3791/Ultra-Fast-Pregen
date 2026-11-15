@@ -1,0 +1,102 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version "${moddev_version}"
+}
+
+// NeoForge for Minecraft 1.20.5 and 1.20.6. The source is the Fabric build's two folders up, as for
+// ports/neoforge-1.20.4; only the entry point is this tree's.
+def shared = file('../..')
+
+version = project.version
+group = project.group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+// The Fabric build's source spells Minecraft 1.20.1's names, and reaches what 1.20.5 changed by name (ChunkSteps,
+// WorldChunkIO). One class it names everywhere moved in 1.20.5: ChunkStatus, into the package "status". This tree
+// compiles a copy of the source with that one name rewritten, and its own LegacyCalls (the calls only 1.20 to 1.20.4
+// have, which a build against 1.20.6 cannot hold).
+def preparedSource = layout.buildDirectory.dir('generated/sources/shared')
+def prepareSharedSource = tasks.register('prepareSharedSource', Sync) {
+    from(new File(shared, 'src/main/java')) {
+        exclude 'com/example/pregen/fabric/**'
+        exclude 'com/example/pregen/LegacyCalls.java'
+    }
+    into preparedSource
+    filteringCharset = 'UTF-8'
+    filter { String line ->
+        line.replace('net.minecraft.world.level.chunk.ChunkStatus', 'net.minecraft.world.level.chunk.status.ChunkStatus')
+            .replace('net/minecraft/world/level/chunk/ChunkStatus', 'net/minecraft/world/level/chunk/status/ChunkStatus')
+    }
+}
+
+sourceSets {
+    main {
+        java {
+            srcDir preparedSource
+            // Link and Manager, parts of the mod on every loader and version.
+            srcDir new File(shared, 'shared/java')
+        }
+        resources {
+            srcDir new File(shared, 'src/main/resources')
+            srcDir new File(shared, 'shared/resources')
+            exclude 'fabric.mod.json'
+        }
+    }
+}
+
+neoForge {
+    enable {
+        version = project.neo_version
+        // Only compiled classes are needed; skips decompiling and recompiling Minecraft.
+        disableRecompilation = true
+    }
+
+    mods {
+        ultrafastpregen {
+            sourceSet sourceSets.main
+        }
+    }
+
+    runs {
+        server {
+            server()
+            gameDirectory = file('run')
+            programArgument '--nogui'
+        }
+    }
+}
+
+tasks.named('compileJava') {
+    dependsOn prepareSharedSource
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+tasks.named('processResources') {
+    def props = [version: project.version, neo_version_range: project.neo_version_range,
+                 minecraft_version_range: project.minecraft_version_range]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+jar {
+    // java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+    manifest.attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+    from(new File(shared, 'LICENSE')) {
+        rename { "${it}_ultrafastpregen" }
+    }
+}
+
+// Forge 1.20.6 takes the same classes (see the script), with this tree's own entry point.
+apply from: "../../shared/forge/forge-jar.gradle"

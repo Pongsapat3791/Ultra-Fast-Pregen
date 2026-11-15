@@ -1,0 +1,135 @@
+// Forge's jar of a NeoForge tree: apply from: '<path>/shared/forge/forge-jar.gradle', after sourceSets.main is set up.
+//
+// From Minecraft 1.20.6 on Forge runs on Mojang's names, as NeoForge does. Where it also patches nothing this mod
+// calls differently, Forge's jar can hold this tree's compiled classes, with Forge's entry point and metadata in
+// place of NeoForge's. That is not taken on trust: every Forge jar is link-checked against the server of every
+// Forge version it names, and booted there, before it is released (COMPATIBILITY.md has the results).
+//   ./gradlew -p ports/neoforge-<version> forgeJar
+// gradle.properties of the tree: forge_minecraft_versions (the jar's name, e.g. 1.21-1.21.1), forge_minecraft_range,
+// forge_version_range, forge_loader_range. Optional: forge_entry_dir, the folder of the tree's own Forge entry point.
+def forgeShared = file("${buildscript.sourceFile.parentFile}")
+
+sourceSets {
+	// Forge's @Mod annotation by shape only (see the stub), so that no Forge file is needed to compile.
+	forgeStubs {
+		java { srcDir new File(forgeShared, 'stubs') }
+	}
+	forge {
+		// The entry point of the 26.x and 1.21.x sources; a tree of another family names its own (forge_entry_dir).
+		java { srcDir project.hasProperty('forge_entry_dir') ? file(project.forge_entry_dir) : new File(forgeShared, 'java') }
+		resources { srcDir new File(forgeShared, 'resources') }
+		compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath + sourceSets.forgeStubs.output
+	}
+}
+
+// The mod's own version is the end of the tree's version (1.21-1.21.1-16 -> 16, ...-16-dev3 -> 16-dev3).
+def ownVersion = (project.version.toString() =~ /\d+(\.\d+)?(-[A-Za-z]\w*)?$/)
+def forgeJarVersion = "${project.forge_minecraft_versions}-" + (ownVersion.find() ? ownVersion.group() : project.version)
+
+tasks.named('processForgeResources') {
+	def properties = [
+		version: forgeJarVersion,
+		forge_loader_range: project.forge_loader_range,
+		forge_version_range: project.forge_version_range,
+		forge_minecraft_range: project.forge_minecraft_range
+	]
+	inputs.properties properties
+	filesMatching('META-INF/mods.toml') {
+		expand properties
+	}
+}
+
+// The tree's classes as Forge takes them. One thing differs from NeoForge's: the Mixin this tree compiles with
+// declares @Redirect's "at" as a list, so the compiler stores at = [@At(...)]. Forge's own Mixin (0.8.7) declares one
+// @At there. It reads the list too, but the MixinExtras that Forge bundles from Minecraft 26.1 on (0.5.4) does not:
+// the server then stops at its first class with a redirect. So a list of one @At becomes that @At, which is what a
+// mod compiled against Forge's Mixin holds. Nothing else of a class changes.
+// ASM is the tree's own (the loader's, on its compile class path), so this needs no file the build does not have.
+def forgeClassesDir = layout.buildDirectory.dir('forge-classes')
+def forgeMainClasses = tasks.register('forgeMainClasses') {
+	dependsOn tasks.named('classes')
+	def source = sourceSets.main.output.classesDirs
+	def compileClasspath = sourceSets.main.compileClasspath
+	inputs.files(source)
+	outputs.dir(forgeClassesDir)
+	doLast {
+		def asm = compileClasspath.files.find { it.name ==~ /asm-\d[\d.]*\.jar/ }
+		def asmTree = compileClasspath.files.find { it.name ==~ /asm-tree-\d[\d.]*\.jar/ }
+		if (asm == null || asmTree == null) {
+			throw new GradleException('forgeMainClasses: no asm and asm-tree jar on the compile class path of this tree')
+		}
+		def loader = new URLClassLoader([asm.toURI().toURL(), asmTree.toURI().toURL()] as URL[], (ClassLoader) null)
+		def readerClass = loader.loadClass('org.objectweb.asm.ClassReader')
+		def writerClass = loader.loadClass('org.objectweb.asm.ClassWriter')
+		def nodeClass = loader.loadClass('org.objectweb.asm.tree.ClassNode')
+		def annotationClass = loader.loadClass('org.objectweb.asm.tree.AnnotationNode')
+		def target = forgeClassesDir.get().asFile
+		project.delete(target)
+		int rewritten = 0
+		source.each { File root ->
+			if (!root.isDirectory()) return
+			root.eachFileRecurse { File file ->
+				if (!file.isFile()) return
+				def relative = root.toPath().relativize(file.toPath()).toString().replace(File.separator, '/')
+				if (relative.startsWith('com/example/pregen/neoforge/')) return
+				def out = new File(target, relative)
+				out.parentFile.mkdirs()
+				byte[] bytes = file.bytes
+				if (relative.endsWith('.class')) {
+					def node = nodeClass.getDeclaredConstructor().newInstance()
+					readerClass.getConstructor(byte[].class).newInstance([bytes] as Object[]).accept(node, 0)
+					boolean changed = false
+					node.methods.each { method ->
+						(method.visibleAnnotations ?: []).each { annotation ->
+							if (annotation.desc != 'Lorg/spongepowered/asm/mixin/injection/Redirect;' || annotation.values == null) return
+							for (int i = 0; i + 1 < annotation.values.size(); i += 2) {
+								def value = annotation.values[i + 1]
+								if (annotation.values[i] == 'at' && value instanceof List && value.size() == 1
+										&& annotationClass.isInstance(value[0])) {
+									annotation.values[i + 1] = value[0]
+									changed = true
+									rewritten++
+								}
+							}
+						}
+					}
+					if (changed) {
+						// No frames or maxima are computed anew: only an annotation's value changed.
+						def writer = writerClass.getConstructor(int.class).newInstance(0)
+						node.accept(writer)
+						bytes = writer.toByteArray()
+					}
+				}
+				out.bytes = bytes
+			}
+		}
+		loader.close()
+		logger.lifecycle("forgeMainClasses: ${rewritten} @Redirect annotations now hold one @At (${asm.name})")
+	}
+}
+
+tasks.register('forgeJar', Jar) {
+	group = 'build'
+	description = "Forge's jar: this tree's classes with Forge's entry point."
+	archiveBaseName = 'ultrafastpregen-forge'
+	archiveVersion = forgeJarVersion
+	// pack.mcmeta is Forge's (shared/forge/resources): without one, Forge's client opens with a warning screen
+	// ("failed to load a valid ResourcePackInfo"). A tree that has its own in its resources keeps its own.
+	duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+	dependsOn forgeMainClasses
+	from(forgeClassesDir)
+	from(sourceSets.main.output.resourcesDir) {
+		exclude 'META-INF/neoforge.mods.toml'
+	}
+	dependsOn tasks.named('processResources')
+	from sourceSets.forge.output
+	from(new File(forgeShared, '../../LICENSE')) {
+		rename { "${it}_ultrafastpregen" }
+	}
+	manifest {
+		// Forge loads a jar's mixins from this attribute. Main-Class: java -jar <this jar> merge|check ...,
+		// Link's tool that adds a generated world's chunks to another world.
+		attributes('MixinConfigs': 'pregen.mixins.json',
+				'Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+	}
+}

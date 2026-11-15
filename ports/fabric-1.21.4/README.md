@@ -1,0 +1,12 @@
+# Ultra Fast Pregen for Fabric, Minecraft 1.21.2 to 1.21.4
+
+The Fabric build of Ultra Fast Pregen for Minecraft 1.21.2 to 1.21.4. See the [main README](../../README.md) for what the
+mod does.
+
+- **Build:** `./gradlew -p ports/fabric-1.21.4 build` gives `build/libs/ultrafastpregen-fabric-1.21.2-1.21.4-16.jar`
+- **Requires:** Fabric Loader, Java 21; no Fabric API; on the server only, players do not need it
+
+This tree holds build files only. Its source is the 26.x family's ([ports/neoforge-26.1.2](../neoforge-26.1.2)), the
+layers of what Minecraft 1.21.2 to 1.21.4 spell differently (the NeoForge trees hold them, both loaders share them; see
+[ports/neoforge-1.21.4](../neoforge-1.21.4/README.md)), and Fabric's entry point from
+[ports/fabric-1.21.11](../fabric-1.21.11). Loom remaps the jar to Fabric's intermediary names.

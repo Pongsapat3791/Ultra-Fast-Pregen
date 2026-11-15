@@ -84,8 +84,21 @@ tasks.named('test') {
     enabled = false
 }
 
+// Link and Manager, parts of the mod on every loader and version (see shared/).
+sourceSets.main {
+    java.srcDir '../../shared/java'
+    resources.srcDir '../../shared/resources'
+}
+
 jar {
     from('LICENSE') {
         rename { "${it}_ultrafastpregen" }
     }
+    manifest {
+        // java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+        attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+    }
 }
+
+// Forge takes the same classes (see the script).
+apply from: "../../shared/forge/forge-jar.gradle"

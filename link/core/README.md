@@ -1,5 +1,9 @@
 # Ultra Fast Pregen Link 0.3.0
 
+> **From Ultra Fast Pregen 16 on, Link is built into Ultra Fast Pregen** (turn it on with `/pregen ufplink on`; its
+> code is in [shared/](../../shared/java/io/github/pongsapat3791/ultrafastpregen/link)). This folder is the standalone
+> mod for Ultra Fast Pregen 15.1 and gets no new versions.
+
 Pre-generates the world **outside the world players are in**, on this server or on others, then adds only the chunks the
 world does not have yet.
 

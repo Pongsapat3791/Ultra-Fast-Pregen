@@ -9,7 +9,7 @@ Commands, the config file, the save file and how it works are the same as in the
 
 - **Requires:** Minecraft 1.20 to 1.20.4 with its Forge (46.x for 1.20, 47.x for 1.20.1, 48.x for 1.20.2, 49.x for 1.20.3 and 1.20.4) and
   Java 17 or newer. Forge 1.20.6 runs on Mojang's names, not the SRG names this jar is built with; there is no Forge for 1.20.5.
-- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20-1.20.4-15.1.jar`
+- **File:** `ports/forge-1.20.1/build/libs/ultrafastpregen-forge-1.20-1.20.4-16.jar`
 - **Install:** on the server only; players can join with or without it
 
 ## Building and testing (from the main project folder)

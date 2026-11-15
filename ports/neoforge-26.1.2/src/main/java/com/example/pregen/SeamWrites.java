@@ -46,10 +46,7 @@ final class SeamWrites {
     record Write(int x, int y, int z, BlockState before, BlockState after, CompoundTag blockEntity) {}
 
     /** ChunkSerializer's codec for a section's block states. */
-    static final net.minecraft.world.level.chunk.Strategy<BlockState> STATES =
-            net.minecraft.world.level.chunk.Strategy.createForBlockStates(Block.BLOCK_STATE_REGISTRY);
-    static final Codec<PalettedContainer<BlockState>> BLOCK_STATE_CODEC = PalettedContainer.codecRW(
-            BlockState.CODEC, STATES, Blocks.AIR.defaultBlockState());
+    static final Codec<PalettedContainer<BlockState>> BLOCK_STATE_CODEC = Mc.blockStatesCodec();
 
     /** Off only in the seam regression, to measure the batch edges without this. */
     static volatile boolean enabled = true;
@@ -57,7 +54,13 @@ final class SeamWrites {
      * Off only in regressions that generate the same area again with overwrite: the first run's
      * part-generated border chunks would carry that run's writes into the next.
      */
-    static volatile boolean importStoredChunks = true;
+    static volatile boolean importStoredChunks = Boolean.parseBoolean(System.getProperty("fastpregen.importStoredChunks", "true"));
+    /**
+     * On only with -Dfastpregen.readBackAlways=true, the behaviour up to 15.1: every stored part-generated
+     * chunk is read back. Otherwise only one beside a chunk whose features ran and that the run leaves as
+     * it is (see DynamicBatchPreGen#readBack).
+     */
+    static volatile boolean readBackAlways = Boolean.getBoolean("fastpregen.readBackAlways");
     /**
      * Off only in the regression's baseline: stored chunks are neither joined nor read back, and
      * no border chunks are saved (the behaviour before 1.20.1-10).
@@ -87,6 +90,9 @@ final class SeamWrites {
     private long joinedExisting;
     private long importedWrites;
     private long borderChunksSaved;
+    private long ringChunksSaved;
+    private long continuedChunks;
+    private long relitChunks;
 
     /**
      * Forgets the edges this run keeps in memory (the counts stay): the run goes on from what is
@@ -154,6 +160,30 @@ final class SeamWrites {
         borderChunksSaved += chunks;
     }
 
+    synchronized void countRingSaved(int chunks) {
+        ringChunksSaved += chunks;
+    }
+
+    synchronized long ringChunksSaved() {
+        return ringChunksSaved;
+    }
+
+    synchronized void countContinued() {
+        continuedChunks++;
+    }
+
+    synchronized void countRelit(int chunks) {
+        relitChunks += chunks;
+    }
+
+    synchronized long relit() {
+        return relitChunks;
+    }
+
+    synchronized long continued() {
+        return continuedChunks;
+    }
+
     /**
      * Writes read back from a stored part-generated chunk ({@link #diffStored}); they reached it
      * before any write of this run.
@@ -191,7 +221,7 @@ final class SeamWrites {
                 backToSaved.put(chunk, entry.getValue());
                 mergedBack += entry.getValue().size();
                 updateFinal(chunk, entry.getValue());
-            } else if (plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
+            } else if (plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
                     ? !isSet(handled, chunk) : !heldByServer.test(chunk)) {
                 pending.computeIfAbsent(chunk, key -> new ArrayList<>()).addAll(entry.getValue());
             }
@@ -220,14 +250,14 @@ final class SeamWrites {
     }
 
     private static boolean currentVersion(CompoundTag chunk) {
-        return chunk.contains("DataVersion") && chunk.getIntOr("DataVersion", 0)
-                == net.minecraft.SharedConstants.getCurrentVersion().dataVersion().version();
+        return chunk.contains("DataVersion") && McNbt.intOr(chunk, "DataVersion", 0)
+                == Mc.dataVersion();
     }
 
     /** The stored chunk's status, or null when it is unknown or from another Minecraft version. */
     static net.minecraft.world.level.chunk.status.ChunkStatus storedStatus(CompoundTag chunk) {
         if (!currentVersion(chunk) || !chunk.contains("Status")) return null;
-        return net.minecraft.world.level.chunk.status.ChunkStatus.byName(chunk.getStringOr("Status", ""));
+        return net.minecraft.world.level.chunk.status.ChunkStatus.byName(McNbt.string(chunk, "Status", ""));
     }
 
     /**
@@ -237,28 +267,40 @@ final class SeamWrites {
      */
     @SuppressWarnings("unchecked")
     static Final finalFromStored(CompoundTag chunk, int minSectionY, int sectionCount) {
-        if (storedStatus(chunk) != net.minecraft.world.level.chunk.status.ChunkStatus.FULL) return null;
+        return finalFromStored(chunk, minSectionY, sectionCount, net.minecraft.world.level.chunk.status.ChunkStatus.FULL);
+    }
+
+    /**
+     * from: the status from which the chunk's blocks are taken as final. A run that stops after features
+     * stores its chunks at that status: their features ran, and so they are for its later batches and runs
+     * what a fully generated chunk is for a full run.
+     */
+    @SuppressWarnings("unchecked")
+    static Final finalFromStored(CompoundTag chunk, int minSectionY, int sectionCount,
+                                 net.minecraft.world.level.chunk.status.ChunkStatus from) {
+        net.minecraft.world.level.chunk.status.ChunkStatus status = storedStatus(chunk);
+        if (status == null || !status.isOrAfter(from)) return null;
         PalettedContainer<BlockState>[] states = new PalettedContainer[sectionCount];
-        ListTag sections = chunk.getListOrEmpty("sections");
+        ListTag sections = McNbt.compounds(chunk, "sections");
         for (int i = 0; i < sections.size(); i++) {
-            CompoundTag section = sections.getCompoundOrEmpty(i);
-            int index = section.getByteOr("Y", (byte) 0) - minSectionY;
+            CompoundTag section = McNbt.compound(sections, i);
+            int index = McNbt.byteOr(section, "Y", (byte) 0) - minSectionY;
             if (index < 0 || index >= sectionCount || !section.contains("block_states")) continue;
             PalettedContainer<BlockState> decoded = BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompoundOrEmpty("block_states")).result().orElse(null);
+                    .parse(NbtOps.INSTANCE, McNbt.compound(section, "block_states")).result().orElse(null);
             if (decoded == null) return null;
             states[index] = writableCopy(decoded);
         }
         for (int i = 0; i < sectionCount; i++) {
             if (states[i] == null) {
-                states[i] = new PalettedContainer<>(Blocks.AIR.defaultBlockState(), STATES);
+                states[i] = Mc.emptyBlockStates();
             }
         }
         Map<Heightmap.Types, long[]> heightmaps = new EnumMap<>(Heightmap.Types.class);
-        CompoundTag stored = chunk.getCompoundOrEmpty("Heightmaps");
+        CompoundTag stored = McNbt.compound(chunk, "Heightmaps");
         for (Heightmap.Types type : Heightmap.Types.values()) {
             if (stored.contains(type.getSerializationKey())) {
-                heightmaps.put(type, stored.getLongArray(type.getSerializationKey()).orElse(new long[0]));
+                heightmaps.put(type, McNbt.longs(stored, type.getSerializationKey()));
             }
         }
         return new Final(states, heightmaps, new ArrayList<>());
@@ -275,21 +317,21 @@ final class SeamWrites {
         int minX = regenerated.getPos().getMinBlockX();
         int minZ = regenerated.getPos().getMinBlockZ();
         Map<Long, CompoundTag> blockEntities = new HashMap<>();
-        ListTag entities = chunk.getListOrEmpty("block_entities");
+        ListTag entities = McNbt.compounds(chunk, "block_entities");
         for (int i = 0; i < entities.size(); i++) {
-            CompoundTag entity = entities.getCompoundOrEmpty(i);
-            blockEntities.put(BlockPos.asLong(entity.getIntOr("x", 0), entity.getIntOr("y", 0), entity.getIntOr("z", 0)), entity);
+            CompoundTag entity = McNbt.compound(entities, i);
+            blockEntities.put(BlockPos.asLong(McNbt.intOr(entity, "x", 0), McNbt.intOr(entity, "y", 0), McNbt.intOr(entity, "z", 0)), entity);
         }
         List<Write> writes = new ArrayList<>();
         LevelChunkSection[] mine = regenerated.getSections();
-        ListTag sections = chunk.getListOrEmpty("sections");
+        ListTag sections = McNbt.compounds(chunk, "sections");
         for (int i = 0; i < sections.size(); i++) {
-            CompoundTag section = sections.getCompoundOrEmpty(i);
-            int sectionY = section.getByteOr("Y", (byte) 0);
+            CompoundTag section = McNbt.compound(sections, i);
+            int sectionY = McNbt.byteOr(section, "Y", (byte) 0);
             int index = regenerated.getSectionIndexFromSectionY(sectionY);
             if (index < 0 || index >= mine.length || !section.contains("block_states")) continue;
             PalettedContainer<BlockState> stored = BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompoundOrEmpty("block_states")).result().orElse(null);
+                    .parse(NbtOps.INSTANCE, McNbt.compound(section, "block_states")).result().orElse(null);
             if (stored == null) continue;
             PalettedContainer<BlockState> generated = mine[index].getStates();
             for (int y = 0; y < 16; y++) {
@@ -317,7 +359,7 @@ final class SeamWrites {
      */
     static PalettedContainer<BlockState> writableCopy(PalettedContainer<BlockState> source) {
         BlockState air = Blocks.AIR.defaultBlockState();
-        PalettedContainer<BlockState> copy = new PalettedContainer<>(air, STATES);
+        PalettedContainer<BlockState> copy = Mc.emptyBlockStates();
         if (!source.maybeHas(state -> state != air)) return copy;
         for (int y = 0; y < 16; y++) {
             for (int z = 0; z < 16; z++) {
@@ -335,14 +377,14 @@ final class SeamWrites {
         return finals.get(chunk);
     }
 
-    /** Whether some chunk around this one lies in the area and is not handled yet. */
+    /** Whether some chunk around this one is one this run generates (the area, or its ring) and is not handled yet. */
     synchronized boolean hasUnhandledNeighbor(long chunk, ChunkBatchPlan plan) {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
         for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
-                if ((dx != 0 || dz != 0) && plan.containsChunk(x + dx, z + dz)
-                        && !isSet(handled, ChunkPos.pack(x + dx, z + dz))) return true;
+                if ((dx != 0 || dz != 0) && plan.generates(x + dx, z + dz)
+                        && !isSet(handled, Mc.pack(x + dx, z + dz))) return true;
             }
         }
         return false;
@@ -354,12 +396,12 @@ final class SeamWrites {
      */
     synchronized void pruneFinals(ChunkBatchPlan plan) {
         finals.keySet().removeIf(chunk -> settled(chunk, plan));
-        pending.keySet().removeIf(chunk -> !plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
+        pending.keySet().removeIf(chunk -> !plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk))
                 && !hasUnhandledNeighbor(chunk, plan));
     }
 
     private boolean settled(long chunk, ChunkBatchPlan plan) {
-        boolean inArea = plan.containsChunk(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
+        boolean inArea = plan.generates(ChunkPos.getX(chunk), ChunkPos.getZ(chunk));
         return (!inArea || isSet(handled, chunk)) && !hasUnhandledNeighbor(chunk, plan);
     }
 
@@ -411,7 +453,7 @@ final class SeamWrites {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         for (Write write : writes) {
             pos.set(write.x(), write.y(), write.z());
-            chunk.setBlockState(pos, write.after(), 0);
+            McBlocks.set(chunk, pos, write.after());
             if (!write.after().getFluidState().isEmpty()) MinecraftVersion.markPosForPostProcessing(chunk, pos.immutable());
             if (write.blockEntity() != null) chunk.setBlockEntityNbt(write.blockEntity().copy());
         }
@@ -423,21 +465,21 @@ final class SeamWrites {
      * stale, so the server recomputes both when it loads the chunk. Returns false if unchanged.
      */
     static boolean applyToSaved(CompoundTag chunk, List<Write> writes) {
-        ListTag sections = chunk.getListOrEmpty("sections");
+        ListTag sections = McNbt.compounds(chunk, "sections");
         Map<Integer, CompoundTag> sectionByY = new HashMap<>();
         for (int i = 0; i < sections.size(); i++) {
-            CompoundTag section = sections.getCompoundOrEmpty(i);
-            sectionByY.put((int) section.getByteOr("Y", (byte) 0), section);
+            CompoundTag section = McNbt.compound(sections, i);
+            sectionByY.put((int) McNbt.byteOr(section, "Y", (byte) 0), section);
         }
         Map<Integer, PalettedContainer<BlockState>> decoded = new HashMap<>();
-        ListTag blockEntities = chunk.getListOrEmpty("block_entities");
+        ListTag blockEntities = McNbt.compounds(chunk, "block_entities");
         boolean changed = false;
         for (Write write : writes) {
             int sectionY = write.y() >> 4;
             CompoundTag section = sectionByY.get(sectionY);
             if (section == null || !section.contains("block_states")) continue;
             PalettedContainer<BlockState> states = decoded.computeIfAbsent(sectionY, y -> BLOCK_STATE_CODEC
-                    .parse(NbtOps.INSTANCE, section.getCompoundOrEmpty("block_states")).result().orElse(null));
+                    .parse(NbtOps.INSTANCE, McNbt.compound(section, "block_states")).result().orElse(null));
             if (states == null) continue;
             int x = write.x() & 15;
             int y = write.y() & 15;
@@ -457,12 +499,83 @@ final class SeamWrites {
         chunk.put("block_entities", blockEntities);
         // The server recomputes the final heightmaps on load; the stored worldgen ones stay as
         // a part-generated neighbor keeps them (see InMemoryChunkGrid#adoptSaved).
-        CompoundTag heightmaps = chunk.getCompoundOrEmpty("Heightmaps");
+        CompoundTag heightmaps = McNbt.compound(chunk, "Heightmaps");
         for (Heightmap.Types type : Heightmap.Types.values()) {
             if (type.keepAfterWorldgen()) heightmaps.remove(type.getSerializationKey());
         }
         chunk.put("Heightmaps", heightmaps);
         chunk.putBoolean("isLightOn", false);
+        return true;
+    }
+
+    /**
+     * Puts light into a stored chunk's sections. block, sky: layers by light section, the lowest (bottomSection)
+     * first; null for none.
+     * <ul>
+     * <li>brighterOnly false: these become the chunk's light (a part-generated chunk saved with the light that
+     * reached it; what its sections held before is dropped).</li>
+     * <li>brighterOnly true: per block the brighter of the stored light and this stays. For a lit chunk a section
+     * stored without a sky layer stays without one: there the engine answers from the layer above, which a
+     * layer of ours would hide.</li>
+     * </ul>
+     * Returns whether the chunk changed.
+     */
+    static boolean putLight(CompoundTag chunk, net.minecraft.world.level.chunk.DataLayer[] block,
+                            net.minecraft.world.level.chunk.DataLayer[] sky, int bottomSection, boolean brighterOnly,
+                            boolean litChunk) {
+        ListTag sections = McNbt.compounds(chunk, "sections");
+        Map<Integer, CompoundTag> byY = new HashMap<>();
+        for (int i = 0; i < sections.size(); i++) {
+            CompoundTag section = McNbt.compound(sections, i);
+            byY.put((int) McNbt.byteOr(section, "Y", (byte) 0), section);
+        }
+        boolean changed = false;
+        if (!brighterOnly) {
+            for (CompoundTag section : byY.values()) {
+                if (section.contains("BlockLight")) {
+                    section.remove("BlockLight");
+                    changed = true;
+                }
+                if (section.contains("SkyLight")) {
+                    section.remove("SkyLight");
+                    changed = true;
+                }
+            }
+        }
+        int count = block != null ? block.length : sky != null ? sky.length : 0;
+        boolean added = false;
+        for (int i = 0; i < count; i++) {
+            int before = sections.size();
+            changed |= putLayer(sections, byY, bottomSection + i, "BlockLight", block == null ? null : block[i], brighterOnly, false);
+            changed |= putLayer(sections, byY, bottomSection + i, "SkyLight", sky == null ? null : sky[i], brighterOnly, litChunk);
+            added |= sections.size() != before;
+        }
+        if (added) chunk.put("sections", sections);
+        return changed;
+    }
+
+    private static boolean putLayer(ListTag sections, Map<Integer, CompoundTag> byY, int y, String key,
+                                    net.minecraft.world.level.chunk.DataLayer layer, boolean brighterOnly, boolean keepAbsent) {
+        // As Minecraft writes a chunk: every layer the engine holds data for. A sky layer of zeros matters: a
+        // section stored without one reads the layer above it.
+        if (layer == null || layer.isEmpty()) return false;
+        byte[] ours = layer.getData();
+        CompoundTag section = byY.get(y);
+        byte[] stored = section == null ? null : McNbt.bytes(section, key);
+        if (brighterOnly && stored != null && stored.length == ours.length) {
+            byte[] merged = GridLight.brighter(stored, ours);
+            if (java.util.Arrays.equals(merged, stored)) return false;
+            section.putByteArray(key, merged);
+            return true;
+        }
+        if (brighterOnly && keepAbsent) return false;
+        if (section == null) {
+            section = new CompoundTag();
+            section.putByte("Y", (byte) y);
+            sections.add(section);
+            byY.put(y, section);
+        }
+        section.putByteArray(key, ours.clone());
         return true;
     }
 
@@ -486,8 +599,8 @@ final class SeamWrites {
 
     private static void removeBlockEntity(ListTag blockEntities, int x, int y, int z) {
         for (int i = blockEntities.size() - 1; i >= 0; i--) {
-            CompoundTag entity = blockEntities.getCompoundOrEmpty(i);
-            if (entity.getIntOr("x", 0) == x && entity.getIntOr("y", 0) == y && entity.getIntOr("z", 0) == z) blockEntities.remove(i);
+            CompoundTag entity = McNbt.compound(blockEntities, i);
+            if (McNbt.intOr(entity, "x", 0) == x && McNbt.intOr(entity, "y", 0) == y && McNbt.intOr(entity, "z", 0) == z) blockEntities.remove(i);
         }
     }
 
@@ -495,13 +608,13 @@ final class SeamWrites {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
         int index = (x & 31) * 32 + (z & 31);
-        bits.computeIfAbsent(ChunkPos.pack(x >> 5, z >> 5), key -> new long[16])[index >>> 6] |= 1L << index;
+        bits.computeIfAbsent(Mc.pack(x >> 5, z >> 5), key -> new long[16])[index >>> 6] |= 1L << index;
     }
 
     private static void clear(Map<Long, long[]> bits, long chunk) {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
-        long[] region = bits.get(ChunkPos.pack(x >> 5, z >> 5));
+        long[] region = bits.get(Mc.pack(x >> 5, z >> 5));
         int index = (x & 31) * 32 + (z & 31);
         if (region != null) region[index >>> 6] &= ~(1L << index);
     }
@@ -509,7 +622,7 @@ final class SeamWrites {
     private static boolean isSet(Map<Long, long[]> bits, long chunk) {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
-        long[] region = bits.get(ChunkPos.pack(x >> 5, z >> 5));
+        long[] region = bits.get(Mc.pack(x >> 5, z >> 5));
         int index = (x & 31) * 32 + (z & 31);
         return region != null && (region[index >>> 6] & 1L << index) != 0;
     }

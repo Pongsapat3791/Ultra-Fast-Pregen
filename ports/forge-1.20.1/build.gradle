@@ -8,8 +8,10 @@ plugins {
 def shared = file('../..')
 def sharedProperties = new Properties()
 new File(shared, 'gradle.properties').withInputStream { sharedProperties.load(it) }
-// The shared version names the Fabric jar's Minecraft range (1.20.x-15.1); this jar names its own.
-version = project.minecraft_versions + '-' + sharedProperties.getProperty('version').replaceFirst(/^[^-]*-/, '')
+// The shared version names the Fabric jar's Minecraft range (1.20.x-16); this jar names its own.
+// -PsharedVersion=1.20.x-16-dev3 gives a test build its label, as -Pversion does for the Fabric build.
+def sharedVersion = (project.findProperty('sharedVersion') ?: sharedProperties.getProperty('version')).toString()
+version = project.minecraft_versions + '-' + sharedVersion.replaceFirst(/^[^-]*-/, '')
 group = project.group
 
 base {
@@ -22,10 +24,13 @@ sourceSets {
     main {
         java {
             srcDir new File(shared, 'src/main/java')
+            // Link and Manager, parts of the mod on every loader and version.
+            srcDir new File(shared, 'shared/java')
             exclude 'com/example/pregen/fabric/**'
         }
         resources {
             srcDir new File(shared, 'src/main/resources')
+            srcDir new File(shared, 'shared/resources')
             exclude 'fabric.mod.json'
         }
     }
@@ -146,7 +151,9 @@ tasks.named('test') {
 
 jar {
     // Forge loads a jar's mixins from this attribute.
-    manifest.attributes('MixinConfigs': 'pregen.mixins.json')
+    manifest.attributes('MixinConfigs': 'pregen.mixins.json',
+            // java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+            'Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
     from(new File(shared, 'LICENSE')) {
         rename { "${it}_ultrafastpregen" }
     }

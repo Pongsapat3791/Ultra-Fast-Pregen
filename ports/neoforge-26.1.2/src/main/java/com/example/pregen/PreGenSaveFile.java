@@ -40,6 +40,12 @@ final class PreGenSaveFile {
     private final long seed;
     /** Region key -> one bit per chunk of that region. */
     private final Long2ObjectMap<long[]> regions = new Long2ObjectOpenHashMap<>();
+    /**
+     * Region key -> one bit per chunk a run that stopped early saved there (depth features or terrain):
+     * not finished chunks, so not in {@code regions}. A later full run generates them again with the
+     * same features (see DynamicBatchPreGen#readBack). Marking a chunk done leaves its bit.
+     */
+    private final Long2ObjectMap<long[]> early = new Long2ObjectOpenHashMap<>();
     private final boolean seedChanged;
     private boolean hasLastRun;
     /** Side of the last run's square (diameter of its circle) in blocks. */
@@ -78,31 +84,37 @@ final class PreGenSaveFile {
         try (InputStream in = Files.newInputStream(file)) {
             tag = NbtIo.readCompressed(in, NbtAccounter.unlimitedHeap());
         }
-        if (tag.getLongOr("seed", 0L) != seed) return new PreGenSaveFile(file, seed, true);
+        if (McNbt.longOr(tag, "seed", 0L) != seed) return new PreGenSaveFile(file, seed, true);
         PreGenSaveFile record = new PreGenSaveFile(file, seed, false);
-        for (long region : tag.getLongArray("full").orElse(new long[0])) {
+        for (long region : McNbt.longs(tag, "full")) {
             long[] bits = new long[REGION_WORDS];
             Arrays.fill(bits, -1L);
             record.regions.put(region, bits);
         }
-        ListTag partial = tag.getListOrEmpty("partial");
+        ListTag partial = McNbt.compounds(tag, "partial");
         for (int i = 0; i < partial.size(); i++) {
-            CompoundTag entry = partial.getCompoundOrEmpty(i);
-            long[] bits = entry.getLongArray("chunks").orElse(new long[0]);
-            if (bits.length == REGION_WORDS) record.regions.put(entry.getLongOr("region", 0L), bits);
+            CompoundTag entry = McNbt.compound(partial, i);
+            long[] bits = McNbt.longs(entry, "chunks");
+            if (bits.length == REGION_WORDS) record.regions.put(McNbt.longOr(entry, "region", 0L), bits);
+        }
+        ListTag earlyRegions = McNbt.compounds(tag, "early");
+        for (int i = 0; i < earlyRegions.size(); i++) {
+            CompoundTag entry = McNbt.compound(earlyRegions, i);
+            long[] bits = McNbt.longs(entry, "chunks");
+            if (bits.length == REGION_WORDS) record.early.put(McNbt.longOr(entry, "region", 0L), bits);
         }
         if (tag.contains("last_run")) {
-            CompoundTag last = tag.getCompoundOrEmpty("last_run");
+            CompoundTag last = McNbt.compound(tag, "last_run");
             record.hasLastRun = true;
             // Round 14 and earlier recorded the size in thousands of blocks only.
-            record.lastSizeBlocks = last.getInt("size_blocks").orElse(last.getIntOr("world_k", 0) * 1000);
-            record.lastCenterX = last.getIntOr("center_x", 0);
-            record.lastCenterZ = last.getIntOr("center_z", 0);
-            record.lastCompleted = last.getBooleanOr("completed", false);
+            record.lastSizeBlocks = last.contains("size_blocks") ? McNbt.intOr(last, "size_blocks", 0) : McNbt.intOr(last, "world_k", 0) * 1000;
+            record.lastCenterX = McNbt.intOr(last, "center_x", 0);
+            record.lastCenterZ = McNbt.intOr(last, "center_z", 0);
+            record.lastCompleted = McNbt.boolOr(last, "completed", false);
             // Round 14 and earlier generated squares only.
-            record.lastShape = "circle".equals(last.getStringOr("shape", "")) ? ChunkBatchPlan.Shape.CIRCLE : ChunkBatchPlan.Shape.SQUARE;
-            record.lastStopped = last.getBooleanOr("stopped", false);
-            record.autoResumes = last.getIntOr("auto_resumes", 0);
+            record.lastShape = "circle".equals(McNbt.string(last, "shape", "")) ? ChunkBatchPlan.Shape.CIRCLE : ChunkBatchPlan.Shape.SQUARE;
+            record.lastStopped = McNbt.boolOr(last, "stopped", false);
+            record.autoResumes = McNbt.intOr(last, "auto_resumes", 0);
         }
         return record;
     }
@@ -123,7 +135,7 @@ final class PreGenSaveFile {
     }
 
     synchronized boolean isDone(int chunkX, int chunkZ) {
-        long[] bits = regions.get(ChunkPos.pack(chunkX >> 5, chunkZ >> 5));
+        long[] bits = regions.get(Mc.pack(chunkX >> 5, chunkZ >> 5));
         int bit = bitIndex(chunkX, chunkZ);
         return bits != null && (bits[bit >>> 6] & 1L << bit) != 0;
     }
@@ -139,15 +151,36 @@ final class PreGenSaveFile {
 
     synchronized void markDone(Iterable<ChunkPos> positions) {
         for (ChunkPos pos : positions) {
-            long[] bits = regions.computeIfAbsent(ChunkPos.pack(pos.x() >> 5, pos.z() >> 5), key -> new long[REGION_WORDS]);
-            int bit = bitIndex(pos.x(), pos.z());
+            long[] bits = regions.computeIfAbsent(Mc.pack(Mc.x(pos) >> 5, Mc.z(pos) >> 5), key -> new long[REGION_WORDS]);
+            int bit = bitIndex(Mc.x(pos), Mc.z(pos));
             bits[bit >>> 6] |= 1L << bit;
         }
     }
 
+    /** Chunks a run that stopped early saved (see {@code early}). */
+    synchronized void markEarly(Iterable<ChunkPos> positions) {
+        for (ChunkPos pos : positions) {
+            long[] bits = early.computeIfAbsent(Mc.pack(Mc.x(pos) >> 5, Mc.z(pos) >> 5), key -> new long[REGION_WORDS]);
+            int bit = bitIndex(Mc.x(pos), Mc.z(pos));
+            bits[bit >>> 6] |= 1L << bit;
+        }
+    }
+
+    /** Whether a run that stopped early saved this chunk, at any time since the area was last forgotten. */
+    synchronized boolean savedEarly(int chunkX, int chunkZ) {
+        long[] bits = early.get(Mc.pack(chunkX >> 5, chunkZ >> 5));
+        int bit = bitIndex(chunkX, chunkZ);
+        return bits != null && (bits[bit >>> 6] & 1L << bit) != 0;
+    }
+
     /** Forgets the chunks of an area, for a run that generates them again. */
     synchronized void forget(ChunkBatchPlan plan) {
-        var entries = regions.long2ObjectEntrySet().iterator();
+        forget(regions, plan);
+        forget(early, plan);
+    }
+
+    private static void forget(Long2ObjectMap<long[]> map, ChunkBatchPlan plan) {
+        var entries = map.long2ObjectEntrySet().iterator();
         while (entries.hasNext()) {
             Long2ObjectMap.Entry<long[]> entry = entries.next();
             int regionX = ChunkPos.getX(entry.getLongKey());
@@ -247,6 +280,14 @@ final class PreGenSaveFile {
         }
         tag.put("full", new LongArrayTag(full.toLongArray()));
         tag.put("partial", partial);
+        ListTag earlyRegions = new ListTag();
+        for (Long2ObjectMap.Entry<long[]> entry : early.long2ObjectEntrySet()) {
+            CompoundTag region = new CompoundTag();
+            region.putLong("region", entry.getLongKey());
+            region.put("chunks", new LongArrayTag(entry.getValue().clone()));
+            earlyRegions.add(region);
+        }
+        tag.put("early", earlyRegions);
         if (hasLastRun) {
             CompoundTag last = new CompoundTag();
             last.putInt("size_blocks", lastSizeBlocks);

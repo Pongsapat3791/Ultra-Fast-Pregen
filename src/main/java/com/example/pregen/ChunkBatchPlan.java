@@ -9,6 +9,10 @@ package com.example.pregen;
  * belongs to it when its center is within the radius of the area's center. The tiles still cover
  * the square; the area's chunks of a tile are its core, the others are left like chunks outside
  * the area, and tiles without any chunk of the area are not batches at all.
+ *
+ * With the ring covered (see coverRing) the outermost tiles reach one chunk further out, so that
+ * every chunk just outside the area lies in a tile too: a full run gives those chunks their
+ * features, as Minecraft does for the neighbors of a chunk it finishes.
  */
 final class ChunkBatchPlan {
     enum Shape { SQUARE, CIRCLE }
@@ -23,6 +27,9 @@ final class ChunkBatchPlan {
     private final long radiusSquared;
     private final int totalChunks;
     private final int totalBatches;
+    /** Whether the tiles also cover the ring of chunks around the area (see inRing). */
+    private volatile boolean ring;
+    private volatile int ringBatches = -1;
 
     private record Axis(int minBlock, int minChunk, int maxChunkExclusive) {
         static Axis around(int centerBlock, int sizeBlocks) {
@@ -77,6 +84,53 @@ final class ChunkBatchPlan {
 
     Shape shape() {
         return shape;
+    }
+
+    /**
+     * Makes the tiles cover the ring around the area too: the first and last tile of each axis grow by
+     * one chunk outward. The area, its chunk count and the tile indices stay as they are. Set before
+     * the first tile is asked for.
+     */
+    void coverRing(boolean cover) {
+        ring = cover;
+        ringBatches = -1;
+    }
+
+    boolean coversRing() {
+        return ring;
+    }
+
+    /** Not in the area, but beside a chunk of it (the eight around): the chunks whose features reach into the area. */
+    boolean inRing(int chunkX, int chunkZ) {
+        if (containsChunk(chunkX, chunkZ)) return false;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if ((dx != 0 || dz != 0) && containsChunk(chunkX + dx, chunkZ + dz)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** A chunk whose features this run places: one of the area, or of the ring when the tiles cover it. */
+    boolean generates(int chunkX, int chunkZ) {
+        return containsChunk(chunkX, chunkZ) || ring && inRing(chunkX, chunkZ);
+    }
+
+    /** The tile's chunks that lie in the ring (none unless the tiles cover it). */
+    int ringChunks(Tile tile) {
+        if (!ring) return 0;
+        int count = 0;
+        for (int cz = tile.minChunkZ(); cz < tile.minChunkZ() + tile.chunksZ(); cz++) {
+            for (int cx = tile.minChunkX(); cx < tile.minChunkX() + tile.chunksX(); cx++) {
+                if (inRing(cx, cz)) count++;
+            }
+        }
+        return count;
+    }
+
+    /** Whether the tile is a batch of a run: it holds a chunk of the area, or of the ring when that is covered. */
+    boolean isBatch(Tile tile) {
+        return areaChunks(tile) > 0 || ringChunks(tile) > 0;
     }
 
     int chunksX() {
@@ -134,18 +188,32 @@ final class ChunkBatchPlan {
         return tilesPerAxis;
     }
 
-    /** Tiles with at least one chunk of the area: the batches of a run. */
+    /** Tiles with at least one chunk of the area (or of the ring, when covered): the batches of a run. */
     int totalBatches() {
-        return totalBatches;
+        if (!ring) return totalBatches;
+        int batches = ringBatches;
+        if (batches < 0) {
+            batches = 0;
+            for (int tx = 0; tx < tilesPerAxis; tx++) {
+                for (int tz = 0; tz < tilesPerAxis; tz++) {
+                    if (isBatch(tile(tx, tz))) batches++;
+                }
+            }
+            ringBatches = batches;
+        }
+        return batches;
     }
 
-    /** The tile's chunks that lie in the area (all of them for a square). */
+    /** The tile's chunks that lie in the area. */
     int areaChunks(Tile tile) {
-        if (shape == Shape.SQUARE) return tile.totalChunks();
+        int minX = Math.max(tile.minChunkX(), x.minChunk());
+        int maxX = Math.min(tile.minChunkX() + tile.chunksX(), x.maxChunkExclusive());
+        int minZ = Math.max(tile.minChunkZ(), z.minChunk());
+        int maxZ = Math.min(tile.minChunkZ() + tile.chunksZ(), z.maxChunkExclusive());
+        if (minX >= maxX || minZ >= maxZ) return 0;
+        if (shape == Shape.SQUARE) return (maxX - minX) * (maxZ - minZ);
         int count = 0;
-        for (int cz = tile.minChunkZ(); cz < tile.minChunkZ() + tile.chunksZ(); cz++) {
-            count += rowChunks(cz, tile.minChunkX(), tile.minChunkX() + tile.chunksX());
-        }
+        for (int cz = minZ; cz < maxZ; cz++) count += rowChunks(cz, minX, maxX);
         return count;
     }
 
@@ -162,7 +230,9 @@ final class ChunkBatchPlan {
     private int boundaryChunk(Axis axis, int boundary) {
         // Round interior boundaries in one direction so neighbors share the same
         // boundary. Only the final outer edge rounds up to include its last block.
-        if (boundary == tilesPerAxis) return axis.maxChunkExclusive();
+        // With the ring covered the two outer edges lie one chunk further out.
+        if (boundary == tilesPerAxis) return axis.maxChunkExclusive() + (ring ? 1 : 0);
+        if (boundary == 0) return axis.minChunk() - (ring ? 1 : 0);
         return Math.floorDiv(axis.minBlock() + boundary * batchSizeBlocks, 16);
     }
 

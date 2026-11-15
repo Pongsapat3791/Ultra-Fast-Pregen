@@ -1,6 +1,7 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.WorldgenCompat;
+import com.example.pregen.terrain.DeepSurface;
 import com.example.pregen.terrain.FastBlockWrites;
 import com.example.pregen.terrain.SurfaceColumnCache;
 import com.example.pregen.terrain.TerrainGenerationContext;
@@ -18,9 +19,23 @@ import org.spongepowered.asm.mixin.injection.Redirect;
  * column at a time (see SurfaceColumnCache), writes without the section lock (see FastBlockWrites).
  */
 @Mixin(targets = "net.minecraft.world.level.levelgen.SurfaceSystem$1")
-public abstract class SurfaceBlockColumnMixin {
+public abstract class SurfaceBlockColumnMixin implements DeepSurface.FloorColumn {
     /** The column cache of this step's chunk; null until the first read decides it. */
     @Unique private SurfaceColumnCache pregen$column;
+    /** The known runs of this step's chunk (see DeepSurface.Columns#floor), asked for at the loop's first read. */
+    @Unique private DeepSurface.Columns pregen$deep;
+    @Unique private boolean pregen$deepAsked;
+
+    @Override
+    public int pregen$floor() {
+        if (!pregen$deepAsked) {
+            // The step's rule is built before its loop starts, so its known runs are there by now.
+            pregen$deepAsked = true;
+            pregen$deep = DeepSurface.columnsOfThisStep();
+        }
+        DeepSurface.Columns deep = pregen$deep;
+        return deep == null ? Integer.MIN_VALUE : deep.floor;
+    }
 
     @Unique
     private SurfaceColumnCache pregen$column(ChunkAccess chunk) {
@@ -44,13 +59,26 @@ public abstract class SurfaceBlockColumnMixin {
     @Redirect(method = "setBlock", require = 0, at = @At(value = "INVOKE",
             target = "Lnet/minecraft/world/level/chunk/ChunkAccess;setBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;)Lnet/minecraft/world/level/block/state/BlockState;"))
     private BlockState pregen$setUnlocked(ChunkAccess chunk, BlockPos pos, BlockState state) {
+        return pregen$write(chunk, pos, state);
+    }
+
+    // The same write as Minecraft 1.21.2 to 1.21.4 spell it (a third argument: whether the block was moved there;
+    // the surface step passes false, as McBlocks.place does). One of the two finds its place on each version.
+    @Redirect(method = "setBlock", require = 0, at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/level/chunk/ChunkAccess;setBlockState(Lnet/minecraft/core/BlockPos;Lnet/minecraft/world/level/block/state/BlockState;Z)Lnet/minecraft/world/level/block/state/BlockState;"))
+    private BlockState pregen$setUnlockedMoved(ChunkAccess chunk, BlockPos pos, BlockState state, boolean moved) {
+        return pregen$write(chunk, pos, state);
+    }
+
+    @Unique
+    private BlockState pregen$write(ChunkAccess chunk, BlockPos pos, BlockState state) {
         SurfaceColumnCache column = pregen$column(chunk);
         boolean wasEmpty = column.emptyBefore(pos);
         BlockState previous = null;
         if (FastBlockWrites.enabled && chunk instanceof ProtoChunk proto && TerrainGenerationContext.isActive()) {
             previous = FastBlockWrites.setBeforeLight(proto, pos, state);
         }
-        if (previous == null) previous = chunk.setBlockState(pos, state);
+        if (previous == null) previous = com.example.pregen.McBlocks.place(chunk, pos, state);
         column.written(pos, wasEmpty);
         return previous;
     }

@@ -62,12 +62,37 @@ public class DynamicBatchPreGen {
     private volatile boolean releaseMemoryEachBatch = true;
     /** Keep chunks that exist on disk or in the server's memory (skip_existing_chunks); off for direct API use. */
     private volatile boolean skipExistingChunks;
+    private volatile PreGenConfig.Depth depth = PreGenConfig.Depth.FULL;
     /** A new run with skip_existing_chunks=false: chunks the save file has are generated again too. */
     private volatile boolean regenerateRecorded;
     /** With skipExistingChunks: per region, the chunks stored when the run started. */
     private WorldChunkIO.StoredChunks storedAtStart = WorldChunkIO.StoredChunks.NONE;
     /** Feature writes across batch boundaries (see SeamWrites). */
     private final SeamWrites seams = new SeamWrites();
+    /**
+     * The ring of chunks around the area gets its features too, is saved as Minecraft leaves the neighbors of a
+     * chunk it finished, and chunks outside the area light nothing while the area is lit. Off only with
+     * -Dfastpregen.edgeRing=false (as up to the first builds of 16: the ring stays at carvers), and in the
+     * regression's control.
+     */
+    static volatile boolean edgeRing = Boolean.parseBoolean(System.getProperty("fastpregen.edgeRing", "true"));
+    /**
+     * A stored chunk whose features ran but that is not fully generated (the ring an earlier run left around its
+     * area, Minecraft's part-generated neighbors of the chunks players loaded) is finished as it is when this
+     * run's area holds it, keeping what its neighbors placed in it. Off with -Dfastpregen.continueFeatured=false:
+     * then it is generated again, as up to the first builds of 16.
+     */
+    static volatile boolean continueFeatured = Boolean.parseBoolean(System.getProperty("fastpregen.continueFeatured", "true"));
+    /**
+     * Saved chunks beside a batch's new chunks get their light worked out again with that batch and stored (see
+     * InMemoryChunkGrid#setSeamRelight). Off with -Dfastpregen.seamRelight=false: then a chunk at a batch seam keeps
+     * the light it got before its later neighbors had their features, as up to the first builds of 16. Only with
+     * the light worked out on the workers (not while the server holds chunks of the batch, nor with another mod's
+     * light engine), and only with the ring covered.
+     */
+    static volatile boolean seamRelight = Boolean.parseBoolean(System.getProperty("fastpregen.seamRelight", "true"));
+    /** The ring chunks of the tile in work whose features this batch places (see ringToGenerate). */
+    private LongSet currentRing = LongSets.EMPTY_SET;
     private volatile int existingBatches;
     private final AtomicInteger writtenChunks = new AtomicInteger();
     private final AtomicInteger keptExistingChunks = new AtomicInteger();
@@ -197,6 +222,8 @@ public class DynamicBatchPreGen {
         final long startedAt;
         final List<WorldChunkIO.EncodedChunk> partGenerated;
         final Map<Long, List<SeamWrites.Write>> intoSaved;
+        /** The ring chunks this batch placed the features of; saved after lighting (see InMemoryChunkGrid#encodeRing). */
+        LongSet ring = LongSets.EMPTY_SET;
         final String headTimes;
         final String terrainDiagnostics;
         final String featureDiagnostics;
@@ -346,6 +373,37 @@ public class DynamicBatchPreGen {
     }
 
     /** Keep every chunk that already exists instead of overwriting it; call before start(). */
+    /**
+     * How far each chunk is generated; call before start(). A run that stops early saves its chunks
+     * part-generated, as Minecraft stores a chunk it has not finished (status carvers after terrain,
+     * features after features), and Minecraft finishes them when they are first loaded. It keeps every
+     * chunk stored that far or further and every chunk the server holds, marks nothing in the save
+     * file (which lists finished chunks; going on after a stop goes by what is stored), and sends
+     * nothing to LoD mods.
+     */
+    void setDepth(PreGenConfig.Depth depth) {
+        this.depth = depth;
+    }
+
+    private boolean stopsEarly() {
+        return depth != PreGenConfig.Depth.FULL;
+    }
+
+    /** The status a run that stops early generates to: stored chunks from there on are kept. Null for a full run. */
+    private net.minecraft.world.level.chunk.status.ChunkStatus completeFrom() {
+        return switch (depth) {
+            case FULL -> null;
+            case FEATURES -> net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES;
+            case TERRAIN -> net.minecraft.world.level.chunk.status.ChunkStatus.CARVERS;
+        };
+    }
+
+    /** "Stage 2/6: name", out of the stages this run's depth has. */
+    private String stage(int number, String name) {
+        int stages = depth == PreGenConfig.Depth.TERRAIN ? 3 : depth == PreGenConfig.Depth.FEATURES ? 4 : 6;
+        return "Stage " + number + "/" + stages + ": " + name;
+    }
+
     void setSkipExistingChunks(boolean skip) {
         skipExistingChunks = skip;
     }
@@ -596,10 +654,38 @@ public class DynamicBatchPreGen {
         long air = now[0] - cellsAtStart[0];
         long solid = now[1] - cellsAtStart[1];
         long block = now[2] - cellsAtStart[2];
-        long total = air + solid + block;
+        long veins = now[15] - cellsAtStart[15];
+        long total = air + solid + block + veins;
         if (total == 0) return;
         log(String.format("[PreGen] Cell-skipping fill: %.0f%% of noise cells decided without per-block work"
-                + " (air %d, solid %d, per block %d)", 100.0 * (air + solid) / total, air, solid, block));
+                + " (air %d, solid %d, ore veins only %d, per block %d)", 100.0 * (air + solid) / total, air, solid, veins, block));
+        log(String.format("[PreGen] Cells per block: %d never above zero (fluid or unproven air), %d solid near ore veins,"
+                        + " %d last of a chunk, %d mixed | blocks written in runs: fill %d, surface %d, runs left %d"
+                        + " | surface levels shared %d | structure cells: none near %d, some %d, all %d | palettes grown %d"
+                        + " | solid cells near veins: %d vein-free by ridge values, %d asked the veins alone"
+                        + " | functions marked once %d | ore attempts above the terrain %d"
+                        + " | sky: %d cells decided beforehand, %d corners not computed per function, %d failed checks",
+                now[3] - cellsAtStart[3], now[4] - cellsAtStart[4], now[5] - cellsAtStart[5],
+                block - (now[3] - cellsAtStart[3]) - (now[4] - cellsAtStart[4]) - (now[5] - cellsAtStart[5]),
+                now[6] - cellsAtStart[6], now[7] - cellsAtStart[7], now[8] - cellsAtStart[8], now[9] - cellsAtStart[9],
+                now[10] - cellsAtStart[10], now[11] - cellsAtStart[11], now[12] - cellsAtStart[12], now[13] - cellsAtStart[13],
+                now[14] - cellsAtStart[14], now[15] - cellsAtStart[15], now[16], now[17] - cellsAtStart[17],
+                now[18] - cellsAtStart[18], now[19] - cellsAtStart[19], now[20] - cellsAtStart[20]));
+    }
+
+    /** The surface shortcut's counters when this run started (see DeepSurface). */
+    private long[] deepSurfaceAtStart;
+
+    /** How much of this run's surface step the shortcut below the ground took over. */
+    private void logDeepSurface() {
+        long[] now = com.example.pregen.terrain.DeepSurface.counts();
+        long blocks = now[0] - deepSurfaceAtStart[0];
+        long shortened = now[1] - deepSurfaceAtStart[1];
+        long compared = now[2] - deepSurfaceAtStart[2];
+        long differences = now[3] - deepSurfaceAtStart[3];
+        if (shortened + compared + differences == 0) return;
+        log(String.format("[PreGen] Surface below the ground: %d blocks placed without asking the rules, in %d chunks"
+                + " (%d chunks compared with Minecraft's rules first, %d differences)", blocks, shortened, compared, differences));
     }
 
     public void start() {
@@ -609,11 +695,14 @@ public class DynamicBatchPreGen {
         }
         totalStartTime = System.currentTimeMillis();
         cellsAtStart = com.example.pregen.terrain.FastNoiseFill.cellCounts();
+        deepSurfaceAtStart = com.example.pregen.terrain.DeepSurface.counts();
         String finalStatus = "Failed";
         startProgressTicker();
         PreGenProfiler profiler = profiling
                 ? PreGenProfiler.start(level.getServer().getServerDirectory(), this::log) : null;
         try {
+            // A full run only: a run that stops earlier leaves chunks that still take their neighbors' features.
+            batchPlan.coverRing(edgeRing && depth == PreGenConfig.Depth.FULL && SeamWrites.enabled && SeamWrites.joinStoredChunks);
             int tilesAxis = batchPlan.tilesPerAxis();
             int totalBatches = getTotalBatchesCount();
             log(String.format("[PreGen] Target: %s (%d Chunks) in %s centered on [%d, %d] (blocks %d..%d, %d..%d) | Batch: %dx%d blocks | Total Batches: %d | Worker Threads: %d",
@@ -644,10 +733,10 @@ public class DynamicBatchPreGen {
                     + (parallelSteps ? parallelThreads + " threads" : "one chunk at a time (parallel_steps=false)")
                     + (parallelSteps && !parallelFeatures
                         ? ", except features one chunk at a time (other mods keep state in feature placement " + featureState
-                            + "; parallel_features=always runs them on all threads too)"
+                            + "; parallel_features=always runs them on all threads too, at the price of another world: see the config file)"
                         : parallelSteps && !featureState.isEmpty()
                             ? ", features too although other mods keep state in feature placement " + featureState
-                                + " (parallel_features=always: their features land in other places than chunk by chunk)"
+                                + " (parallel_features=always: their features land in other places than chunk by chunk, and some kinds come out rarer)"
                             : "")
                     + (skipExistingChunks
                         ? ". Chunks that already exist (on disk or loaded) are kept; only missing chunks are generated."
@@ -664,15 +753,16 @@ public class DynamicBatchPreGen {
                 for (int tz = 0; tz < tilesAxis && !isCancelled; tz++) {
                     ChunkBatchPlan.Tile tile = batchPlan.tile(tx, tz);
                     // A circle's corner tiles may hold none of its chunks.
-                    if (batchPlan.areaChunks(tile) == 0) continue;
+                    if (!batchPlan.isBatch(tile)) continue;
                     currentBatchIndex++;
                     currentMinX = tile.minBlockX();
                     currentMinZ = tile.minBlockZ();
                     long[] core = corePositions(tile);
                     LongSet done = saveFile != null ? saveFile.doneAmong(core) : new LongOpenHashSet();
                     boolean allByFastpregen = done.size() == core.length;
-                    if (!allByFastpregen && skipExistingChunks) done.addAll(existingChunks(core));
-                    if (done.size() == core.length) {
+                    if (!allByFastpregen && (skipExistingChunks || stopsEarly())) done.addAll(existingChunks(core));
+                    currentRing = ringToGenerate(tile);
+                    if (done.size() == core.length && currentRing.isEmpty()) {
                         awaitTailOrRedo();
                         skipGeneratedBatch(currentBatchIndex, totalBatches, tile, allByFastpregen);
                     } else if (overlapBatches) {
@@ -686,13 +776,18 @@ public class DynamicBatchPreGen {
             awaitTailOrRedo();
             awaitPendingWrites();
             totalEndTime = System.currentTimeMillis();
-            log(String.format("[Ultra Fast Pregen] Generated and saved %d chunks; kept %d chunks that already existed (%d whole batches skipped).",
-                    writtenChunks.get(), resumedChunks + keptExistingChunks.get(), resumedBatches));
+            log(String.format("[Ultra Fast Pregen] Generated and saved %d chunks%s; kept %d chunks that already existed (%d whole batches skipped).",
+                    writtenChunks.get(), depth == PreGenConfig.Depth.TERRAIN ? " as far as their terrain (Minecraft adds features, light and mobs when they are first loaded)"
+                            : depth == PreGenConfig.Depth.FEATURES ? " as far as their features (Minecraft adds light and mobs when they are first loaded)" : "",
+                    resumedChunks + keptExistingChunks.get(), resumedBatches));
             if (seams.carriedForward() + seams.mergedBack() + seams.borderChunksSaved() > 0) {
                 log(String.format("[Ultra Fast Pregen] Edges: %d feature blocks carried into later batches, %d merged into stored chunks"
-                                + " (%d existing chunks joined), %d read back from part-generated chunks, %d border chunks saved part-generated.",
+                                + " (%d existing chunks joined), %d read back from part-generated chunks, %d border chunks saved part-generated%s.",
                         seams.carriedForward(), seams.mergedBack(), seams.joinedExisting(), seams.importedWrites(),
-                        seams.borderChunksSaved()));
+                        seams.borderChunksSaved(), (seams.ringChunksSaved() == 0 ? ""
+                                : ", " + seams.ringChunksSaved() + " chunks around the area saved with their features placed")
+                                + (seams.continued() == 0 ? "" : ", " + seams.continued() + " part-generated chunks finished as they were")
+                                + (seams.relit() == 0 ? "" : ", " + seams.relit() + " saved chunks lit again beside later ones")));
             }
             boolean completedAll = completedChunksCount == getTotalWorldChunks()
                     && completedBatchesCount == totalBatches
@@ -704,6 +799,7 @@ public class DynamicBatchPreGen {
                 updateBossBar();
                 finalStatus = "Completed";
                 logCellSkipping();
+                logDeepSurface();
                 log(String.format("[PreGen] All %d batches (%d Chunks) completed successfully in %s! Average Speed: %.1f chunks/s",
                         completedBatchesCount, completedChunksCount, formatDuration(getElapsedMillis()), getChunksPerSecond()));
             } else if (!serverStopping && isCancelled) {
@@ -867,6 +963,10 @@ public class DynamicBatchPreGen {
             seams.markHandled(pos, false);
             seams.take(pos);
         }
+        for (long pos : ringPositions(tile)) {
+            seams.markHandled(pos, false);
+            seams.take(pos);
+        }
         log(String.format("[%d/%d] Skipped Tile at Block [%d, %d]: all %d chunks %s.",
                 index, total, tile.minBlockX(), tile.minBlockZ(), batchPlan.areaChunks(tile),
                 allByFastpregen ? "were already generated by Ultra Fast Pregen" : "already exist"));
@@ -881,20 +981,22 @@ public class DynamicBatchPreGen {
      */
     private void findStoredChunks() {
         LongOpenHashSet regions = new LongOpenHashSet();
-        int minChunkX = Math.floorDiv(batchPlan.minBlockX(), 16) - 1;
-        int minChunkZ = Math.floorDiv(batchPlan.minBlockZ(), 16) - 1;
-        int maxChunkX = minChunkX + batchPlan.chunksX() + 1;
-        int maxChunkZ = minChunkZ + batchPlan.chunksZ() + 1;
+        // The ring around the area, and with the ring covered the chunks around that.
+        int reach = batchPlan.coversRing() ? 2 : 1;
+        int minChunkX = Math.floorDiv(batchPlan.minBlockX(), 16) - reach;
+        int minChunkZ = Math.floorDiv(batchPlan.minBlockZ(), 16) - reach;
+        int maxChunkX = minChunkX + batchPlan.chunksX() + 2 * reach - 1;
+        int maxChunkZ = minChunkZ + batchPlan.chunksZ() + 2 * reach - 1;
         for (int rx = minChunkX >> 5; rx <= maxChunkX >> 5; rx++) {
             for (int rz = minChunkZ >> 5; rz <= maxChunkZ >> 5; rz++) {
                 regions.add(ChunkPos.asLong(rx, rz));
             }
         }
         long started = System.nanoTime();
-        storedAtStart = await(chunkIO.findStoredInRegions(regions), "reading the area's region headers");
+        storedAtStart = await(chunkIO.findStoredInRegions(regions, completeFrom()), "reading the area's region headers");
         long stored = 0;
-        for (int x = minChunkX + 1; x < maxChunkX; x++) {
-            for (int z = minChunkZ + 1; z < maxChunkZ; z++) {
+        for (int x = minChunkX + reach; x <= maxChunkX - reach; x++) {
+            for (int z = minChunkZ + reach; z <= maxChunkZ - reach; z++) {
                 if (WorldChunkIO.isStored(storedAtStart.full(), ChunkPos.asLong(x, z))) stored++;
             }
         }
@@ -910,7 +1012,10 @@ public class DynamicBatchPreGen {
      * theirs before their features. Chunks the server holds are left to the server, apart from
      * those this run generated or will generate. Returns those held chunks.
      */
-    private LongSet prepareNeighbors(InMemoryChunkGrid grid, LongSet done, LongSet keptCore, LongSet freshHalo) {
+    private LongSet prepareNeighbors(InMemoryChunkGrid grid, LongSet done, LongSet ring, LongSet keptCore, LongSet freshHalo,
+                                     LongSet litOutside) {
+        LongArrayList readFeatured = new LongArrayList();
+        LongArrayList continued = new LongArrayList();
         long[] terrain = grid.getTerrainPositions();
         LongSet held = await(WorldChunkIO.findHeldByServer(level, LongArrayList.wrap(terrain)), "the server's loaded chunk list");
         LongArrayList readFinal = new LongArrayList();
@@ -918,9 +1023,16 @@ public class DynamicBatchPreGen {
         LongArrayList newCore = new LongArrayList();
         for (long pos : terrain) {
             boolean isCore = grid.isCore(pos);
-            if (isCore && !done.contains(pos)) {
+            // Lit in the stored world: fully generated before this run (see InMemoryChunkGrid#setOutsideUnlit).
+            if (!isCore && !batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos))
+                    && WorldChunkIO.isStored(storedAtStart.full(), pos)) litOutside.add(pos);
+            if (isCore && !done.contains(pos) || ring.contains(pos)) {
+                if (isCore && continues(pos) && !held.contains(pos)) {
+                    readFeatured.add(pos);
+                    continue;
+                }
                 newCore.add(pos);
-                if (SeamWrites.joinStoredChunks && storedPartGenerated(pos)) readPart.add(pos);
+                if (SeamWrites.joinStoredChunks && readBack(pos)) readPart.add(pos);
                 continue;
             }
             if (isCore) seams.take(pos);
@@ -931,21 +1043,41 @@ public class DynamicBatchPreGen {
                 if (isCore) keptCore.add(pos);
             } else if (!SeamWrites.joinStoredChunks) {
                 if (!isCore) freshHalo.add(pos);
-            } else if (isCore || generatedBefore(pos)) {
+            } else if (isCore || generatedBefore(pos) || storedFeatured(pos)) {
                 readFinal.add(pos);
             } else {
                 freshHalo.add(pos);
-                if (storedPartGenerated(pos)) readPart.add(pos);
+                if (readBack(pos)) readPart.add(pos);
             }
         }
         Map<Long, CompletableFuture<java.util.Optional<CompoundTag>>> reads = new HashMap<>();
         for (long pos : readFinal) reads.put(pos, chunkIO.load(pos));
         for (long pos : readPart) reads.put(pos, chunkIO.load(pos));
+        for (long pos : readFeatured) reads.put(pos, chunkIO.load(pos));
         int minSection = level.getMinSection();
         int sections = level.getSectionsCount();
+        for (long pos : readFeatured) {
+            CompoundTag tag = await(reads.get(pos), "reading a stored chunk").orElse(null);
+            SeamWrites.Final stored = tag == null ? null : SeamWrites.finalFromStored(tag, minSection, sections,
+                    net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES);
+            if (stored == null || !grid.continueSaved(pos, tag, stored)) {
+                // Not readable as a chunk of this version with its features placed: generated again.
+                newCore.add(pos);
+                continue;
+            }
+            // Its features ran: none here, but it is lit, gets its mobs and is saved with the batch.
+            keptCore.add(pos);
+            continued.add(pos);
+            seams.markStoredRead(pos);
+            seams.countContinued();
+        }
         for (long pos : readFinal) {
             CompoundTag tag = await(reads.get(pos), "reading a stored chunk").orElse(null);
-            SeamWrites.Final stored = tag == null ? null : SeamWrites.finalFromStored(tag, minSection, sections);
+            // A neighbor stored with its features placed keeps its blocks as they are, as a fully generated one does.
+            SeamWrites.Final stored = tag == null ? null : SeamWrites.finalFromStored(tag, minSection, sections,
+                    stopsEarly() ? completeFrom() : !grid.isCore(pos) && storedFeatured(pos)
+                            ? net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES
+                            : net.minecraft.world.level.chunk.status.ChunkStatus.FULL);
             // Otherwise not a fully generated chunk of this version: generated again here and
             // never written.
             if (stored == null) continue;
@@ -954,6 +1086,8 @@ public class DynamicBatchPreGen {
             grid.adoptSaved(pos, stored);
             if (grid.isCore(pos)) keptCore.add(pos);
         }
+        // Every chunk that takes saved blocks has them now; the others' terrain is read from here on.
+        grid.completeTerrain(workerPool);
         for (long pos : readPart) {
             seams.markStoredRead(pos);
             CompoundTag tag = await(reads.get(pos), "reading a stored chunk").orElse(null);
@@ -968,17 +1102,300 @@ public class DynamicBatchPreGen {
                 SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
             }
         }
+        for (long pos : continued) {
+            List<SeamWrites.Write> writes = seams.take(pos);
+            if (!writes.isEmpty()) {
+                takenThisBatch.put(pos, writes);
+                SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
+            }
+        }
         for (long pos : freshHalo) {
             List<SeamWrites.Write> writes = seams.peek(pos);
             if (!writes.isEmpty()) SeamWrites.applyToGenerating(grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)), writes);
         }
+        if (seamRelight && batchPlan.coversRing() && !stopsEarly()) {
+            LongArrayList worked = new LongArrayList(newCore);
+            worked.addAll(continued);
+            prepareRelight(grid, terrain, worked, held);
+        }
         return held;
+    }
+
+    /**
+     * The saved chunks of the area beside the chunks this batch features or finishes are lit again with it (see
+     * InMemoryChunkGrid#setSeamRelight). Their neighbors outside the grid take part with their final blocks: kept in
+     * memory for the batches still to come, or read from disk.
+     */
+    private void prepareRelight(InMemoryChunkGrid grid, long[] terrain, LongArrayList worked, LongSet held) {
+        LongSet inGrid = new LongOpenHashSet(terrain);
+        LongSet relight = new LongOpenHashSet();
+        for (long pos : worked) {
+            int x = ChunkPos.getX(pos);
+            int z = ChunkPos.getZ(pos);
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    long beside = ChunkPos.asLong(x + dx, z + dz);
+                    if ((dx != 0 || dz != 0) && inGrid.contains(beside) && batchPlan.containsChunk(x + dx, z + dz)
+                            && seams.isMergeable(beside) && !held.contains(beside) && grid.isAdopted(beside)) relight.add(beside);
+                }
+            }
+        }
+        if (relight.isEmpty()) return;
+        Map<Long, SeamWrites.Final> ring = new HashMap<>();
+        LongSet dark = new LongOpenHashSet();
+        LongSet around = new LongOpenHashSet();
+        for (long pos : relight) addNeighborsOutside(pos, inGrid, grid, around);
+        lightBlocks(around, ring, dark);
+        grid.setSeamRelight(relight, ring, dark);
+        seams.countRelit(relight.size());
+    }
+
+    /** The chunks around this one that the grid does not hold and whose blocks the lighting does not have yet. */
+    private static void addNeighborsOutside(long pos, LongSet inGrid, InMemoryChunkGrid grid, LongSet into) {
+        int x = ChunkPos.getX(pos);
+        int z = ChunkPos.getZ(pos);
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                long beside = ChunkPos.asLong(x + dx, z + dz);
+                if ((dx != 0 || dz != 0) && !inGrid.contains(beside) && !grid.hasLightBlocks(beside)) into.add(beside);
+            }
+        }
+    }
+
+    /**
+     * The final blocks of saved chunks, for lighting: kept in memory for the batches still to come, or read from
+     * disk (fully generated, or with their features placed). dark: those that are not lit in the stored world.
+     * A chunk that is not stored so is left out.
+     */
+    private void lightBlocks(LongSet positions, Map<Long, SeamWrites.Final> blocks, LongSet dark) {
+        Map<Long, CompletableFuture<java.util.Optional<CompoundTag>>> reads = new HashMap<>();
+        for (long pos : positions) {
+            if (blocks.containsKey(pos)) continue;
+            SeamWrites.Final known = seams.finalOf(pos);
+            if (known != null) {
+                blocks.put(pos, known);
+                // Kept in memory: a chunk of the area this run saved or joined (lit), or of its ring (not lit).
+                if (!batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)) && !WorldChunkIO.isStored(storedAtStart.full(), pos)) dark.add(pos);
+            } else if (seams.isHandled(pos) || WorldChunkIO.isStored(storedAtStart.present(), pos)) {
+                reads.put(pos, chunkIO.load(pos));
+            }
+        }
+        int minSection = level.getMinSection();
+        int sections = level.getSectionsCount();
+        for (Map.Entry<Long, CompletableFuture<java.util.Optional<CompoundTag>>> read : reads.entrySet()) {
+            CompoundTag tag = await(read.getValue(), "reading a stored chunk").orElse(null);
+            SeamWrites.Final stored = tag == null ? null : SeamWrites.finalFromStored(tag, minSection, sections,
+                    net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES);
+            if (stored == null) continue;
+            blocks.put(read.getKey(), stored);
+            if (SeamWrites.storedStatus(tag) != net.minecraft.world.level.chunk.status.ChunkStatus.FULL) dark.add(read.getKey());
+        }
+    }
+
+    /**
+     * This batch's features placed blocks in saved chunks (intoSaved). Where such a block changes light, the saved
+     * chunks of the area around that chunk are lit again too: their light was worked out without it. (The chunk
+     * itself lies beside this batch's new chunks and is lit again anyway.) Before the batch is lit.
+     */
+    private void relightBesideWrites(InMemoryChunkGrid grid, Map<Long, List<SeamWrites.Write>> intoSaved, LongSet held) {
+        if (intoSaved.isEmpty()) return;
+        LongSet inGrid = new LongOpenHashSet(grid.getTerrainPositions());
+        LongSet more = new LongOpenHashSet();
+        LongSet want = new LongOpenHashSet();
+        net.minecraft.core.BlockPos.MutableBlockPos at = new net.minecraft.core.BlockPos.MutableBlockPos();
+        for (Map.Entry<Long, List<SeamWrites.Write>> entry : intoSaved.entrySet()) {
+            boolean changes = false;
+            for (SeamWrites.Write write : entry.getValue()) {
+                if (net.minecraft.world.level.lighting.LightEngine.hasDifferentLightProperties(level, at.set(write.x(), write.y(), write.z()),
+                        write.before(), write.after())) {
+                    changes = true;
+                    break;
+                }
+            }
+            if (!changes) continue;
+            int x = ChunkPos.getX(entry.getKey());
+            int z = ChunkPos.getZ(entry.getKey());
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    long beside = ChunkPos.asLong(x + dx, z + dz);
+                    if (dx == 0 && dz == 0 || grid.isRelit(beside) || !batchPlan.containsChunk(x + dx, z + dz)
+                            || !seams.isMergeable(beside) || held.contains(beside)) continue;
+                    if (!inGrid.contains(beside)) want.add(beside);
+                    else if (grid.isAdopted(beside)) more.add(beside);
+                }
+            }
+        }
+        if (more.isEmpty() && want.isEmpty()) return;
+        // The chunks outside the grid: only those stored fully generated are lit again.
+        Map<Long, SeamWrites.Final> wanted = new HashMap<>();
+        LongSet notLit = new LongOpenHashSet();
+        lightBlocks(want, wanted, notLit);
+        Map<Long, SeamWrites.Final> targets = new HashMap<>();
+        for (Map.Entry<Long, SeamWrites.Final> entry : wanted.entrySet()) {
+            if (!notLit.contains(entry.getKey())) targets.put(entry.getKey(), entry.getValue());
+        }
+        LongSet around = new LongOpenHashSet();
+        for (long pos : more) addNeighborsOutside(pos, inGrid, grid, around);
+        for (long pos : targets.keySet()) addNeighborsOutside(pos, inGrid, grid, around);
+        around.removeAll(targets.keySet());
+        Map<Long, SeamWrites.Final> ring = new HashMap<>();
+        LongSet dark = new LongOpenHashSet();
+        lightBlocks(around, ring, dark);
+        grid.addSeamRelight(more, targets, ring, dark);
+        seams.countRelit(more.size() + targets.size());
+    }
+
+    /**
+     * Whether prepareNeighbors will give this chunk, one the batch does not generate, a saved chunk's
+     * blocks, as far as can be told when the batch starts: the grid then makes no terrain for it. The
+     * server holding it by then, or a stored form that cannot be read, is found there and made up for
+     * (InMemoryChunkGrid#completeTerrain).
+     */
+    private boolean savedLikely(InMemoryChunkGrid grid, long pos) {
+        if (seams.finalOf(pos) != null) return true;
+        return SeamWrites.joinStoredChunks && (grid.isCore(pos) || generatedBefore(pos) || storedFeatured(pos));
+    }
+
+    /**
+     * A chunk outside the area stored with its features placed but not fully generated, as Minecraft and this mod
+     * leave the neighbors of a finished chunk: it keeps its blocks and takes this run's writes as a fully
+     * generated neighbor does, and is never replaced by a copy without its features. Only with the ring covered.
+     */
+    private boolean storedFeatured(long pos) {
+        if (!batchPlan.coversRing() || !WorldChunkIO.isStored(storedAtStart.featured(), pos)
+                || WorldChunkIO.isStored(storedAtStart.full(), pos)) return false;
+        // In the area: one this run finishes as it is (until its batch comes it takes writes as a saved chunk does).
+        return batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)) ? continues(pos) : !regeneratesRing(pos);
+    }
+
+    /**
+     * A chunk of the area stored with its features placed but not fully generated, which this run finishes as it
+     * is (see InMemoryChunkGrid#continueSaved). A run that generates existing chunks again generates these too.
+     */
+    private boolean continues(long pos) {
+        return continueFeatured && skipExistingChunks && batchPlan.coversRing()
+                && batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos))
+                && WorldChunkIO.isStored(storedAtStart.featured(), pos) && !WorldChunkIO.isStored(storedAtStart.full(), pos)
+                && !seams.storedWasRead(pos);
+    }
+
+    /**
+     * A ring chunk stored with its features placed that this run generates again: beside a chunk of the area that
+     * a run which overwrites existing chunks generates again (the ring chunk's features must reach into that chunk
+     * anew). Beside chunks that stay (kept, or recorded in the save file) it stays too.
+     */
+    private boolean regeneratesRing(long pos) {
+        int x = ChunkPos.getX(pos);
+        int z = ChunkPos.getZ(pos);
+        if (skipExistingChunks || !batchPlan.generates(x, z)) return false;
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                long beside = ChunkPos.asLong(x + dx, z + dz);
+                // Fully generated before, and generated again now: what this chunk placed in it is lost with it.
+                if (batchPlan.containsChunk(x + dx, z + dz) && WorldChunkIO.isStored(storedAtStart.full(), beside)
+                        && !stays(x + dx, z + dz, beside)) return true;
+            }
+        }
+        return false;
+    }
+
+    /** A ring chunk as stored when the run started: fully generated, or with its features placed and not to be generated again. */
+    private boolean ringStays(long pos) {
+        return WorldChunkIO.isStored(storedAtStart.full(), pos)
+                || WorldChunkIO.isStored(storedAtStart.featured(), pos) && !regeneratesRing(pos);
+    }
+
+    /**
+     * The tile's ring chunks whose features this batch places: those this run has not handled, that are not stored
+     * with their features placed (but for a run that generates existing chunks again: then only fully generated
+     * ones stay), and that the server does not hold.
+     */
+    private LongSet ringToGenerate(ChunkBatchPlan.Tile tile) {
+        if (!batchPlan.coversRing()) return LongSets.EMPTY_SET;
+        LongArrayList candidates = new LongArrayList();
+        for (int cx = tile.minChunkX(); cx < tile.minChunkX() + tile.chunksX(); cx++) {
+            for (int cz = tile.minChunkZ(); cz < tile.minChunkZ() + tile.chunksZ(); cz++) {
+                if (!batchPlan.inRing(cx, cz)) continue;
+                long pos = ChunkPos.asLong(cx, cz);
+                if (seams.isHandled(pos)) continue;
+                if (!ringStays(pos)) candidates.add(pos);
+            }
+        }
+        if (candidates.isEmpty()) return LongSets.EMPTY_SET;
+        LongSet held = await(WorldChunkIO.findHeldByServer(level, candidates), "the server's loaded chunk list");
+        LongSet ring = new LongOpenHashSet(candidates);
+        ring.removeAll(held);
+        return ring;
+    }
+
+    /** The tile's chunks that lie in the ring (see ChunkBatchPlan#inRing); none unless the tiles cover it. */
+    private long[] ringPositions(ChunkBatchPlan.Tile tile) {
+        if (!batchPlan.coversRing()) return new long[0];
+        LongArrayList positions = new LongArrayList();
+        for (int cx = tile.minChunkX(); cx < tile.minChunkX() + tile.chunksX(); cx++) {
+            for (int cz = tile.minChunkZ(); cz < tile.minChunkZ() + tile.chunksZ(); cz++) {
+                if (batchPlan.inRing(cx, cz)) positions.add(ChunkPos.asLong(cx, cz));
+            }
+        }
+        return positions.toLongArray();
     }
 
     /** A chunk of the area that this run generated or will generate, whether or not the server holds it. */
     private boolean generatedByThisRun(long pos) {
-        if (!batchPlan.containsChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos))) return false;
+        int x = ChunkPos.getX(pos);
+        int z = ChunkPos.getZ(pos);
+        if (!batchPlan.generates(x, z)) return false;
+        // A ring chunk: only once this run has placed its features (before that the server's chunk is the server's).
+        if (!batchPlan.containsChunk(x, z)) return seams.isHandled(pos) && seams.isGenerated(pos);
         return seams.isHandled(pos) ? seams.isGenerated(pos) : !generatedBefore(pos);
+    }
+
+    /**
+     * Whether a stored part-generated chunk's blocks are read back (SeamWrites#diffStored). The feature blocks
+     * in it came from neighbors whose features ran, so:
+     * <ul>
+     * <li>no such neighbor (the chunks a run of depth terrain leaves): nothing to read;</li>
+     * <li>one that stays as it is in this run: read, its blocks here are still its own;</li>
+     * <li>one that this run generates again and that a run of this mod saved at depth features: not read. It
+     * gets the same features again and places the same blocks here; read back, they were there twice, and the
+     * area's edge came out differently from a fresh run;</li>
+     * <li>one that this run generates again and that something else made (Minecraft's part-generated chunks
+     * around the chunks players loaded): read, as up to 15.1.</li>
+     * </ul>
+     * -Dfastpregen.readBackAlways=true reads every one back.
+     */
+    private boolean readBack(long pos) {
+        if (!storedPartGenerated(pos)) return false;
+        if (SeamWrites.readBackAlways) return true;
+        int x = ChunkPos.getX(pos);
+        int z = ChunkPos.getZ(pos);
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                long neighbor = ChunkPos.asLong(x + dx, z + dz);
+                if (dx == 0 && dz == 0 || !WorldChunkIO.isStored(storedAtStart.featured(), neighbor)) continue;
+                if (stays(x + dx, z + dz, neighbor)) return true;
+                if (saveFile == null || !saveFile.savedEarly(x + dx, z + dz)) return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A stored chunk this run does not generate again: outside the area, recorded in the save file by an
+     * earlier run (not by this one's earlier batches: what those put into their neighbors, this run holds
+     * or has saved itself), or kept as it exists.
+     */
+    private boolean stays(int x, int z, long pos) {
+        if (!batchPlan.generates(x, z)) return true;
+        // A ring chunk stays unless this run places its features (again).
+        if (!batchPlan.containsChunk(x, z)) {
+            return seams.isHandled(pos) ? !seams.isGenerated(pos) : ringStays(pos);
+        }
+        // Finished as it is: its features do not run again, so what it placed in its neighbors is still its own.
+        if (continueFeatured && skipExistingChunks && batchPlan.coversRing() && WorldChunkIO.isStored(storedAtStart.featured(), pos)
+                && !WorldChunkIO.isStored(storedAtStart.full(), pos)) return true;
+        if (saveFile != null && saveFile.isDone(x, z) && !seams.isGenerated(pos)) return true;
+        return (skipExistingChunks || stopsEarly()) && WorldChunkIO.isStored(storedAtStart.full(), pos);
     }
 
     /** Stored part-generated when the run started and not read or replaced since. */
@@ -1010,7 +1427,9 @@ public class DynamicBatchPreGen {
             else notStored.add(pos);
         }
         if (!notStored.isEmpty()) {
-            existing.addAll(await(WorldChunkIO.findHeldFullByServer(level, notStored), "the server's loaded chunk list"));
+            // A run that stops early leaves every chunk the server holds to the server.
+            existing.addAll(await(stopsEarly() ? WorldChunkIO.findHeldByServer(level, notStored)
+                    : WorldChunkIO.findHeldFullByServer(level, notStored), "the server's loaded chunk list"));
         }
         return existing;
     }
@@ -1098,9 +1517,11 @@ public class DynamicBatchPreGen {
         long[] core = corePositions(failed.tile);
         LongSet done = saveFile != null ? saveFile.doneAmong(core) : new LongOpenHashSet();
         boolean allByFastpregen = done.size() == core.length;
-        if (!allByFastpregen && skipExistingChunks) done.addAll(existingChunks(core));
+        if (!allByFastpregen && (skipExistingChunks || stopsEarly())) done.addAll(existingChunks(core));
+        LongSet ringOfTileInWork = currentRing;
+        currentRing = ringToGenerate(failed.tile);
         try {
-            if (done.size() == core.length) {
+            if (done.size() == core.length && currentRing.isEmpty()) {
                 skipGeneratedBatch(failed.index, failed.total, failed.tile, allByFastpregen);
             } else {
                 finishBatch(generateBatch(failed.index, failed.total, failed.tile, done), false);
@@ -1108,6 +1529,8 @@ public class DynamicBatchPreGen {
         } catch (RuntimeException | LinkageError | StackOverflowError again) {
             throw new IllegalStateException(String.format("Batch %d failed again the way Minecraft generates: %s",
                     failed.index, rootCause(again)), again);
+        } finally {
+            currentRing = ringOfTileInWork;
         }
     }
 
@@ -1222,42 +1645,63 @@ public class DynamicBatchPreGen {
                 done.isEmpty() ? "" : ", " + done.size() + " that already exist are kept"));
 
         long[] core = corePositions(tile);
+        LongSet ring = currentRing;
         // Start generation immediately; every core chunk not generated before is overwritten.
         LongSet existing = done;
 
         InMemoryChunkGrid grid = new InMemoryChunkGrid(level, tile.minBlockX(), tile.minBlockZ(),
                 tile.chunksX(), tile.chunksZ(), fusedTerrain && !safeMode, parallelSteps && !safeMode);
         grid.setArea(batchPlan::containsChunk);
+        grid.setRing(ring);
+        // Terrain for the chunks generated here and their neighbors only (see InMemoryChunkGrid#setTerrainNeed).
+        LongSet generate = new LongOpenHashSet(Math.max(16, core.length - done.size() + ring.size()));
+        // Stored with their features placed: finished as they are, no terrain made for them (see continues).
+        LongSet finished = new LongOpenHashSet();
+        for (long pos : core) {
+            if (done.contains(pos)) continue;
+            if (continues(pos)) finished.add(pos); else generate.add(pos);
+        }
+        generate.addAll(ring);
+        grid.setTerrainNeed(generate, finished, pos -> SeamWrites.enabled && savedLikely(grid, pos), depth != PreGenConfig.Depth.TERRAIN);
         grid.setParallelFeatures(parallelFeatures && !safeMode);
         grid.setWorkerThreads(parallelThreads);
         InMemoryChunkGrid.setCurrentGrid(grid);
         boolean handedOver = false;
         try {
             dropBatchIfServerStopping();
-            Runnable progress = startStage(index, total, "Stage 1/6: Structure Starts & References",
+            Runnable progress = startStage(index, total, stage(1, "Structure Starts & References"),
                     grid.getStructureStageChunks());
             grid.executeLayer(ChunkLayer.STRUCTURES, workerPool, progress);
             endStage();
 
             dropBatchIfServerStopping();
-            progress = startStage(index, total, "Stage 2/6: Biomes, Noise & Surface", grid.getPaddedChunksCount());
+            progress = startStage(index, total, stage(2, "Biomes, Noise & Surface"), grid.getTerrainStageChunks());
             grid.executeLayer(ChunkLayer.TERRAIN_PIPELINE, workerPool, progress);
             endStage();
             terrainDiagnostics = grid.getTerrainDiagnostics();
 
             dropBatchIfServerStopping();
-            progress = startStage(index, total, "Stage 3/6: Caves & Aquifers", grid.getPaddedChunksCount());
+            progress = startStage(index, total, stage(3, "Caves & Aquifers"), grid.getCarverStageChunks());
             grid.executeLayer(ChunkLayer.CARVERS, workerPool, progress);
             endStage();
             // The previous batch's saves and edge merges are queued before this batch reads any
             // stored chunk, as when batches run one at a time.
             awaitTail();
+            if (depth == PreGenConfig.Depth.TERRAIN) {
+                // No features run, so no chunk writes into another: the tile is ready to save.
+                BatchTail tail = new BatchTail(index, total, tile, grid, existing, batchStartedAt, List.of(), Map.of(),
+                        stageTimes.toString(), terrainDiagnostics, grid.getTerrainNeedDiagnostics(), currentPhase);
+                handedOver = true;
+                return tail;
+            }
 
             LongSet heldByServer = LongSets.EMPTY_SET;
             LongSet keptCore = new LongOpenHashSet();
             LongSet freshHalo = new LongOpenHashSet();
             if (SeamWrites.enabled) {
-                heldByServer = prepareNeighbors(grid, done, keptCore, freshHalo);
+                LongSet litOutside = new LongOpenHashSet();
+                heldByServer = prepareNeighbors(grid, done, ring, keptCore, freshHalo, litOutside);
+                if (batchPlan.coversRing()) grid.setOutsideUnlit(litOutside);
             } else {
                 for (long pos : core) {
                     List<SeamWrites.Write> carried = seams.take(pos);
@@ -1275,13 +1719,16 @@ public class DynamicBatchPreGen {
                 CompletableFuture.runAsync(() -> failureHook.accept(index), workerPool).join();
             }
             dropBatchIfServerStopping();
-            progress = startStage(index, total, "Stage 4/6: Features Decoration", grid.getCoreTotalChunks());
+            progress = startStage(index, total, stage(4, "Features Decoration"), grid.getFeatureStageChunks());
             grid.executePhased(ChunkLayer.FEATURES, workerPool, progress);
             endStage();
             featureDiagnostics = grid.getFeatureDiagnostics();
+            String leftOut = grid.getTerrainNeedDiagnostics();
+            if (!leftOut.isEmpty()) featureDiagnostics = featureDiagnostics.isEmpty() ? leftOut : featureDiagnostics + " | " + leftOut;
             dropBatchIfServerStopping();
             seamsCommitted = true;
             for (long pos : core) seams.markHandled(pos, !done.contains(pos));
+            for (long pos : ringPositions(tile)) seams.markHandled(pos, ring.contains(pos));
             LongSet held = heldByServer;
             Map<Long, List<SeamWrites.Write>> intoSaved = SeamWrites.enabled
                     ? seams.route(grid.collectHaloWrites(workerPool), batchPlan, held::contains) : Map.of();
@@ -1291,6 +1738,9 @@ public class DynamicBatchPreGen {
                 for (long pos : core) {
                     if (done.contains(pos) || !seams.hasUnhandledNeighbor(pos, batchPlan)) continue;
                     seams.keepFinal(pos, grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
+                }
+                for (long pos : ring) {
+                    if (seams.hasUnhandledNeighbor(pos, batchPlan)) seams.keepFinal(pos, grid.getChunk(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
                 }
                 // Halo chunks that do not exist yet but received blocks: saved part-generated.
                 LongArrayList border = new LongArrayList();
@@ -1307,6 +1757,7 @@ public class DynamicBatchPreGen {
             }
             BatchTail tail = new BatchTail(index, total, tile, grid, existing, batchStartedAt, partGenerated, intoSaved,
                     stageTimes.toString(), terrainDiagnostics, featureDiagnostics, currentPhase);
+            tail.ring = ring;
             handedOver = true;
             return tail;
         } finally {
@@ -1336,7 +1787,12 @@ public class DynamicBatchPreGen {
             // server finished meanwhile. The grid does not light those, so it adds no mobs to them
             // (Minecraft's spawn step needs the chunk lit) and does not save them.
             LongSet kept = skip;
-            if (!heldAtLight.isEmpty()) {
+            boolean early = stopsEarly();
+            if (early) {
+                // The server's chunks stay the server's.
+                kept = new LongOpenHashSet(skip);
+                for (long pos : heldAtLight) if (grid.isCore(pos)) kept.add(pos);
+            } else if (!heldAtLight.isEmpty()) {
                 LongArrayList heldCore = new LongArrayList();
                 for (long pos : heldAtLight) if (grid.isCore(pos) && !skip.contains(pos)) heldCore.add(pos);
                 // When keeping existing chunks, one the server holds fully generated stays (a player's).
@@ -1350,22 +1806,45 @@ public class DynamicBatchPreGen {
                     seams.keptByServer(heldFull);
                 }
             }
-            grid.setLightOwnership(heldAtLight, replaced);
-            dropTailIfDetached();
-            Runnable progress = startTailStage(tail, overlapped, "Stage 5/6: Lighting", grid.getCoreTotalChunks());
-            grid.executePhased(ChunkLayer.LIGHTING, tailPool, progress);
-            endTailStage(tail, overlapped, times);
-
             int areaChunks = batchPlan.areaChunks(tile);
-            dropTailIfDetached();
-            progress = startTailStage(tail, overlapped, "Stage 6/6: Mob Spawning", areaChunks - kept.size());
-            grid.executeSpawn(tailPool, kept, progress);
-            endTailStage(tail, overlapped, times);
+            Runnable progress;
+            if (!early) {
+                grid.setLightOwnership(heldAtLight, replaced);
+                if (seamRelight && batchPlan.coversRing()) relightBesideWrites(grid, intoSaved, heldAtLight);
+                dropTailIfDetached();
+                progress = startTailStage(tail, overlapped, stage(5, "Lighting"), grid.getCoreTotalChunks());
+                grid.executePhased(ChunkLayer.LIGHTING, tailPool, progress);
+                endTailStage(tail, overlapped, times);
+
+                dropTailIfDetached();
+                progress = startTailStage(tail, overlapped, stage(6, "Mob Spawning"), areaChunks - kept.size());
+                grid.executeSpawn(tailPool, kept, progress);
+                endTailStage(tail, overlapped, times);
+            }
 
             dropTailIfDetached();
             progress = startTailStage(tail, overlapped, "Saving: encoding chunks", areaChunks - kept.size());
-            List<WorldChunkIO.EncodedChunk> encoded = grid.encodeForSaving(tailPool, kept, progress);
+            List<WorldChunkIO.EncodedChunk> encoded;
+            if (early) {
+                // As they are: part-generated chunks, which Minecraft finishes when it loads them.
+                LongArrayList unfinished = new LongArrayList();
+                for (long pos : grid.getCorePositions()) if (!kept.contains(pos)) unfinished.add(pos);
+                encoded = grid.encodePartGenerated(unfinished, tailPool);
+            } else {
+                encoded = grid.encodeForSaving(tailPool, kept, progress);
+            }
             endTailStage(tail, overlapped, times);
+            // The ring this batch placed the features of, with the light that reached it from the area.
+            List<WorldChunkIO.EncodedChunk> ringChunks = early || tail.ring.isEmpty() ? List.of() : grid.encodeRing(tail.ring, tailPool);
+            // Chunks outside the area saved before (an earlier batch's ring, the stored world's): the light this
+            // batch's chunks cast into them joins their stored light.
+            Map<Long, GridLight.ChunkLight> lightIntoSaved = new HashMap<>();
+            if (!early) {
+                for (Map.Entry<Long, GridLight.ChunkLight> reached : grid.getOutsideLight().entrySet()) {
+                    long pos = reached.getKey();
+                    if (!tail.ring.contains(pos) && seams.isMergeable(pos) && !heldAtLight.contains(pos)) lightIntoSaved.put(pos, reached.getValue());
+                }
+            }
             java.util.function.IntConsumer tailHook = testFailureInTail;
             if (tailHook != null) tailHook.accept(index);
             // Chunks the server holds get the generated terrain too, or its later save would
@@ -1379,12 +1858,27 @@ public class DynamicBatchPreGen {
             submitWrites(index, total, encoded, !overlapped);
             if (!partGenerated.isEmpty()) {
                 // Never over a chunk stored fully generated meanwhile (a player's).
-                WorldChunkIO.PendingWrite border = chunkIO.write(partGenerated, false);
+                WorldChunkIO.PendingWrite border = chunkIO.writeBorder(partGenerated);
                 pendingWrite = pendingWrite.thenCombine(border.done(), (result, saved) -> result);
             }
-            if (!intoSaved.isEmpty()) {
+            if (!ringChunks.isEmpty()) {
+                // After the border copies of the head: a ring chunk saved there without its features is replaced.
+                WorldChunkIO.PendingWrite ringWrite = chunkIO.write(ringChunks, false);
+                pendingWrite = pendingWrite.thenCombine(ringWrite.done(), (result, saved) -> result);
+                seams.countRingSaved(ringChunks.size());
+            }
+            // Saved chunks beside this batch's chunks, lit again with it: that light replaces their stored one.
+            Map<Long, GridLight.ChunkLight> relit = new HashMap<>();
+            if (!early) {
+                for (Map.Entry<Long, GridLight.ChunkLight> again : grid.getRelit().entrySet()) {
+                    long pos = again.getKey();
+                    if (seams.isMergeable(pos) && !heldAtLight.contains(pos)) relit.put(pos, again.getValue());
+                }
+            }
+            if (!intoSaved.isEmpty() || !lightIntoSaved.isEmpty() || !relit.isEmpty()) {
                 // Ordered after this batch's writes on the IO thread; awaited with them.
-                CompletableFuture<Integer> merge = chunkIO.mergeIntoSaved(intoSaved).exceptionally(failure -> {
+                int bottomLightSection = level.getLightEngine().getMinLightSection();
+                CompletableFuture<Integer> merge = chunkIO.mergeIntoSaved(intoSaved, lightIntoSaved, relit, bottomLightSection).exceptionally(failure -> {
                     LOGGER.warn("[PreGen] Could not merge feature edges into earlier batches", failure);
                     return 0;
                 });
@@ -1459,7 +1953,9 @@ public class DynamicBatchPreGen {
         long submittedAt = System.nanoTime();
         // Positions only, so the callback does not keep the encoded bytes alive.
         List<ChunkPos> positions = encoded.stream().map(WorldChunkIO.EncodedChunk::pos).toList();
-        WorldChunkIO.PendingWrite writes = chunkIO.write(encoded, !skipExistingChunks);
+        boolean early = stopsEarly();
+        // A run that stops early never writes over a chunk the server finished meanwhile.
+        WorldChunkIO.PendingWrite writes = chunkIO.write(encoded, !skipExistingChunks && !early);
         pendingWriteResult = writes.progress();
         pendingWrite = writes.done().whenComplete((result, failure) -> {
             if (failure != null) {
@@ -1471,11 +1967,12 @@ public class DynamicBatchPreGen {
             // Recorded only once the tile is on disk, so a crash or stop regenerates it next time.
             PreGenSaveFile record = saveFile;
             if (record != null) {
-                record.markDone(positions);
+                // The save file lists finished chunks only.
+                if (early) record.markEarly(positions); else record.markDone(positions);
                 record.clearAutoResumes();
                 writeSaveFile();
             }
-            PregenApiImpl.fireChunksSaved(level, positions);
+            if (!early) PregenApiImpl.fireChunksSaved(level, positions);
             log(String.format("  [%d/%d] Saved %d chunks to %d region files in %.1fs (disk %.1fs)%s",
                     index, total, result.written, result.regions, (System.nanoTime() - submittedAt) / 1e9, result.ioNanos / 1e9,
                     result.skippedExisting > 0 ? ", kept " + result.skippedExisting + " the server saved meanwhile" : ""));

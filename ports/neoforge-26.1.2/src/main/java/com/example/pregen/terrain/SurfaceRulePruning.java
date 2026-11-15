@@ -3,7 +3,6 @@ package com.example.pregen.terrain;
 import java.util.Arrays;
 import java.util.List;
 import net.minecraft.core.Holder;
-import net.minecraft.util.KeyDispatchDataCodec;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -62,14 +61,14 @@ public final class SurfaceRulePruning extends SurfaceRules {
     /** SurfaceRules.ifTrue(ifTrue, thenRun) built for the context, or null for Minecraft's own. */
     public static Object pruneTest(ConditionSource ifTrue, RuleSource thenRun, Object context) {
         SurfaceBiomes biomes = biomes(context);
-        if (biomes == null || thenRun instanceof Built) return null;
+        if (biomes == null || thenRun instanceof BuiltRules.Built) return null;
         int decision = decide(ifTrue, biomes);
         if (decision < 0) return NEVER;
         Context rulesContext = (Context) context;
         SurfaceRule followup = thenRun.apply(rulesContext);
         if (decision > 0 || followup == NEVER) return followup;
         // Minecraft's own test, around the rule already built.
-        return ifTrue(ifTrue, new Built(followup)).apply(rulesContext);
+        return ifTrue(ifTrue, new BuiltRules.Built(followup)).apply(rulesContext);
     }
 
     /** SurfaceRules.sequence(sources) built for the context, or null for Minecraft's own. */
@@ -77,10 +76,14 @@ public final class SurfaceRulePruning extends SurfaceRules {
         if (biomes(context) == null) return null;
         Context rulesContext = (Context) context;
         SurfaceRule[] rules = new SurfaceRule[sources.size()];
+        // The rule of each entry, for DeepSurface; null from the entry after one that always places a block.
+        SurfaceRule[] built = new SurfaceRule[sources.size()];
         int count = 0;
+        int entry = 0;
         boolean alwaysPlaces = false;
         for (RuleSource source : sources) {
             SurfaceRule rule = source.apply(rulesContext);
+            built[entry++] = rule;
             if (rule == NEVER) continue;
             rules[count++] = rule;
             if (alwaysPlaces(rule, rulesContext)) {
@@ -89,8 +92,8 @@ public final class SurfaceRulePruning extends SurfaceRules {
             }
         }
         if (count == 0) return NEVER;
-        if (count == 1) return rules[0];
-        return new Sequence(Arrays.copyOf(rules, count), alwaysPlaces);
+        SurfaceRule full = count == 1 ? rules[0] : new Sequence(Arrays.copyOf(rules, count), alwaysPlaces);
+        return DeepSurface.guard(sources, built, full, rulesContext);
     }
 
     /** Whether the rule places a block wherever it is asked: Minecraft's state rule, or a sequence ending in one. */
@@ -120,23 +123,6 @@ public final class SurfaceRulePruning extends SurfaceRules {
                 if (state != null) return state;
             }
             return null;
-        }
-    }
-
-    /** A rule built for one chunk, as a source for Minecraft's test to wrap. */
-    private record Built(SurfaceRule rule) implements RuleSource {
-        @Override
-        public SurfaceRule apply(Context context) {
-            return rule;
-        }
-
-        /**
-         * Never called. On 26.2, where codec() returns a MapCodec, this method is no override, and
-         * such a call would fail with an AbstractMethodError instead.
-         */
-        @Override
-        public KeyDispatchDataCodec<? extends RuleSource> codec() {
-            throw new UnsupportedOperationException("A rule built for one chunk is never saved");
         }
     }
 }

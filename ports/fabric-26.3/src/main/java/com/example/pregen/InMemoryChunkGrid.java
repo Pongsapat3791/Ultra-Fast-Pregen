@@ -1,0 +1,1938 @@
+package com.example.pregen;
+
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongSet;
+import it.unimi.dsi.fastutil.longs.LongSets;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.SectionPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtIo;
+import net.minecraft.server.level.GenerationChunkHolder;
+import net.minecraft.server.level.ServerChunkCache;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ThreadedLevelLightEngine;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.chunk.DataLayer;
+import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.util.StaticCache2D;
+import net.minecraft.world.level.chunk.status.ChunkPyramid;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.chunk.status.WorldGenContext;
+import net.minecraft.world.level.chunk.ProtoChunk;
+import net.minecraft.world.level.chunk.UpgradeData;
+import net.minecraft.world.level.chunk.storage.RegionFileVersion;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
+import com.example.pregen.mixin.ThreadedLevelLightEngineInvoker;
+import com.example.pregen.terrain.TerrainGenerationContext;
+import com.example.pregen.terrain.FreshChunkBlending;
+import net.minecraft.server.level.WorldGenRegion;
+import net.minecraft.util.Mth;
+import net.minecraft.world.level.StructureManager;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseSettings;
+import net.minecraft.world.level.levelgen.RandomState;
+import net.minecraft.world.level.levelgen.blending.Blender;
+
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.util.ArrayList;
+import net.minecraft.world.level.levelgen.Heightmap;
+import java.util.HashMap;
+import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.PalettedContainer;
+import java.util.List;
+import java.util.function.Function;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.LongAdder;
+
+/**
+ * High-performance 100% In-Memory chunk grid holding proto-chunks for a single tile batch.
+ * Applies world generation layers sequentially across RAM, resolves race-conditions via
+ * 4-phase checkerboard dispatching, and encodes completed core chunks for saving in one pass.
+ *
+ * Layout around the core (the chunks that are saved): a one-chunk terrain halo that core
+ * features may write into, then an outer ring that only receives structure starts, so every
+ * chunk that generates terrain can reference starts up to eight chunks away, as vanilla's
+ * STRUCTURE_REFERENCES step does. The first chunk of that ring also gets biomes: Minecraft
+ * builds a chunk's terrain only once its eight neighbors have biomes.
+ *
+ * Every grid chunk has a {@link GridHolder}, so Minecraft's own ChunkStep tasks and
+ * WorldGenRegion read the grid exactly as they read the server's chunk holders.
+ */
+public class InMemoryChunkGrid {
+    /** Terrain is generated for the core plus this halo; core features may write into it. */
+    static final int TERRAIN_HALO = 1;
+    /** Vanilla STRUCTURE_REFERENCES range: starts up to 8 chunks away can reach a chunk. */
+    static final int STRUCTURE_REFERENCE_RANGE = 8;
+    static final int PADDING = TERRAIN_HALO + STRUCTURE_REFERENCE_RANGE;
+
+    private static volatile InMemoryChunkGrid currentGrid = null;
+    /** Every grid not disposed yet (a batch's grid stays while it is lit and saved). */
+    private static final java.util.Set<InMemoryChunkGrid> activeGrids = ConcurrentHashMap.newKeySet();
+    /** Set while a thread runs one of Minecraft's steps for a grid chunk (see chunkForWorker). */
+    private static final ThreadLocal<Boolean> runningStep = new ThreadLocal<>();
+    /** Set on a thread while it places the features of a grid chunk (see LevelLightEngineMixin). */
+    private static final ThreadLocal<Boolean> placingFeatures = new ThreadLocal<>();
+    /** Features read no sky light in a grid chunk, as in a chunk Minecraft generates beside lit ones; off with -Dfastpregen.darkFeatures=false. */
+    static volatile boolean darkFeatures = Boolean.parseBoolean(System.getProperty("fastpregen.darkFeatures", "true"));
+
+    public static boolean placingFeatures() {
+        return placingFeatures.get() != null;
+    }
+
+    /** Runs a step; the features step with the mark that LevelLightEngineMixin reads. */
+    private static <T> T placing(ChunkStatus status, java.util.function.Supplier<T> step) {
+        if (status != ChunkStatus.FEATURES || !darkFeatures) return step.get();
+        placingFeatures.set(Boolean.TRUE);
+        try {
+            return step.get();
+        } finally {
+            placingFeatures.remove();
+        }
+    }
+
+    public static InMemoryChunkGrid getCurrentGrid() {
+        return currentGrid;
+    }
+
+    public static void setCurrentGrid(InMemoryChunkGrid grid) {
+        currentGrid = grid;
+        if (grid != null) activeGrids.add(grid);
+    }
+
+    /** The active grid whose own chunks this region cache holds, or null (see ownsRegionCache). */
+    public static InMemoryChunkGrid owning(net.minecraft.world.level.Level level, StaticCache2D<ChunkAccess> cache,
+                                           ChunkPos center) {
+        for (InMemoryChunkGrid grid : activeGrids) {
+            if (grid.level == level && grid.ownsRegionCache(cache, center)) return grid;
+        }
+        return null;
+    }
+
+    /**
+     * For the server's light engine (ServerChunkCache#getChunkForLighting): a grid chunk while its
+     * grid lights, or null for the server's answer. The light engine reads blocks only through
+     * that lookup, which knows only chunks the server holds, so without this it lights the grid
+     * as empty (caves at sky light 15, no light from lava). A position the server holds keeps the
+     * server's chunk unless this batch replaces that chunk (see setLightOwnership).
+     */
+    public static net.minecraft.world.level.chunk.LightChunk chunkForLighting(net.minecraft.world.level.Level level,
+                                                                          int chunkX, int chunkZ,
+                                                                          net.minecraft.world.level.chunk.LightChunk held) {
+        for (InMemoryChunkGrid grid : activeGrids) {
+            if (!grid.lighting || grid.level != level || !grid.isTerrain(chunkX, chunkZ)) continue;
+            long pos = ChunkPos.pack(chunkX, chunkZ);
+            // A chunk this batch replaces is lit from the grid, also while the server's own copy is
+            // too early in generation for the server to report it (then held is null).
+            if (grid.lightReplaced.contains(pos)) return grid.getChunk(chunkX, chunkZ);
+            if (held != null || grid.lightHeld.contains(pos)) return null;
+            return grid.getChunk(chunkX, chunkZ);
+        }
+        return null;
+    }
+
+    /** A thread of this mod's worker pool (see chunkForWorker). */
+    public static final class WorkerThread extends Thread {
+        private final net.minecraft.world.phys.shapes.VoxelShape[] fullShapeKeys = new net.minecraft.world.phys.shapes.VoxelShape[1024];
+        private final boolean[] fullShapeValues = new boolean[1024];
+
+        public WorkerThread(Runnable task, String name) {
+            super(task, name);
+        }
+
+        /**
+         * Block.isShapeFullBlock without its shared cache. That cache takes a lock on every miss,
+         * and it misses all the time for shapes made on each call (offset blocks such as pointed
+         * dripstone), so glow lichen spreading on many workers queued on it.
+         */
+        public boolean isShapeFullBlock(net.minecraft.world.phys.shapes.VoxelShape shape) {
+            int i = System.identityHashCode(shape) & (fullShapeKeys.length - 1);
+            if (fullShapeKeys[i] == shape) return fullShapeValues[i];
+            boolean full = !net.minecraft.world.phys.shapes.Shapes.joinIsNotEmpty(
+                    net.minecraft.world.phys.shapes.Shapes.block(), shape, net.minecraft.world.phys.shapes.BooleanOp.NOT_SAME);
+            fullShapeKeys[i] = shape;
+            fullShapeValues[i] = full;
+            return full;
+        }
+    }
+
+    /**
+     * For this mod's workers, and for any thread while it runs a step for a grid chunk (one chunk
+     * at a time, Minecraft's way, runs them on the thread that asks): a grid chunk at least at
+     * {@code status}, or null. Feature code sometimes asks the level itself for a chunk (a cat
+     * spawned in a village checks for a witch hut through the level's structure manager). The
+     * server would then generate that chunk and the ones around it up to the status and keep
+     * them: later batches found them held by the server, and its saves replaced the
+     * part-generated chunks stored at the area's edge. The grid already holds them with the same
+     * structure data.
+     */
+    public static ChunkAccess chunkForWorker(net.minecraft.world.level.Level level, int chunkX, int chunkZ, ChunkStatus status) {
+        if (!(Thread.currentThread() instanceof WorkerThread) && runningStep.get() == null) return null;
+        for (InMemoryChunkGrid grid : activeGrids) {
+            if (grid.level != level) continue;
+            ProtoChunk chunk = grid.getChunk(chunkX, chunkZ);
+            if (chunk != null && chunk.getPersistedStatus().isOrAfter(status)) return chunk;
+        }
+        return null;
+    }
+
+    private final ServerLevel level;
+    /**
+     * The level's heights as constants, for the grid's chunks: a chunk asks for its minimum Y on
+     * every block it reads or writes, and the level answers through its dimension type (about 1%
+     * of generation time). Proto chunks use their accessor for nothing else.
+     */
+    private final LevelHeightAccessor heights;
+    private final ChunkGenerator generator;
+    private final StructureTemplateManager templateManager;
+    private final ThreadedLevelLightEngine lightEngine;
+    private final WorldGenContext context;
+    private final boolean fusedTerrain;
+    private final boolean parallelSteps;
+    /** Off when other mods keep state in feature placement (WorldgenCompat#featurePlacementMixins). */
+    private boolean parallelFeatures;
+
+    private final int coreMinChunkX;
+    private final int coreMinChunkZ;
+    private final int coreChunksX;
+    private final int coreChunksZ;
+    /**
+     * Which chunks of the core rectangle belong to the run's area (all of them for a square; see
+     * setArea): the others are treated like chunks outside the area, as halo.
+     */
+    private ChunkAreaFilter area = (chunkX, chunkZ) -> true;
+    private long[] corePositions;
+    /**
+     * Chunks of the core rectangle just outside the area whose features this batch places too (see setRing):
+     * Minecraft finishes a chunk only after the eight around it placed theirs, and what those place in it
+     * cannot be added once it is saved fully generated. They are saved part-generated (see encodeRing).
+     */
+    private LongSet ring = LongSets.EMPTY_SET;
+    /**
+     * Set by setOutsideUnlit: chunks outside the area give no light of their own while the grid is lit, but
+     * for these, which are lit in the stored world (fully generated before this run).
+     */
+    private boolean outsideUnlit;
+    private LongSet litOutside = LongSets.EMPTY_SET;
+    /** The light the engines held in chunks outside the area after lighting (see lightInParallel), by chunk. */
+    private volatile Map<Long, GridLight.ChunkLight> outsideLight = Map.of();
+    /** Saved chunks beside this batch's new chunks whose light is worked out again here (see setSeamRelight). */
+    private LongSet relight = LongSets.EMPTY_SET;
+    /** Final blocks of the saved chunks around those that lie outside the grid: they take part in the lighting only. */
+    private Map<Long, SeamWrites.Final> lightRing = Map.of();
+    private LongSet lightRingDark = LongSets.EMPTY_SET;
+    /** Those of the chunks lit again that lie outside the grid (see addSeamRelight). */
+    private LongSet relightOutside = LongSets.EMPTY_SET;
+    private volatile Map<Long, GridLight.ChunkLight> relit = Map.of();
+
+    /** Which chunks belong to the run's area. */
+    @FunctionalInterface
+    interface ChunkAreaFilter {
+        boolean contains(int chunkX, int chunkZ);
+    }
+
+    private final int gridMinChunkX;
+    private final int gridMinChunkZ;
+    private final int gridChunksX;
+    private final int gridChunksZ;
+
+    private ProtoChunk[][] chunks;
+    /** While lighting runs (see chunkForLighting). */
+    private volatile boolean lighting;
+    /** Set once this grid's lighting started; before that the light engine holds none of its light (see dispose). */
+    private volatile boolean lightStarted;
+    /** Terrain positions the server held when lighting started, and those of them this batch replaces. */
+    private volatile LongSet lightHeld = LongSets.EMPTY_SET;
+    private volatile LongSet lightReplaced = LongSets.EMPTY_SET;
+    private GridHolder[][] holders;
+    private final Map<Long, ProtoChunk> fallbackChunks = new ConcurrentHashMap<>();
+    private final LongAdder skippedBlendingScans = new LongAdder();
+    private final LongAdder biomeNanos = new LongAdder();
+    private final LongAdder terrainNanos = new LongAdder();
+    private final LongAdder terrainChunks = new LongAdder();
+    private final LongAdder encodeNanos = new LongAdder();
+    private final LongAdder encodedChunks = new LongAdder();
+    private final LongAdder spawnedEntities = new LongAdder();
+
+    public ServerLevel getLevel() {
+        return level;
+    }
+
+    public boolean isInsideGrid(int chunkX, int chunkZ) {
+        int gx = chunkX - gridMinChunkX;
+        int gz = chunkZ - gridMinChunkZ;
+        return gx >= 0 && gx < gridChunksX && gz >= 0 && gz < gridChunksZ;
+    }
+
+    /**
+     * A grid chunk as Minecraft's generation code sees a server chunk holder. It has reached a
+     * status exactly when its proto chunk has, as a server holder's status futures complete.
+     */
+    static final class GridHolder extends GenerationChunkHolder {
+        private final InMemoryChunkGrid grid;
+        private final ProtoChunk chunk;
+
+        GridHolder(InMemoryChunkGrid grid, ProtoChunk chunk) {
+            super(chunk.getPos());
+            this.grid = grid;
+            this.chunk = chunk;
+        }
+
+        @Override
+        public int getTicketLevel() {
+            return 0;
+        }
+
+        @Override
+        public int getQueueLevel() {
+            return 0;
+        }
+
+        @Override
+        protected void addSaveDependency(CompletableFuture<?> sync) {
+            // A grid chunk is saved by this mod, not through a server holder.
+        }
+
+        @Override
+        public ChunkAccess getChunkIfPresentUnchecked(ChunkStatus status) {
+            return chunk.getPersistedStatus().isOrAfter(status) ? chunk : null;
+        }
+
+        @Override
+        public ChunkAccess getChunkIfPresent(ChunkStatus status) {
+            return getChunkIfPresentUnchecked(status);
+        }
+
+        @Override
+        public ChunkAccess getLatestChunk() {
+            return chunk;
+        }
+
+        @Override
+        public ChunkStatus getPersistedStatus() {
+            return chunk.getPersistedStatus();
+        }
+    }
+
+    /** Live server generation may run at the same coordinates; only redirect our own regions. */
+    public boolean ownsRegionCache(StaticCache2D<ChunkAccess> cache, ChunkPos center) {
+        if (chunks == null || !cache.contains(center.x(), center.z())) return false;
+        ChunkAccess chunk = cache.get(center.x(), center.z());
+        return chunk != null && (chunk == getChunk(center.x(), center.z()) || chunk == fallbackChunks.get(ChunkPos.pack(center.x(), center.z())));
+    }
+
+    /**
+     * Vanilla's old-chunk query scans whole disk regions on a cache miss. This region
+     * reads only our freshly allocated chunks, so that scan cannot provide blending
+     * data. Check object ownership as well as coordinates to leave live-world regions
+     * alone, and retain vanilla behavior if another mod supplies blending data.
+     */
+    public boolean canSkipBlendingScan(StaticCache2D<ChunkAccess> cache, ChunkPos center, int radius) {
+        if (!ownsRegionCache(cache, center)) return false;
+        List<ChunkAccess> regionCache = new ArrayList<>();
+        cache.forEach(chunk -> {
+            if (chunk != null) regionCache.add(chunk);
+        });
+        boolean fresh = FreshChunkBlending.canSkip(regionCache, center, radius, (x, z) -> {
+            ChunkAccess chunk = getChunk(x, z);
+            return chunk != null ? chunk : fallbackChunks.get(ChunkPos.pack(x, z));
+        });
+        if (fresh) skippedBlendingScans.increment();
+        return fresh;
+    }
+
+    public String getTerrainDiagnostics() {
+        long count = terrainChunks.sum();
+        if (count == 0) return "Stage 2 used Minecraft's per-status pipeline | Skipped disk blending queries: " + skippedBlendingScans.sum();
+        double divisor = count * 1_000_000.0;
+        return String.format(java.util.Locale.ROOT,
+                "Stage 2 worker time/chunk: biomes=%.2fms, terrain=%.2fms | Skipped disk blending queries: %d",
+                biomeNanos.sum() / divisor, terrainNanos.sum() / divisor, skippedBlendingScans.sum());
+    }
+
+    /**
+     * A grid chunk, or its fallback past the grid's edge, for a region whose cache does not reach
+     * it (see WorldGenRegionMixin).
+     */
+    public ChunkAccess getChunkOrFallback(int worldChunkX, int worldChunkZ) {
+        ProtoChunk c = getChunk(worldChunkX, worldChunkZ);
+        if (c != null) {
+            return c;
+        }
+        long key = ChunkPos.pack(worldChunkX, worldChunkZ);
+        return fallbackChunks.computeIfAbsent(key, k -> {
+            ProtoChunk fallback = new ProtoChunk(
+                new ChunkPos(worldChunkX, worldChunkZ),
+                UpgradeData.EMPTY,
+                heights,
+                level.palettedContainerFactory(),
+                null
+            );
+            fallback.setPersistedStatus(ChunkStatus.FULL);
+            return fallback;
+        });
+    }
+
+    public InMemoryChunkGrid(ServerLevel level, int minBlockX, int minBlockZ, int coreChunksX, int coreChunksZ,
+                             boolean fusedTerrain, boolean parallelSteps) {
+        this.level = level;
+        this.heights = LevelHeightAccessor.create(level.getMinY(), level.getHeight());
+        this.generator = level.getChunkSource().getGenerator();
+        this.templateManager = level.getStructureTemplateManager();
+        this.lightEngine = level.getChunkSource().getLightEngine();
+        // The main-thread mailbox serves only the FULL step, which this grid never runs.
+        this.context = new WorldGenContext(level, generator, templateManager, lightEngine, null, pos -> {});
+        this.fusedTerrain = fusedTerrain;
+        this.parallelSteps = parallelSteps;
+        this.parallelFeatures = parallelSteps;
+
+        this.coreMinChunkX = Math.floorDiv(minBlockX, 16);
+        this.coreMinChunkZ = Math.floorDiv(minBlockZ, 16);
+        this.coreChunksX = coreChunksX;
+        this.coreChunksZ = coreChunksZ;
+
+        this.gridMinChunkX = this.coreMinChunkX - PADDING;
+        this.gridMinChunkZ = this.coreMinChunkZ - PADDING;
+        this.gridChunksX = this.coreChunksX + (2 * PADDING);
+        this.gridChunksZ = this.coreChunksZ + (2 * PADDING);
+
+        this.chunks = new ProtoChunk[gridChunksX][gridChunksZ];
+        this.holders = new GridHolder[gridChunksX][gridChunksZ];
+
+        var biomeRegistry = level.palettedContainerFactory();
+
+        // Pre-allocate all ProtoChunks in RAM
+        for (int gx = 0; gx < gridChunksX; gx++) {
+            for (int gz = 0; gz < gridChunksZ; gz++) {
+                int worldChunkX = gridMinChunkX + gx;
+                int worldChunkZ = gridMinChunkZ + gz;
+                chunks[gx][gz] = new ProtoChunk(
+                    new ChunkPos(worldChunkX, worldChunkZ),
+                    UpgradeData.EMPTY,
+                    heights,
+                    biomeRegistry,
+                    null
+                );
+                holders[gx][gz] = new GridHolder(this, chunks[gx][gz]);
+            }
+        }
+    }
+
+    public ProtoChunk getChunk(int worldChunkX, int worldChunkZ) {
+        int gx = worldChunkX - gridMinChunkX;
+        int gz = worldChunkZ - gridMinChunkZ;
+        if (gx >= 0 && gx < gridChunksX && gz >= 0 && gz < gridChunksZ && chunks != null) {
+            return chunks[gx][gz];
+        }
+        return null;
+    }
+
+    /**
+     * The square neighborhood of grid chunk holders around (worldChunkX, worldChunkZ), as the
+     * server passes a generation step. Chunks further away (up to the grid edge) are still
+     * readable through WorldGenRegionMixin.
+     */
+    public StaticCache2D<GenerationChunkHolder> getNeighborhoodCache(int worldChunkX, int worldChunkZ, int radius) {
+        return StaticCache2D.create(worldChunkX, worldChunkZ, radius, (cx, cz) -> {
+            int gx = cx - gridMinChunkX;
+            int gz = cz - gridMinChunkZ;
+            if (holders == null || gx < 0 || gx >= gridChunksX || gz < 0 || gz >= gridChunksZ) {
+                throw new IllegalStateException(String.format("Missing neighbor chunk at [%d, %d] in grid cache", cx, cz));
+            }
+            return holders[gx][gz];
+        });
+    }
+
+    /** Minecraft's own step for {@code status} on one grid chunk, as the server applies it. */
+    private CompletableFuture<ChunkAccess> generate(ChunkStatus status, ChunkAccess chunk, int radius) {
+        ChunkPos pos = chunk.getPos();
+        return asGridStep(() -> placing(status, () -> ChunkPyramid.GENERATION_PYRAMID.getStepTo(status)
+                .apply(context, getNeighborhoodCache(pos.x(), pos.z(), radius), chunk)));
+    }
+
+    /** Runs one of Minecraft's steps on this thread, which chunkForWorker then serves as it serves a worker. */
+    private static <T> T asGridStep(java.util.function.Supplier<T> step) {
+        boolean outermost = runningStep.get() == null;
+        if (outermost) runningStep.set(Boolean.TRUE);
+        try {
+            return step.get();
+        } finally {
+            if (outermost) runningStep.remove();
+        }
+    }
+
+    public int getGridTotalChunks() {
+        return gridChunksX * gridChunksZ;
+    }
+
+    /** Core chunks plus the terrain halo. */
+    public int getPaddedChunksCount() {
+        return (coreChunksX + 2 * TERRAIN_HALO) * (coreChunksZ + 2 * TERRAIN_HALO);
+    }
+
+    /** Stage 2 progress: the chunks whose terrain is made, and those that get biomes only (see setTerrainNeed). */
+    public int getTerrainStageChunks() {
+        LongSet used = needed;
+        return used == null ? getPaddedChunksCount() : used.size();
+    }
+
+    /** What terrain the batch left out (see setTerrainNeed), for the log; empty when none. */
+    public String getTerrainNeedDiagnostics() {
+        LongSet used = needed;
+        if (used == null || used.size() == getPaddedChunksCount() && savedExpected == 0) return "";
+        return String.format(java.util.Locale.ROOT, "Terrain where needed: %d of %d chunks, %d more from saved chunks%s",
+                used.size() - savedExpected, getPaddedChunksCount(), savedExpected,
+                terrainMadeLate == 0 ? "" : " (" + terrainMadeLate + " made after all)");
+    }
+
+    /** Stage 1 progress: one start per grid chunk plus one reference pass per terrain chunk. */
+    public int getStructureStageChunks() {
+        return getGridTotalChunks() + getPaddedChunksCount();
+    }
+
+    public int getCoreTotalChunks() {
+        long[] positions = corePositions;
+        return positions != null ? positions.length : getCorePositions().length;
+    }
+
+    /**
+     * Limits the core to the chunks of the tile that lie in the run's area (a circle's); call
+     * before the first layer runs.
+     */
+    void setArea(ChunkAreaFilter filter) {
+        area = filter;
+        corePositions = null;
+    }
+
+    /** The ring chunks whose features this batch places: chunks of the core rectangle outside the area. Before the first layer. */
+    void setRing(LongSet chunks) {
+        ring = chunks;
+    }
+
+    public long[] getRingPositions() {
+        return ring.toLongArray();
+    }
+
+    /** The chunks whose features this batch may place: the core and the ring. */
+    private long[] getFeaturePositions() {
+        long[] core = getCorePositions();
+        if (ring.isEmpty()) return core;
+        long[] all = java.util.Arrays.copyOf(core, core.length + ring.size());
+        int index = core.length;
+        for (long pos : ring) all[index++] = pos;
+        return all;
+    }
+
+    /** Stage 4 progress: the chunks whose features may run. */
+    public int getFeatureStageChunks() {
+        return getCoreTotalChunks() + ring.size();
+    }
+
+    /** In the core rectangle, and of the area or the ring: its features run here unless it is kept. */
+    private boolean placesFeatures(int chunkX, int chunkZ) {
+        return area.contains(chunkX, chunkZ) || ring.contains(ChunkPos.pack(chunkX, chunkZ));
+    }
+
+    /**
+     * From here on the chunks outside the area light nothing while the grid is lit, as the part-generated
+     * neighbors of a chunk Minecraft lights (their own light counts once the server lights them, and reaches
+     * into the area then). litOutside: the chunks outside that are lit in the stored world; they give light.
+     */
+    void setOutsideUnlit(LongSet litOutside) {
+        this.outsideUnlit = true;
+        this.litOutside = litOutside;
+    }
+
+    private boolean dark(int chunkX, int chunkZ) {
+        return outsideUnlit && !area.contains(chunkX, chunkZ) && !litOutside.contains(ChunkPos.pack(chunkX, chunkZ));
+    }
+
+    /**
+     * A saved chunk was lit before the chunks of later batches around it had their features: what those placed
+     * (a torch, a roof) changes its light too. So the saved chunks beside this batch's new chunks are lit again
+     * with the grid, from nothing, among all their neighbors, and that light replaces what they were stored with
+     * (see DynamicBatchPreGen#finishBatch). ring: the final blocks of their neighbors outside the grid; dark:
+     * those of the ring that are not lit in the stored world and give no light.
+     */
+    void setSeamRelight(LongSet relight, Map<Long, SeamWrites.Final> ring, LongSet dark) {
+        this.relight = relight;
+        this.lightRing = ring;
+        this.lightRingDark = dark;
+    }
+
+    /**
+     * More saved chunks to light again, known once this batch's features have run: those around a saved chunk
+     * into which the features placed a block that changes light. inGrid: such chunks the grid holds; targets:
+     * those outside it, with their final blocks; ring, dark: as for setSeamRelight. Before lighting.
+     */
+    void addSeamRelight(LongSet inGrid, Map<Long, SeamWrites.Final> targets, Map<Long, SeamWrites.Final> ring, LongSet dark) {
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet all = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(relight);
+        all.addAll(inGrid);
+        all.addAll(targets.keySet());
+        Map<Long, SeamWrites.Final> blocks = new HashMap<>(lightRing);
+        blocks.putAll(ring);
+        blocks.putAll(targets);
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet darkNow = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(lightRingDark);
+        darkNow.addAll(dark);
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet outside = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(relightOutside);
+        outside.addAll(targets.keySet());
+        relight = all;
+        lightRing = blocks;
+        lightRingDark = darkNow;
+        relightOutside = outside;
+    }
+
+    /** A chunk outside the grid whose blocks the lighting already has (see setSeamRelight). */
+    boolean hasLightBlocks(long packed) {
+        return lightRing.containsKey(packed);
+    }
+
+    boolean isRelit(long packed) {
+        return relight.contains(packed);
+    }
+
+    /** After lighting on the workers: the new light of the chunks given to setSeamRelight. */
+    Map<Long, GridLight.ChunkLight> getRelit() {
+        return relit;
+    }
+
+    private static GridLight.ChunkLight copyOf(GridLight.ChunkLight light) {
+        DataLayer[] block = new DataLayer[light.block().length];
+        DataLayer[] sky = new DataLayer[light.sky().length];
+        for (int i = 0; i < block.length; i++) {
+            block[i] = light.block()[i] == null ? null : light.block()[i].copy();
+            sky[i] = light.sky()[i] == null ? null : light.sky()[i].copy();
+        }
+        return new GridLight.ChunkLight(light.chunk(), block, sky);
+    }
+
+    /**
+     * After lighting: for chunks outside the area whose features have run (the ring, and neighbors generated
+     * before), the light the lighting left in them; for a dark chunk that is what came in from the area.
+     */
+    Map<Long, GridLight.ChunkLight> getOutsideLight() {
+        return outsideLight;
+    }
+
+    /** Packed positions of the core chunks, i.e. the chunks this tile may save. */
+    public long[] getCorePositions() {
+        long[] positions = corePositions;
+        if (positions == null) {
+            it.unimi.dsi.fastutil.longs.LongArrayList inArea = new it.unimi.dsi.fastutil.longs.LongArrayList(coreChunksX * coreChunksZ);
+            for (int cx = coreMinChunkX; cx < coreMinChunkX + coreChunksX; cx++) {
+                for (int cz = coreMinChunkZ; cz < coreMinChunkZ + coreChunksZ; cz++) {
+                    if (area.contains(cx, cz)) inArea.add(ChunkPos.pack(cx, cz));
+                }
+            }
+            positions = inArea.toLongArray();
+            corePositions = positions;
+        }
+        return positions.clone();
+    }
+
+    /**
+     * STRUCTURE_STARTS and every "simple" status task (references, features, spawn) do
+     * their work inside generate() and return a finished future, ignoring the executor. Called
+     * in a loop they all run on the calling thread, so the call itself is moved onto the pool.
+     */
+    public void setParallelFeatures(boolean parallel) {
+        parallelFeatures = parallel && parallelSteps;
+    }
+
+    private CompletableFuture<?> generateOnPool(ChunkStatus status, ExecutorService workerPool, ChunkAccess chunk, int radius) {
+        return generateOnPool(status, workerPool, chunk, radius, parallelSteps);
+    }
+
+    /** A biome or terrain step: fused, the whole step on one worker (TerrainGenerationContext keeps it there). */
+    private CompletableFuture<?> generateTerrainStep(ChunkStatus status, ExecutorService workerPool, ChunkAccess chunk, LongAdder nanos) {
+        if (!fusedTerrain) return generateOnPool(status, workerPool, chunk, 1);
+        return CompletableFuture.supplyAsync(() -> {
+            try (TerrainGenerationContext ignored = TerrainGenerationContext.enter()) {
+                long start = System.nanoTime();
+                CompletableFuture<ChunkAccess> done = generate(status, chunk, 1);
+                done.join();
+                nanos.add(System.nanoTime() - start);
+                if (status == ChunkStatus.TERRAIN) terrainChunks.increment();
+            }
+            return null;
+        }, workerPool);
+    }
+
+    private CompletableFuture<?> generateOnPool(ChunkStatus status, ExecutorService workerPool, ChunkAccess chunk, int radius,
+                                                boolean parallel) {
+        if (!parallel) {
+            return generate(status, chunk, radius);
+        }
+        return CompletableFuture.supplyAsync(() -> generate(status, chunk, radius), workerPool)
+                .thenCompose(future -> future);
+    }
+
+    /**
+     * Whether a grid on the fused terrain path chains the steps before features per chunk (see
+     * Head) instead of running each for the whole grid before the next begins; on unless
+     * -Dfastpregen.pipelinedHead=false.
+     */
+    static volatile boolean pipelinedHead = Boolean.parseBoolean(System.getProperty("fastpregen.pipelinedHead", "true"));
+    /** Chunks per side of a group of structure starts that reference steps wait for as one. */
+    private static final int START_GROUP = 8;
+
+    /**
+     * The steps before features of every chunk the batch works with, all started at once and chained by
+     * what each reads: a chunk's structure references read the starts of the chunks up to 8 away; its
+     * biomes read its references; its terrain (noise, surface and caves, one step in this version) reads
+     * the biomes of its 3x3 neighbors. Run one whole step after the other, every worker waited for the
+     * last chunk of each step: one slow structure start held all of them. Chained, only the chunks within
+     * 8 of it wait for it. Each step is Minecraft's own, over the same finished inputs as before.
+     */
+    private final class Head {
+        final List<CompletableFuture<?>> structures = new ArrayList<>();
+        final List<CompletableFuture<?>> terrain = new ArrayList<>();
+        final List<CompletableFuture<?>> all = new ArrayList<>();
+        final ExecutorService pool;
+        /** Each grid chunk's steps begun so far, by its place in the grid. */
+        final CompletableFuture<?>[][] starts = new CompletableFuture<?>[gridChunksX][gridChunksZ];
+        final CompletableFuture<?>[][] references = new CompletableFuture<?>[gridChunksX][gridChunksZ];
+        final CompletableFuture<?>[][] biomes = new CompletableFuture<?>[gridChunksX][gridChunksZ];
+        final CompletableFuture<?>[][] shaped = new CompletableFuture<?>[gridChunksX][gridChunksZ];
+        /** The terrain step holds the caves too. */
+        final CompletableFuture<?>[][] carved = shaped;
+        /** Set when the batch is dropped: steps not begun yet end at once. */
+        volatile boolean cancelled;
+
+        Head(ExecutorService pool) {
+            this.pool = pool;
+        }
+
+        /** The step on the pool once {@code after} is done (now when null). */
+        CompletableFuture<?> step(ExecutorService pool, CompletableFuture<?> after, Runnable step) {
+            Runnable guarded = () -> {
+                if (cancelled) throw new java.util.concurrent.CancellationException("The batch was dropped");
+                step.run();
+            };
+            CompletableFuture<?> future = after == null ? CompletableFuture.runAsync(guarded, pool)
+                    : after.thenRunAsync(guarded, pool);
+            all.add(future);
+            return future;
+        }
+
+        /** The chunk's biomes, begun once: after its structure references, or after its starts where it has no references. */
+        CompletableFuture<?> biomes(int x, int z) {
+            int gx = x - gridMinChunkX;
+            int gz = z - gridMinChunkZ;
+            if (biomes[gx][gz] != null) return biomes[gx][gz];
+            ProtoChunk chunk = chunks[gx][gz];
+            CompletableFuture<?> ready = references[gx][gz] != null ? references[gx][gz] : starts[gx][gz];
+            return biomes[gx][gz] = step(pool, ready, () -> terrainStep(ChunkStatus.BIOMES, chunk, biomeNanos));
+        }
+
+        /** The chunk's terrain, begun once: after the biomes of its 3x3 neighbors. */
+        CompletableFuture<?> shaped(int x, int z) {
+            int gx = x - gridMinChunkX;
+            int gz = z - gridMinChunkZ;
+            if (shaped[gx][gz] != null) return shaped[gx][gz];
+            ProtoChunk chunk = chunks[gx][gz];
+            List<CompletableFuture<?>> neighbors = new ArrayList<>(9);
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) neighbors.add(biomes(x + dx, z + dz));
+            }
+            CompletableFuture<?> step = step(pool, CompletableFuture.allOf(neighbors.toArray(new CompletableFuture[0])),
+                    () -> terrainStep(ChunkStatus.TERRAIN, chunk, terrainNanos));
+            terrain.add(step);
+            return shaped[gx][gz] = step;
+        }
+
+        CompletableFuture<?> carved(int x, int z) {
+            return shaped(x, z);
+        }
+    }
+
+    /** One of Minecraft's biome or terrain steps, whole on the worker that runs this (TerrainGenerationContext keeps it there). */
+    private void terrainStep(ChunkStatus status, ChunkAccess chunk, LongAdder nanos) {
+        try (TerrainGenerationContext ignored = TerrainGenerationContext.enter()) {
+            long start = System.nanoTime();
+            generate(status, chunk, 1).join();
+            nanos.add(System.nanoTime() - start);
+            if (status == ChunkStatus.TERRAIN) terrainChunks.increment();
+        }
+    }
+
+    /** The chained steps of this grid, or null: steps then run stage after stage. */
+    private Head head;
+
+    /** Whether this grid chains the steps before features (see Head). */
+    private boolean chained() {
+        return pipelinedHead && parallelSteps && fusedTerrain;
+    }
+
+    /**
+     * Terrain only where the batch needs it, on unless -Dfastpregen.terrainWhereNeeded=false: without it
+     * every chunk of the core rectangle and its halo gets terrain, as before version 16.
+     */
+    static volatile boolean terrainWhereNeeded = Boolean.parseBoolean(System.getProperty("fastpregen.terrainWhereNeeded", "true"));
+    /** The chunks of the terrain rectangle this batch works with (see setTerrainNeed), or null: all of them. */
+    private volatile LongSet needed;
+    /** Those of them expected to take a saved chunk's blocks: they get biomes, and terrain only if that fails. */
+    private LongSet expectSaved = LongSets.EMPTY_SET;
+    /** Chunks that took a saved chunk's blocks (see adoptSaved). */
+    private final LongSet adopted = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private int savedExpected;
+    private int terrainMadeLate;
+
+    /**
+     * Limits the batch's terrain to what it uses; call before the first layer runs. Features read and
+     * write the 3x3 chunks around their own, so the chunks to generate and their neighbors are all that
+     * a batch reads: the rest of the rectangle (a circle's corners, the land around kept chunks) had its
+     * terrain computed and never looked at. A neighbor generated before (a kept chunk, an earlier batch's,
+     * the stored world's) takes its saved blocks before features (adoptSaved) and keeps only the grid's
+     * biomes, so {@code savedLikely} chunks get biomes only; one that does not take them after all gets
+     * its terrain then (completeTerrain). Structure starts and references stay as they were, for the whole
+     * rectangle. Only for a grid that chains its steps; any other makes all its terrain.
+     */
+    void setTerrainNeed(LongSet generate, java.util.function.LongPredicate savedLikely) {
+        setTerrainNeed(generate, savedLikely, true);
+    }
+
+    /** neighbors: false for a batch whose features do not run (a run of depth terrain): then only the chunks to generate. */
+    void setTerrainNeed(LongSet generate, java.util.function.LongPredicate savedLikely, boolean neighbors) {
+        setTerrainNeed(generate, LongSets.EMPTY_SET, savedLikely, neighbors);
+    }
+
+    /**
+     * finished: chunks the batch works on without making their terrain (stored chunks it finishes as they are,
+     * see continueSaved): they and their neighbors are used too.
+     */
+    void setTerrainNeed(LongSet generate, LongSet finished, java.util.function.LongPredicate savedLikely, boolean neighbors) {
+        if (!terrainWhereNeeded || !chained()) return;
+        int reach = neighbors ? 1 : 0;
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet used = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(generate.size() * 2);
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet worked = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(generate);
+        worked.addAll(finished);
+        for (long pos : worked) {
+            int x = ChunkPos.getX(pos);
+            int z = ChunkPos.getZ(pos);
+            for (int dz = -reach; dz <= reach; dz++) {
+                for (int dx = -reach; dx <= reach; dx++) {
+                    if (inTerrainBox(x + dx, z + dz)) used.add(ChunkPos.pack(x + dx, z + dz));
+                }
+            }
+        }
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet saved = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (long pos : used) {
+            if (!generate.contains(pos) && savedLikely.test(pos)) saved.add(pos);
+        }
+        expectSaved = saved;
+        savedExpected = saved.size();
+        needed = used;
+    }
+
+    /**
+     * Terrain for the chunks that were expected to take a saved chunk's blocks and did not (the server
+     * holds them now, or their stored form could not be read): call once that is known, before anything
+     * reads their blocks.
+     */
+    public void completeTerrain(ExecutorService workerPool) {
+        Head head = this.head;
+        LongSet expected = expectSaved;
+        if (head == null || expected.isEmpty()) return;
+        expectSaved = LongSets.EMPTY_SET;
+        List<CompletableFuture<?>> late = new ArrayList<>();
+        for (long pos : expected) {
+            if (!adopted.contains(pos)) late.add(head.carved(ChunkPos.getX(pos), ChunkPos.getZ(pos)));
+        }
+        if (late.isEmpty()) return;
+        terrainMadeLate += late.size();
+        awaitHead(late, null);
+    }
+
+    /**
+     * Before features, when terrain was made only where needed. A kept chunk that did not take its saved
+     * blocks has its features run on the grid as before, for what they place in the chunks generated
+     * here: next to none of those nothing of them would be kept, so they do not run; next to one, its
+     * 3x3 chunks get the terrain they still lack.
+     */
+    private void prepareFeatureInputs(ExecutorService workerPool) {
+        Head head = this.head;
+        LongSet used = needed;
+        if (head == null || used == null) return;
+        completeTerrain(workerPool);
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet skip = null;
+        List<CompletableFuture<?>> late = new ArrayList<>();
+        for (long packed : getFeaturePositions()) {
+            if (featureSkip.contains(packed)) continue;
+            if (!used.contains(packed)) {
+                if (skip == null) skip = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(featureSkip);
+                skip.add(packed);
+                continue;
+            }
+            int cx = ChunkPos.getX(packed);
+            int cz = ChunkPos.getZ(packed);
+            for (int dz = -1; dz <= 1; dz++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = cx + dx;
+                    int nz = cz + dz;
+                    if (!inTerrainBox(nx, nz) || adopted.contains(ChunkPos.pack(nx, nz))) continue;
+                    if (head.carved[nx - gridMinChunkX][nz - gridMinChunkZ] == null) late.add(head.carved(nx, nz));
+                }
+            }
+        }
+        if (skip != null) featureSkip = skip;
+        if (late.isEmpty()) return;
+        terrainMadeLate += late.size();
+        awaitHead(late, null);
+    }
+
+    /** Starts every step before features, chained (see Head). */
+    private Head startHead(ExecutorService workerPool) {
+        Head head = new Head(workerPool);
+        int minX = terrainMinX();
+        int maxX = terrainMaxX();
+        int minZ = terrainMinZ();
+        int maxZ = terrainMaxZ();
+
+        // Structure starts of every grid chunk. A chunk outside the terrain area only supplies its
+        // starts, and then takes the status later region lookups expect of it.
+        CompletableFuture<?>[][] starts = head.starts;
+        for (int gx = 0; gx < gridChunksX; gx++) {
+            for (int gz = 0; gz < gridChunksZ; gz++) {
+                ProtoChunk chunk = chunks[gx][gz];
+                boolean terrainChunk = inTerrainBox(gridMinChunkX + gx, gridMinChunkZ + gz);
+                starts[gx][gz] = head.step(workerPool, null, () -> {
+                    generate(ChunkStatus.STRUCTURE_STARTS, chunk, 0).join();
+                    if (!terrainChunk && !chunk.getPersistedStatus().isOrAfter(ChunkStatus.STRUCTURE_REFERENCES)) {
+                        chunk.setPersistedStatus(ChunkStatus.STRUCTURE_REFERENCES);
+                    }
+                });
+                head.structures.add(starts[gx][gz]);
+            }
+        }
+        int groupsX = (gridChunksX + START_GROUP - 1) / START_GROUP;
+        int groupsZ = (gridChunksZ + START_GROUP - 1) / START_GROUP;
+        CompletableFuture<?>[][] groups = new CompletableFuture<?>[groupsX][groupsZ];
+        for (int bx = 0; bx < groupsX; bx++) {
+            for (int bz = 0; bz < groupsZ; bz++) {
+                List<CompletableFuture<?>> members = new ArrayList<>(START_GROUP * START_GROUP);
+                for (int gx = bx * START_GROUP; gx < Math.min(gridChunksX, (bx + 1) * START_GROUP); gx++) {
+                    for (int gz = bz * START_GROUP; gz < Math.min(gridChunksZ, (bz + 1) * START_GROUP); gz++) {
+                        members.add(starts[gx][gz]);
+                    }
+                }
+                groups[bx][bz] = CompletableFuture.allOf(members.toArray(new CompletableFuture[0]));
+            }
+        }
+
+        // Structure references of the terrain chunks: each reads starts up to 8 chunks away, all inside the grid.
+        CompletableFuture<?>[][] references = head.references;
+        for (int cz = minZ; cz <= maxZ; cz++) {
+            for (int cx = minX; cx <= maxX; cx++) {
+                int gx = cx - gridMinChunkX;
+                int gz = cz - gridMinChunkZ;
+                List<CompletableFuture<?>> needed = new ArrayList<>(9);
+                for (int bx = (gx - STRUCTURE_REFERENCE_RANGE) / START_GROUP; bx <= (gx + STRUCTURE_REFERENCE_RANGE) / START_GROUP; bx++) {
+                    for (int bz = (gz - STRUCTURE_REFERENCE_RANGE) / START_GROUP; bz <= (gz + STRUCTURE_REFERENCE_RANGE) / START_GROUP; bz++) {
+                        needed.add(groups[bx][bz]);
+                    }
+                }
+                ProtoChunk chunk = chunks[gx][gz];
+                references[gx][gz] = head.step(workerPool, CompletableFuture.allOf(needed.toArray(new CompletableFuture[0])),
+                        () -> generate(ChunkStatus.STRUCTURE_REFERENCES, chunk, STRUCTURE_REFERENCE_RANGE).join());
+                head.structures.add(references[gx][gz]);
+            }
+        }
+
+        // Biomes of the chunks this batch works with (see setTerrainNeed), and of the ring around those
+        // whose terrain is made: noise and surface read the biomes of the 3x3 neighbors.
+        LongSet saved = expectSaved;
+        for (int cz = minZ - 1; cz <= maxZ + 1; cz++) {
+            for (int cx = minX - 1; cx <= maxX + 1; cx++) {
+                boolean read = isTerrain(cx, cz);
+                for (int dz = -1; dz <= 1 && !read; dz++) {
+                    for (int dx = -1; dx <= 1 && !read; dx++) {
+                        read = isTerrain(cx + dx, cz + dz) && !saved.contains(ChunkPos.pack(cx + dx, cz + dz));
+                    }
+                }
+                if (read) head.biomes(cx, cz);
+            }
+        }
+
+        // Terrain of a chunk (noise, surface and caves, one step in this version) once its 3x3 neighbors have biomes. A chunk
+        // expected to take a saved chunk's blocks stops at its biomes, which that keeps (see adoptSaved).
+        for (int cz = minZ; cz <= maxZ; cz++) {
+            for (int cx = minX; cx <= maxX; cx++) {
+                if (!isTerrain(cx, cz)) continue;
+                if (saved.contains(ChunkPos.pack(cx, cz))) {
+                    head.terrain.add(head.biomes(cx, cz));
+                } else {
+                    head.carved(cx, cz);
+                }
+            }
+        }
+        return head;
+    }
+
+    /** Waits for one stage's steps of the head, counting each as it ends (those done already at once). */
+    private void awaitHead(List<CompletableFuture<?>> steps, Runnable onChunkDone) {
+        if (onChunkDone != null) {
+            for (CompletableFuture<?> step : steps) step.thenRun(onChunkDone);
+        }
+        try {
+            CompletableFuture.allOf(steps.toArray(new CompletableFuture[0])).join();
+        } catch (RuntimeException failure) {
+            cancelHead();
+            throw failure;
+        }
+    }
+
+    /** Drops the head's steps not begun yet and waits for those running, so that nothing touches the grid after. */
+    private void cancelHead() {
+        Head head = this.head;
+        if (head == null) return;
+        head.cancelled = true;
+        try {
+            CompletableFuture.allOf(head.all.toArray(new CompletableFuture[0])).handle((done, failure) -> null).join();
+        } catch (RuntimeException ignored) {
+            // Every step has ended, whichever way.
+        }
+    }
+
+    /**
+     * Executes fully parallel independent layers asynchronously with real-time per-chunk callbacks.
+     */
+    public void executeLayer(ChunkLayer layer, ExecutorService workerPool, Runnable onChunkDone) {
+        if (layer == ChunkLayer.STRUCTURES) {
+            if (chained()) {
+                head = startHead(workerPool);
+                awaitHead(head.structures, onChunkDone);
+                return;
+            }
+            List<CompletableFuture<?>> futures = new ArrayList<>(gridChunksX * gridChunksZ);
+            for (int gx = 0; gx < gridChunksX; gx++) {
+                for (int gz = 0; gz < gridChunksZ; gz++) {
+                    ProtoChunk chunk = chunks[gx][gz];
+                    CompletableFuture<?> f = generateOnPool(ChunkStatus.STRUCTURE_STARTS, workerPool, chunk, 0);
+                    if (onChunkDone != null) f = f.thenRun(onChunkDone);
+                    futures.add(f);
+                }
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            // Vanilla's STRUCTURE_REFERENCES step, which structure placement (features) and
+            // terrain adaptation (beardifier) read. Each chunk writes only its own references
+            // and reads starts up to 8 chunks away, all of which are inside the grid.
+            futures.clear();
+            for (int cz = terrainMinZ(); cz <= terrainMaxZ(); cz++) {
+                for (int cx = terrainMinX(); cx <= terrainMaxX(); cx++) {
+                    CompletableFuture<?> f = generateOnPool(ChunkStatus.STRUCTURE_REFERENCES, workerPool,
+                            getChunk(cx, cz), STRUCTURE_REFERENCE_RANGE);
+                    if (onChunkDone != null) f = f.thenRun(onChunkDone);
+                    futures.add(f);
+                }
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+            // Outer-ring chunks only supply starts; give them the status later region lookups expect.
+            for (int gx = 0; gx < gridChunksX; gx++) {
+                for (int gz = 0; gz < gridChunksZ; gz++) {
+                    if (!chunks[gx][gz].getPersistedStatus().isOrAfter(ChunkStatus.STRUCTURE_REFERENCES)) {
+                        chunks[gx][gz].setPersistedStatus(ChunkStatus.STRUCTURE_REFERENCES);
+                    }
+                }
+            }
+            return;
+        }
+
+        // Core chunks plus the halo, each with one neighbor ring available in all directions
+        int minX = terrainMinX();
+        int maxX = terrainMaxX();
+        int minZ = terrainMinZ();
+        int maxZ = terrainMaxZ();
+
+        if (head != null && layer == ChunkLayer.TERRAIN_PIPELINE) {
+            awaitHead(head.terrain, onChunkDone);
+            return;
+        }
+        if (layer == ChunkLayer.TERRAIN_PIPELINE) {
+            // Minecraft builds a chunk's terrain only once the eight neighbors have biomes (the
+            // surface reads their stored biomes), so every chunk first computes its biomes,
+            // including a ring just outside the terrain area, and its terrain waits for the 3x3
+            // neighbors' biomes. Both are Minecraft's own steps, with every hook other mods place
+            // on them; on the fused path they run on the worker that takes them.
+            List<CompletableFuture<?>> futures = new ArrayList<>((maxX - minX + 1) * (maxZ - minZ + 1));
+            int sizeX = maxX - minX + 3;
+            int sizeZ = maxZ - minZ + 3;
+            CompletableFuture<?>[][] biomesDone = new CompletableFuture<?>[sizeX][sizeZ];
+            for (int cz = minZ - 1; cz <= maxZ + 1; cz++) {
+                for (int cx = minX - 1; cx <= maxX + 1; cx++) {
+                    biomesDone[cx - minX + 1][cz - minZ + 1] = generateTerrainStep(ChunkStatus.BIOMES, workerPool, getChunk(cx, cz), biomeNanos);
+                }
+            }
+            for (int cz = minZ; cz <= maxZ; cz++) {
+                for (int cx = minX; cx <= maxX; cx++) {
+                    ProtoChunk chunk = getChunk(cx, cz);
+                    int ix = cx - minX + 1;
+                    int iz = cz - minZ + 1;
+                    List<CompletableFuture<?>> neighbors = new ArrayList<>(9);
+                    for (int dz = -1; dz <= 1; dz++) {
+                        for (int dx = -1; dx <= 1; dx++) neighbors.add(biomesDone[ix + dx][iz + dz]);
+                    }
+                    CompletableFuture<?> f = CompletableFuture.allOf(neighbors.toArray(new CompletableFuture[0]))
+                        .thenCompose(ignored -> generateTerrainStep(ChunkStatus.TERRAIN, workerPool, chunk, terrainNanos));
+                    if (onChunkDone != null) f = f.thenRun(onChunkDone);
+                    futures.add(f);
+                }
+            }
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            return;
+        }
+
+        throw new IllegalArgumentException("Layer " + layer + " must be executed with executePhased()");
+    }
+
+    /** Section block states of the terrain halo before features (see SeamWrites). */
+    private Map<Long, PalettedContainer<BlockState>[]> haloSnapshot;
+
+    private boolean isCore(int chunkX, int chunkZ) {
+        return chunkX >= coreMinChunkX && chunkX < coreMinChunkX + coreChunksX
+                && chunkZ >= coreMinChunkZ && chunkZ < coreMinChunkZ + coreChunksZ && area.contains(chunkX, chunkZ);
+    }
+
+    /**
+     * Gives a chunk generated before (by this run or earlier, see SeamWrites) its final blocks
+     * and heightmaps, so this batch's features find it as Minecraft finds a neighbor whose
+     * features ran earlier. Heightmaps it was stored without are computed from its blocks.
+     */
+    public void adoptSaved(long packed, SeamWrites.Final saved) {
+        ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+        LevelChunkSection[] sections = chunk.getSections();
+        for (int i = 0; i < sections.length; i++) {
+            sections[i] = new LevelChunkSection(SeamWrites.writableCopy(saved.states()[i]), sections[i].getBiomes());
+        }
+        // A neighbor whose features ran is still part-generated to Minecraft (it becomes full only
+        // after its own neighbors' features), with the worldgen heightmaps it had then; this mod
+        // stores those with the chunks it writes. A chunk stored without them (a full chunk of
+        // the world) computes them from its blocks, as Minecraft does for a full chunk.
+        java.util.EnumSet<Heightmap.Types> missing = java.util.EnumSet.noneOf(Heightmap.Types.class);
+        for (Heightmap.Types type : Heightmap.Types.values()) {
+            long[] data = saved.heightmaps().get(type);
+            if (data != null) {
+                chunk.setHeightmap(type, data.clone());
+            } else {
+                chunk.setHeightmap(type, new Heightmap(chunk, type).getRawData());
+                missing.add(type);
+            }
+        }
+        if (!missing.isEmpty()) Heightmap.primeHeightmaps(chunk, missing);
+        // Writes merged in later reached the chunk after its features: Minecraft then updates
+        // only the heightmaps a featured chunk keeps.
+        for (SeamWrites.Write write : saved.merged()) {
+            for (Heightmap.Types type : ChunkStatus.FEATURES.heightmapsAfter()) {
+                chunk.getOrCreateHeightmapUnprimed(type).update(write.x() & 15, write.y(), write.z() & 15, write.after());
+            }
+        }
+        // Its features ran: this batch's writes update the heightmaps a featured chunk keeps.
+        chunk.setPersistedStatus(ChunkStatus.FEATURES);
+        adopted.add(packed);
+    }
+
+
+    boolean isCore(long packed) {
+        return isCore(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+    }
+
+    /** Whether the chunk took a saved chunk's blocks (adoptSaved). */
+    boolean isAdopted(long packed) {
+        return adopted.contains(packed);
+    }
+
+    /**
+     * A stored chunk whose features ran but that is not fully generated, taken over to be finished here as
+     * Minecraft finishes it on loading: its blocks and heightmaps (adoptSaved), and what its features and
+     * structure pieces left beside blocks: block entities, entities waiting to be added, positions to
+     * post-process and scheduled ticks. Its structure starts and biomes are the grid's own (the same). Its
+     * features do not run again. False when the stored chunk cannot be read: then it is generated again.
+     */
+    public boolean continueSaved(long packed, CompoundTag stored, SeamWrites.Final blocks) {
+        net.minecraft.world.level.chunk.storage.SerializableChunkData data;
+        try {
+            data = net.minecraft.world.level.chunk.storage.SerializableChunkData.parse(level, level.palettedContainerFactory(), stored);
+        } catch (RuntimeException unreadable) {
+            data = null;
+        }
+        if (data == null) return false;
+        adoptSaved(packed, blocks);
+        ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+        for (CompoundTag blockEntity : data.blockEntities()) chunk.setBlockEntityNbt(blockEntity);
+        for (CompoundTag entity : data.entities()) chunk.addEntity(entity);
+        it.unimi.dsi.fastutil.shorts.ShortList[] postProcessing = data.postProcessingSections();
+        for (int i = 0; i < postProcessing.length; i++) {
+            if (postProcessing[i] != null && !postProcessing[i].isEmpty()) chunk.addPackedPostProcess(postProcessing[i], i);
+        }
+        for (var tick : data.packedTicks().blocks()) chunk.getBlockTicks().schedule(tick.unpack(0L, 0L));
+        for (var tick : data.packedTicks().fluids()) chunk.getFluidTicks().schedule(tick.unpack(0L, 0L));
+        return true;
+    }
+
+    /** Packed positions of the core chunks and the terrain halo this batch works with (see setTerrainNeed). */
+    public long[] getTerrainPositions() {
+        it.unimi.dsi.fastutil.longs.LongArrayList positions = new it.unimi.dsi.fastutil.longs.LongArrayList(
+                (terrainMaxX() - terrainMinX() + 1) * (terrainMaxZ() - terrainMinZ() + 1));
+        for (int cz = terrainMinZ(); cz <= terrainMaxZ(); cz++) {
+            for (int cx = terrainMinX(); cx <= terrainMaxX(); cx++) {
+                if (isTerrain(cx, cz)) positions.add(ChunkPos.pack(cx, cz));
+            }
+        }
+        return positions.toLongArray();
+    }
+
+    /** Core chunks generated before: kept as they are, their features already ran. */
+    private LongSet featureSkip = it.unimi.dsi.fastutil.longs.LongSets.EMPTY_SET;
+
+    public void setFeatureSkip(LongSet chunks) {
+        featureSkip = chunks;
+    }
+
+    /**
+     * Saves halo chunks as Minecraft leaves a generated chunk's neighbors: part-generated
+     * (status terrain) with the blocks other chunks' features placed in them.
+     */
+    public List<WorldChunkIO.EncodedChunk> encodePartGenerated(it.unimi.dsi.fastutil.longs.LongCollection positions,
+                                                               ExecutorService workerPool) {
+        RegionFileVersion version = RegionFileVersion.VERSION_DEFLATE;
+        List<CompletableFuture<WorldChunkIO.EncodedChunk>> futures = new ArrayList<>(positions.size());
+        for (long packed : positions) {
+            ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                CompoundTag tag = net.minecraft.world.level.chunk.storage.SerializableChunkData.copyOf(level, chunk).write();
+                FramedChunkBuffer framed = new FramedChunkBuffer(version.getId());
+                try (DataOutputStream stream = new DataOutputStream(version.wrap(framed))) {
+                    NbtIo.write(tag, stream);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(String.format("Failed to encode chunk [%d, %d]",
+                            chunk.getPos().x(), chunk.getPos().z()), e);
+                }
+                return new WorldChunkIO.EncodedChunk(chunk.getPos(), framed.frame());
+            }, workerPool));
+        }
+        List<WorldChunkIO.EncodedChunk> encoded = new ArrayList<>(futures.size());
+        for (CompletableFuture<WorldChunkIO.EncodedChunk> future : futures) encoded.add(future.join());
+        return encoded;
+    }
+
+    /**
+     * Saves ring chunks as Minecraft leaves the neighbors of a chunk it finished: their own features placed
+     * (status initialize_light), not lit, with the light that reached them from the lit chunks beside them.
+     * Minecraft goes on from there when it needs them. After lighting.
+     */
+    public List<WorldChunkIO.EncodedChunk> encodeRing(it.unimi.dsi.fastutil.longs.LongCollection positions,
+                                                      ExecutorService workerPool) {
+        RegionFileVersion version = RegionFileVersion.VERSION_DEFLATE;
+        Map<Long, GridLight.ChunkLight> reached = outsideLight;
+        int bottom = lightEngine.getMinLightSection();
+        List<CompletableFuture<WorldChunkIO.EncodedChunk>> futures = new ArrayList<>(positions.size());
+        for (long packed : positions) {
+            ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+            GridLight.ChunkLight light = reached.get(packed);
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                chunk.setPersistedStatus(ChunkStatus.INITIALIZE_LIGHT);
+                CompoundTag tag = net.minecraft.world.level.chunk.storage.SerializableChunkData.copyOf(level, chunk).write();
+                SeamWrites.putLight(tag, light == null ? null : light.block(), light == null ? null : light.sky(), bottom, false, false);
+                FramedChunkBuffer framed = new FramedChunkBuffer(version.getId());
+                try (DataOutputStream stream = new DataOutputStream(version.wrap(framed))) {
+                    NbtIo.write(tag, stream);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(String.format("Failed to encode chunk [%d, %d]",
+                            chunk.getPos().x(), chunk.getPos().z()), e);
+                }
+                return new WorldChunkIO.EncodedChunk(chunk.getPos(), framed.frame());
+            }, workerPool));
+        }
+        List<WorldChunkIO.EncodedChunk> encoded = new ArrayList<>(futures.size());
+        for (CompletableFuture<WorldChunkIO.EncodedChunk> future : futures) encoded.add(future.join());
+        return encoded;
+    }
+
+    /**
+     * Copies the block states of the halo and of the given core chunks (kept ones), so writes
+     * from this batch's features can be found afterwards.
+     */
+    @SuppressWarnings("unchecked")
+    public void snapshotHalo(LongSet keptCore) {
+        haloSnapshot = new HashMap<>();
+        for (int cz = terrainMinZ(); cz <= terrainMaxZ(); cz++) {
+            for (int cx = terrainMinX(); cx <= terrainMaxX(); cx++) {
+                if (!isTerrain(cx, cz) || (isCore(cx, cz) || ring.contains(ChunkPos.pack(cx, cz))) && !keptCore.contains(ChunkPos.pack(cx, cz))) continue;
+                ProtoChunk chunk = getChunk(cx, cz);
+                if (chunk == null) continue;
+                LevelChunkSection[] sections = chunk.getSections();
+                PalettedContainer<BlockState>[] copy = new PalettedContainer[sections.length];
+                for (int i = 0; i < sections.length; i++) copy[i] = sections[i].getStates().copy();
+                haloSnapshot.put(ChunkPos.pack(cx, cz), copy);
+            }
+        }
+    }
+
+    /** The blocks the core's features changed in each halo chunk since snapshotHalo(). */
+    public Map<Long, List<SeamWrites.Write>> collectHaloWrites(ExecutorService workerPool) {
+        Map<Long, List<SeamWrites.Write>> writes = new ConcurrentHashMap<>();
+        if (haloSnapshot == null) return writes;
+        List<CompletableFuture<?>> futures = new ArrayList<>(haloSnapshot.size());
+        for (Map.Entry<Long, PalettedContainer<BlockState>[]> entry : haloSnapshot.entrySet()) {
+            futures.add(CompletableFuture.runAsync(() -> {
+                List<SeamWrites.Write> changed = diffHalo(entry.getKey(), entry.getValue());
+                if (!changed.isEmpty()) writes.put(entry.getKey(), changed);
+            }, workerPool));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        haloSnapshot = null;
+        return writes;
+    }
+
+    private List<SeamWrites.Write> diffHalo(long packed, PalettedContainer<BlockState>[] before) {
+        ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+        int minX = ChunkPos.getX(packed) << 4;
+        int minZ = ChunkPos.getZ(packed) << 4;
+        LevelChunkSection[] sections = chunk.getSections();
+        List<SeamWrites.Write> writes = new ArrayList<>();
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        for (int i = 0; i < sections.length; i++) {
+            PalettedContainer<BlockState> after = sections[i].getStates();
+            int baseY = chunk.getSectionYFromSectionIndex(i) << 4;
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    for (int x = 0; x < 16; x++) {
+                        BlockState now = after.get(x, y, z);
+                        BlockState was = before[i].get(x, y, z);
+                        if (now == was) continue;
+                        pos.set(minX + x, baseY + y, minZ + z);
+                        CompoundTag blockEntity = now.hasBlockEntity() ? chunk.getBlockEntityNbtForSaving(pos, level.registryAccess()) : null;
+                        writes.add(new SeamWrites.Write(minX + x, baseY + y, minZ + z, was, now, blockEntity));
+                    }
+                }
+            }
+        }
+        return writes;
+    }
+
+    private int terrainMinX() {
+        return coreMinChunkX - TERRAIN_HALO;
+    }
+
+    private int terrainMaxX() {
+        return coreMinChunkX + coreChunksX - 1 + TERRAIN_HALO;
+    }
+
+    private int terrainMinZ() {
+        return coreMinChunkZ - TERRAIN_HALO;
+    }
+
+    private int terrainMaxZ() {
+        return coreMinChunkZ + coreChunksZ - 1 + TERRAIN_HALO;
+    }
+
+    /**
+     * Executes inter-chunk dependent layers in checkerboard phases. Features write into every
+     * neighbor (WorldGenRegion write radius 1), so chunks running together must be 3 apart for
+     * their 3x3 write areas to be disjoint: 9 phases. Lighting runs on the light engine's own
+     * thread, so its 4 phases only bound how much work is queued at once.
+     */
+    public void executePhased(ChunkLayer layer, ExecutorService workerPool, Runnable onChunkDone) {
+        // Core chunk bounds
+        int minX = coreMinChunkX;
+        int maxX = coreMinChunkX + coreChunksX - 1;
+        int minZ = coreMinChunkZ;
+        int maxZ = coreMinChunkZ + coreChunksZ - 1;
+
+        if (layer == ChunkLayer.LIGHTING) {
+            executeLighting(workerPool, onChunkDone);
+            return;
+        }
+        if (layer == ChunkLayer.FEATURES) prepareFeatureInputs(workerPool);
+
+        int spacing = layer == ChunkLayer.FEATURES ? 3 : 2;
+        java.util.function.IntBinaryOperator groups = featureGroups;
+        if (layer == ChunkLayer.FEATURES && groups != null) {
+            executeFeaturesInGroups(groups, workerPool, onChunkDone);
+            return;
+        }
+        if (layer == ChunkLayer.FEATURES && parallelFeatures && featuresByNeighbors) {
+            executeFeaturesByNeighbors(workerPool, onChunkDone);
+            return;
+        }
+        for (int phase = 0; phase < spacing * spacing; phase++) {
+            List<CompletableFuture<?>> phaseFutures = new ArrayList<>();
+
+            for (int cz = minZ; cz <= maxZ; cz++) {
+                for (int cx = minX; cx <= maxX; cx++) {
+                    if (phaseOf(cx, cz, spacing) != phase) continue;
+
+                    ProtoChunk chunk = getChunk(cx, cz);
+                    if (chunk == null) continue;
+
+                    if (layer == ChunkLayer.FEATURES) {
+                        if (featureSkip.contains(ChunkPos.pack(cx, cz)) || !placesFeatures(cx, cz)) continue;
+                        CompletableFuture<?> f = generateOnPool(ChunkStatus.FEATURES, workerPool, chunk, 1, parallelFeatures);
+                        if (onChunkDone != null) f = f.thenRun(onChunkDone);
+                        phaseFutures.add(f);
+                    }
+                }
+            }
+
+            CompletableFuture.allOf(phaseFutures.toArray(new CompletableFuture[0])).join();
+        }
+    }
+
+    /**
+     * Which server-held chunks inside the grid stay the server's while it lights (it lights those
+     * itself) and which this batch replaces with its own (lit from the grid, so their light fits
+     * the blocks they get; see LoadedChunkRegeneration).
+     */
+    public void setLightOwnership(LongSet heldByServer, LongSet replaced) {
+        lightHeld = heldByServer;
+        lightReplaced = replaced;
+    }
+
+    /** In the core rectangle or its halo. */
+    private boolean inTerrainBox(int chunkX, int chunkZ) {
+        return chunkX >= terrainMinX() && chunkX <= terrainMaxX() && chunkZ >= terrainMinZ() && chunkZ <= terrainMaxZ();
+    }
+
+    /** A chunk of the core rectangle or its halo that this batch works with (see setTerrainNeed). */
+    private boolean isTerrain(int chunkX, int chunkZ) {
+        if (!inTerrainBox(chunkX, chunkZ)) return false;
+        LongSet used = needed;
+        return used == null || used.contains(ChunkPos.pack(chunkX, chunkZ));
+    }
+
+    /**
+     * Minecraft's INITIALIZE_LIGHT and LIGHT steps on every terrain chunk, core and halo, as the
+     * server lights a chunk among lit neighbors; the light engine reads the grid's blocks through
+     * chunkForLighting meanwhile. The engine runs on its own thread, so the four phases only bound
+     * how much work is queued at once. Chunks the server keeps are left to it. Without such chunks
+     * the workers light the grid instead (see lightInParallel).
+     */
+    private void executeLighting(ExecutorService workerPool, Runnable onChunkDone) {
+        List<ProtoChunk> lit = new ArrayList<>();
+        // Chunks outside the area that are not lit in the stored world: in the engine, but never lit here (see setOutsideUnlit).
+        List<ProtoChunk> unlit = new ArrayList<>();
+        for (int cz = terrainMinZ(); cz <= terrainMaxZ(); cz++) {
+            for (int cx = terrainMinX(); cx <= terrainMaxX(); cx++) {
+                if (!isTerrain(cx, cz)) continue;
+                long pos = ChunkPos.pack(cx, cz);
+                if (lightHeld.contains(pos) && !lightReplaced.contains(pos)) continue;
+                ProtoChunk chunk = getChunk(cx, cz);
+                if (chunk != null) (dark(cx, cz) ? unlit : lit).add(chunk);
+            }
+        }
+        lightStarted = true;
+        lighting = true;
+        try {
+            if (lightHeld.isEmpty() && GridLight.enabled && WorldgenCompat.parallelLightAllowed()) {
+                lightInParallel(lit, unlit, workerPool, onChunkDone);
+                return;
+            }
+            List<CompletableFuture<?>> initFutures = new ArrayList<>(lit.size() + unlit.size());
+            for (ProtoChunk chunk : lit) initFutures.add(generate(ChunkStatus.INITIALIZE_LIGHT, chunk, 0));
+            for (ProtoChunk chunk : unlit) initFutures.add(generate(ChunkStatus.INITIALIZE_LIGHT, chunk, 0));
+            awaitLight(initFutures);
+            for (int phase = 0; phase < 4; phase++) {
+                List<CompletableFuture<?>> phaseFutures = new ArrayList<>();
+                for (ProtoChunk chunk : lit) {
+                    ChunkPos pos = chunk.getPos();
+                    if (phaseOf(pos.x(), pos.z(), 2) != phase) continue;
+                    CompletableFuture<?> f = generate(ChunkStatus.LIGHT, chunk, 1);
+                    if (onChunkDone != null && isCore(pos.x(), pos.z())) f = f.thenRun(onChunkDone);
+                    phaseFutures.add(f);
+                }
+                awaitLight(phaseFutures);
+            }
+            if (outsideUnlit) outsideLight = lightInServerEngine(lit, unlit);
+        } finally {
+            lighting = false;
+        }
+    }
+
+    /** Outside the area and its features have run: the ring, or a neighbor generated before. */
+    private boolean keepsReachedLight(ProtoChunk chunk) {
+        ChunkPos pos = chunk.getPos();
+        return outsideUnlit && !area.contains(pos.x(), pos.z()) && chunk.getPersistedStatus().isOrAfter(ChunkStatus.FEATURES);
+    }
+
+    /** The server engine's light for the chunks outside the area whose features have run (see getOutsideLight). */
+    private Map<Long, GridLight.ChunkLight> lightInServerEngine(List<ProtoChunk> lit, List<ProtoChunk> unlit) {
+        Map<Long, GridLight.ChunkLight> reached = new HashMap<>();
+        int bottom = lightEngine.getMinLightSection();
+        int count = lightEngine.getLightSectionCount();
+        for (List<ProtoChunk> list : List.of(lit, unlit)) {
+            for (ProtoChunk chunk : list) {
+                if (!keepsReachedLight(chunk)) continue;
+                DataLayer[] block = new DataLayer[count];
+                DataLayer[] sky = new DataLayer[count];
+                for (int i = 0; i < count; i++) {
+                    SectionPos section = SectionPos.of(chunk.getPos(), bottom + i);
+                    DataLayer blockLayer = lightEngine.getLayerListener(LightLayer.BLOCK).getDataLayerData(section);
+                    DataLayer skyLayer = lightEngine.getLayerListener(LightLayer.SKY).getDataLayerData(section);
+                    block[i] = blockLayer == null ? null : blockLayer.copy();
+                    sky[i] = skyLayer == null ? null : skyLayer.copy();
+                }
+                reached.put(chunk.getPos().pack(), new GridLight.ChunkLight(chunk, block, sky));
+            }
+        }
+        return reached;
+    }
+
+    /**
+     * The grid's light worked out on the workers (see GridLight), then given to the server's light
+     * engine as it takes a lit chunk loaded from disk (SerializableChunkData#read, then Minecraft's
+     * light steps for a lit chunk), so that engine propagates nothing; spawning, saving and the
+     * release of the grid's light (dispose) read it there as before.
+     */
+    private void lightInParallel(List<ProtoChunk> lit, List<ProtoChunk> unlit, ExecutorService workerPool, Runnable onChunkDone) {
+        Long2ObjectOpenHashMap<ProtoChunk> byPos = new Long2ObjectOpenHashMap<>(lit.size() + unlit.size());
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet dark = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(unlit.size());
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet reached = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (ProtoChunk chunk : lit) {
+            byPos.put(chunk.getPos().pack(), chunk);
+            if (keepsReachedLight(chunk)) reached.add(chunk.getPos().pack());
+        }
+        for (ProtoChunk chunk : unlit) {
+            long pos = chunk.getPos().pack();
+            byPos.put(pos, chunk);
+            dark.add(pos);
+            if (keepsReachedLight(chunk)) reached.add(pos);
+        }
+        // Saved chunks outside the grid, as blocks only: neighbors of the saved chunks lit again here.
+        for (Map.Entry<Long, SeamWrites.Final> entry : lightRing.entrySet()) {
+            long pos = entry.getKey();
+            if (byPos.containsKey(pos)) continue;
+            ProtoChunk chunk = new ProtoChunk(ChunkPos.unpack(pos), UpgradeData.EMPTY, heights, level.palettedContainerFactory(), null);
+            LevelChunkSection[] sections = chunk.getSections();
+            for (int i = 0; i < sections.length; i++) {
+                sections[i] = new LevelChunkSection(entry.getValue().states()[i], sections[i].getBiomes());
+            }
+            chunk.initializeLightSources();
+            byPos.put(pos, chunk);
+            if (lightRingDark.contains(pos)) dark.add(pos);
+        }
+        // The grid's own chunks: only their light goes to the server's engine below.
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet own = new it.unimi.dsi.fastutil.longs.LongOpenHashSet(lit.size());
+        for (ProtoChunk chunk : lit) own.add(chunk.getPos().pack());
+        int minX = terrainMinX();
+        int minZ = terrainMinZ();
+        int maxX = terrainMaxX();
+        int maxZ = terrainMaxZ();
+        // Chunks lit again that lie outside the grid: the box of lit chunks reaches out to them.
+        for (long pos : relightOutside) {
+            minX = Math.min(minX, ChunkPos.getX(pos));
+            minZ = Math.min(minZ, ChunkPos.getZ(pos));
+            maxX = Math.max(maxX, ChunkPos.getX(pos));
+            maxZ = Math.max(maxZ, ChunkPos.getZ(pos));
+        }
+        GridLight.Result result = GridLight.compute(level, byPos, dark, reached, minX, minZ, maxX, maxZ, workerPool);
+        outsideLight = result.reached();
+        List<GridLight.ChunkLight> computed = new ArrayList<>(result.lit().size());
+        for (GridLight.ChunkLight light : result.lit()) {
+            if (own.contains(light.chunk().getPos().pack())) computed.add(light);
+        }
+        if (!relight.isEmpty()) {
+            // Copies: the server's engine takes the layers below.
+            Map<Long, GridLight.ChunkLight> again = new HashMap<>();
+            for (GridLight.ChunkLight light : result.lit()) {
+                long pos = light.chunk().getPos().pack();
+                if (relight.contains(pos)) again.put(pos, copyOf(light));
+            }
+            relit = again;
+        }
+        int bottom = lightEngine.getMinLightSection();
+        List<CompletableFuture<?>> futures = new ArrayList<>(computed.size());
+        for (GridLight.ChunkLight light : computed) {
+            ProtoChunk chunk = light.chunk();
+            ChunkPos pos = chunk.getPos();
+            lightEngine.retainData(pos, true);
+            for (int i = 0; i < light.sky().length; i++) {
+                SectionPos section = SectionPos.of(pos, bottom + i);
+                // An empty block layer is what the engine starts any section with.
+                DataLayer block = light.block()[i];
+                if (block != null && !block.isEmpty()) lightEngine.queueSectionData(LightLayer.BLOCK, section, block);
+                if (light.sky()[i] != null) lightEngine.queueSectionData(LightLayer.SKY, section, light.sky()[i]);
+            }
+            chunk.setLightEngine(lightEngine);
+            CompletableFuture<?> f = CompletableFuture.allOf(lightEngine.initializeLight(chunk, true), lightEngine.lightChunk(chunk, true))
+                    .thenRun(() -> chunk.setPersistedStatus(ChunkStatus.LIGHT));
+            if (onChunkDone != null && isCore(pos.x(), pos.z())) f = f.thenRun(onChunkDone);
+            futures.add(f);
+        }
+        awaitLight(futures);
+    }
+
+    /** No chunk's light finishing for this long means the light engine stopped (see awaitLight). */
+    private static final long LIGHT_STALL_NANOS = java.util.concurrent.TimeUnit.MINUTES.toNanos(3);
+
+    /**
+     * Waits for light steps, which complete on the light engine's own thread. When that thread
+     * fails (another mod's light engine meeting data it does not expect, say) their futures never
+     * complete, so a batch in which no chunk's light finished for three minutes fails with a
+     * message instead of waiting forever.
+     */
+    private static void awaitLight(List<CompletableFuture<?>> futures) {
+        CompletableFuture<Void> all = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+        long done = -1;
+        long progressAt = System.nanoTime();
+        while (true) {
+            try {
+                all.get(5, java.util.concurrent.TimeUnit.SECONDS);
+                return;
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                long now = 0;
+                for (CompletableFuture<?> future : futures) if (future.isDone()) now++;
+                if (now != done) {
+                    done = now;
+                    progressAt = System.nanoTime();
+                } else if (System.nanoTime() - progressAt > LIGHT_STALL_NANOS) {
+                    throw new IllegalStateException("Lighting stalled: no chunk's light finished for 3 minutes (" + done + " of "
+                            + futures.size() + " done). The light engine may have failed; see the errors earlier in the log.");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while lighting", interrupted);
+            } catch (java.util.concurrent.ExecutionException failure) {
+                throw new java.util.concurrent.CompletionException(failure.getCause());
+            }
+        }
+    }
+
+    /**
+     * Regression only: features of the chunks in group 0 first (nine phases), then group 1, and
+     * so on. With one group per batch tile, one grid reproduces the order of a batched run.
+     */
+    static volatile java.util.function.IntBinaryOperator featureGroups;
+
+    private void executeFeaturesInGroups(java.util.function.IntBinaryOperator groups, ExecutorService workerPool,
+                                         Runnable onChunkDone) {
+        java.util.TreeSet<Integer> ids = new java.util.TreeSet<>();
+        long[] featurePositions = getFeaturePositions();
+        for (long packed : featurePositions) ids.add(groups.applyAsInt(ChunkPos.getX(packed), ChunkPos.getZ(packed)));
+        for (int id : ids) {
+            if (id < 0) continue;  // regression only: these chunks' features do not run
+            for (int phase = 0; phase < 9; phase++) {
+                List<CompletableFuture<?>> futures = new ArrayList<>();
+                for (long packed : featurePositions) {
+                    int cx = ChunkPos.getX(packed);
+                    int cz = ChunkPos.getZ(packed);
+                    if (groups.applyAsInt(cx, cz) != id || phaseOf(cx, cz, 3) != phase) continue;
+                    if (featureSkip.contains(packed)) continue;
+                    CompletableFuture<?> f = generateOnPool(ChunkStatus.FEATURES, workerPool, getChunk(cx, cz), 1,
+                            parallelFeatures);
+                    futures.add(onChunkDone != null ? f.thenRun(onChunkDone) : f);
+                }
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            }
+        }
+    }
+
+    /** Off only in the parity regression, to run the nine phases with full barriers. */
+    static volatile boolean featuresByNeighbors = true;
+
+    /**
+     * The same feature order as the nine checkerboard phases, without waiting for whole phases:
+     * a chunk's features read and write its 3x3 neighborhood, so two chunks interact only when
+     * they are at most 2 apart on both axes, and each chunk starts once every such chunk of an
+     * earlier phase has finished. Every interacting pair keeps its phase order and the others
+     * commute, so the result equals the phased run while slow chunks no longer stall a phase.
+     */
+    private void executeFeaturesByNeighbors(ExecutorService workerPool, Runnable onChunkDone) {
+        int spacing = 3;
+        long stageStart = System.nanoTime();
+        long[][] took = new long[coreChunksX][coreChunksZ];
+        CompletableFuture<?>[][] done = new CompletableFuture<?>[coreChunksX][coreChunksZ];
+        List<CompletableFuture<?>> all = new ArrayList<>(coreChunksX * coreChunksZ);
+        for (int phase = 0; phase < spacing * spacing; phase++) {
+            for (int z = 0; z < coreChunksZ; z++) {
+                for (int x = 0; x < coreChunksX; x++) {
+                    int cx = coreMinChunkX + x;
+                    int cz = coreMinChunkZ + z;
+                    if (phaseOf(cx, cz, spacing) != phase) continue;
+                    ProtoChunk chunk = getChunk(cx, cz);
+                    if (chunk == null) continue;
+                    // Chunks generated before, and chunks outside the area (halo), get no features here.
+                    if (featureSkip.contains(ChunkPos.pack(cx, cz)) || !placesFeatures(cx, cz)) {
+                        done[x][z] = CompletableFuture.completedFuture(null);
+                        continue;
+                    }
+                    List<CompletableFuture<?>> before = new ArrayList<>(16);
+                    for (int dz = -2; dz <= 2; dz++) {
+                        for (int dx = -2; dx <= 2; dx++) {
+                            int nx = x + dx;
+                            int nz = z + dz;
+                            if (nx < 0 || nz < 0 || nx >= coreChunksX || nz >= coreChunksZ) continue;
+                            if (phaseOf(cx + dx, cz + dz, spacing) < phase && done[nx][nz] != null) before.add(done[nx][nz]);
+                        }
+                    }
+                    int ix = x;
+                    int iz = z;
+                    CompletableFuture<?> f = CompletableFuture.allOf(before.toArray(new CompletableFuture[0]))
+                            .thenApplyAsync(ignored -> {
+                                long started = System.nanoTime();
+                                try {
+                                    return generate(ChunkStatus.FEATURES, chunk, 1);
+                                } finally {
+                                    took[ix][iz] = System.nanoTime() - started;
+                                }
+                            }, workerPool)
+                            .thenCompose(Function.identity());
+                    done[x][z] = f;
+                    all.add(onChunkDone != null ? f.thenRun(onChunkDone) : f);
+                }
+            }
+        }
+        CompletableFuture.allOf(all.toArray(new CompletableFuture[0])).join();
+        featureDiagnostics = featureStats(took, stageStart, spacing);
+    }
+
+    private volatile String featureDiagnostics = "";
+
+    public String getFeatureDiagnostics() {
+        return featureDiagnostics;
+    }
+
+    /**
+     * How the features stage used the workers: the share of worker time spent placing features,
+     * the shortest possible stage given the neighbor order (the longest chain of chunks that must
+     * run one after another), and the slowest chunk.
+     */
+    private String featureStats(long[][] took, long stageStart, int spacing) {
+        double wall = (System.nanoTime() - stageStart) / 1e9;
+        long busy = 0;
+        long slowest = 0;
+        ChunkPos slowestPos = null;
+        long[][] finish = new long[coreChunksX][coreChunksZ];
+        long longest = 0;
+        for (int phase = 0; phase < spacing * spacing; phase++) {
+            for (int z = 0; z < coreChunksZ; z++) {
+                for (int x = 0; x < coreChunksX; x++) {
+                    int cx = coreMinChunkX + x;
+                    int cz = coreMinChunkZ + z;
+                    if (phaseOf(cx, cz, spacing) != phase) continue;
+                    long start = 0;
+                    for (int dz = -2; dz <= 2; dz++) {
+                        for (int dx = -2; dx <= 2; dx++) {
+                            int nx = x + dx;
+                            int nz = z + dz;
+                            if (nx < 0 || nz < 0 || nx >= coreChunksX || nz >= coreChunksZ) continue;
+                            if (phaseOf(cx + dx, cz + dz, spacing) < phase) start = Math.max(start, finish[nx][nz]);
+                        }
+                    }
+                    finish[x][z] = start + took[x][z];
+                    longest = Math.max(longest, finish[x][z]);
+                    busy += took[x][z];
+                    if (took[x][z] > slowest) {
+                        slowest = took[x][z];
+                        slowestPos = new ChunkPos(cx, cz);
+                    }
+                }
+            }
+        }
+        int threads = Math.max(1, workerThreads);
+        return String.format(java.util.Locale.ROOT, "features: busy %.0f%% of %d workers, neighbor-order minimum %.1fs, slowest chunk %.2fs %s",
+                busy / 1e9 / (wall * threads) * 100, threads, longest / 1e9, slowest / 1e9, slowestPos);
+    }
+
+    /** Worker count, for the stage diagnostics. */
+    private int workerThreads = Runtime.getRuntime().availableProcessors();
+
+    public void setWorkerThreads(int threads) {
+        workerThreads = threads;
+    }
+
+    /** Checkerboard phase in [0, spacing^2): chunks sharing a phase are at least spacing apart on some axis. */
+    static int phaseOf(int chunkX, int chunkZ, int spacing) {
+        return Math.floorMod(chunkX, spacing) + spacing * Math.floorMod(chunkZ, spacing);
+    }
+
+    /**
+     * Vanilla's SPAWN step: the passive mobs placed once at generation (spawn settings come from
+     * the biome, so datapack and mod biomes apply). Each spawn stays inside its own chunk.
+     * Deliberately one chunk at a time, as in vanilla: it is cheap, and mod entity constructors
+     * may touch shared world state (such as the level's thread-checked random).
+     */
+    public void executeSpawn(ExecutorService workerPool, LongSet skip, Runnable onChunkDone) {
+        List<CompletableFuture<?>> futures = new ArrayList<>(getCoreTotalChunks());
+        for (long packed : getCorePositions()) {
+            if (skip.contains(packed)) continue;
+            ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+            CompletableFuture<?> f = generate(ChunkStatus.SPAWN, chunk, 1)
+                .thenRun(() -> spawnedEntities.add(chunk.getEntities().size()));
+            if (onChunkDone != null) f = f.thenRun(onChunkDone);
+            futures.add(f);
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+    }
+
+    public long getSpawnedEntities() {
+        return spawnedEntities.sum();
+    }
+
+    /**
+     * Serializes and compresses core chunks not in {@code skip} on the worker threads, in the
+     * exact sector framing a RegionFile stores. Writing happens elsewhere (see WorldChunkIO).
+     */
+    public List<WorldChunkIO.EncodedChunk> encodeForSaving(ExecutorService workerPool, LongSet skip,
+                                                           Runnable onChunkDone) {
+        // Same compression RegionFile's 3-argument constructor selects; the id travels with each chunk.
+        RegionFileVersion version = RegionFileVersion.VERSION_DEFLATE;
+        List<CompletableFuture<WorldChunkIO.EncodedChunk>> futures = new ArrayList<>(getCoreTotalChunks());
+
+        for (long packed : getCorePositions()) {
+            if (skip.contains(packed)) continue;
+            ProtoChunk chunk = getChunk(ChunkPos.getX(packed), ChunkPos.getZ(packed));
+            chunk.setPersistedStatus(ChunkStatus.FULL);
+
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                long started = System.nanoTime();
+                promoteDummyBlockEntities(chunk);
+                CompoundTag tag = net.minecraft.world.level.chunk.storage.SerializableChunkData.copyOf(level, chunk).write();
+                // ChunkSerializer keeps entities only for proto chunks; a full chunk's load path
+                // reads this same list (as for upgraded worlds) and adds the spawned mobs.
+                if (!chunk.getEntities().isEmpty()) {
+                    ListTag entities = new ListTag();
+                    entities.addAll(chunk.getEntities());
+                    tag.put("entities", entities);
+                }
+                FramedChunkBuffer framed = new FramedChunkBuffer(version.getId());
+                try (DataOutputStream stream = new DataOutputStream(version.wrap(framed))) {
+                    NbtIo.write(tag, stream);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(String.format("Failed to encode chunk [%d, %d]",
+                            chunk.getPos().x(), chunk.getPos().z()), e);
+                }
+                encodeNanos.add(System.nanoTime() - started);
+                encodedChunks.increment();
+                if (onChunkDone != null) onChunkDone.run();
+                return new WorldChunkIO.EncodedChunk(chunk.getPos(), framed.frame());
+            }, workerPool));
+        }
+
+        List<WorldChunkIO.EncodedChunk> encoded = new ArrayList<>(futures.size());
+        for (CompletableFuture<WorldChunkIO.EncodedChunk> future : futures) encoded.add(future.join());
+        return encoded;
+    }
+
+    /**
+     * WorldGenRegion#setBlock records block entities placed into proto chunks as {"id": "DUMMY"}
+     * placeholders, which vanilla turns into real block entities when the chunk becomes a
+     * LevelChunk (LevelChunk#promotePendingBlockEntity). This grid saves proto chunks as full
+     * chunks directly, and a full chunk's loader cannot read DUMMY ("Block entity has invalid
+     * type: DUMMY"), so the same promotion runs here. Other pending tags are real data and stay.
+     */
+    static int promoteDummyBlockEntities(ProtoChunk chunk) {
+        int promoted = 0;
+        for (Map.Entry<BlockPos, CompoundTag> pending : List.copyOf(chunk.getBlockEntityNbts().entrySet())) {
+            if (!"DUMMY".equals(pending.getValue().getStringOr("id", ""))) continue;
+            BlockPos pos = pending.getKey();
+            // Where generation went on to fill the block entity (a chest's loot table, a spawner's mob, a nest's
+            // bees), WorldGenRegion#getBlockEntity made the real one already, and ProtoChunk#setBlockEntity leaves
+            // the placeholder where it was. That block entity is the chunk's: a new one would be saved empty.
+            if (chunk.getBlockEntity(pos) != null) continue;
+            BlockState state = chunk.getBlockState(pos);
+            BlockEntity blockEntity = state.hasBlockEntity() && state.getBlock() instanceof EntityBlock block
+                    ? block.newBlockEntity(pos, state) : null;
+            if (blockEntity != null) {
+                chunk.setBlockEntity(blockEntity);
+                promoted++;
+            } else {
+                // Vanilla drops a placeholder whose block no longer has a block entity.
+                chunk.removeBlockEntity(pos);
+            }
+        }
+        return promoted;
+    }
+
+    public String getEncodeDiagnostics() {
+        long count = encodedChunks.sum();
+        if (count == 0) return "Saving: no new chunks to encode.";
+        return String.format(java.util.Locale.ROOT, "Saving worker time/chunk: serialize+deflate=%.2fms",
+                encodeNanos.sum() / (count * 1_000_000.0));
+    }
+
+    /**
+     * Vanilla's ChunkMap calls ThreadedLevelLightEngine#updateChunkStatus when a chunk unloads,
+     * which drops that chunk's block/sky light layers from the shared light engine. This grid
+     * never goes through ChunkMap, so without the same call every lit chunk's light data stays
+     * in the server's light engine for the life of the process. Chunks were serialized in
+     * encodeForSaving before this runs. Positions the server holds keep their light at any
+     * status: the server lit its partly generated chunks already, and replaced ones were lit
+     * from this grid, so dropping it would leave them dark.
+     *
+     * Completes once the light engine has dropped the data: the next batch's features read light
+     * (snow and ice need it dark) next to this grid, and must not see this grid's.
+     */
+    private CompletableFuture<Void> releaseLightData() {
+        long[] positions = new long[gridChunksX * gridChunksZ];
+        int index = 0;
+        for (int gx = 0; gx < gridChunksX; gx++) {
+            for (int gz = 0; gz < gridChunksZ; gz++) {
+                positions[index++] = ChunkPos.pack(gridMinChunkX + gx, gridMinChunkZ + gz);
+            }
+        }
+        ServerLevel target = level;
+        ThreadedLevelLightEngine engine = lightEngine;
+        ThreadedLevelLightEngineInvoker invoker = (ThreadedLevelLightEngineInvoker) (Object) engine;
+        CompletableFuture<Void> released = new CompletableFuture<>();
+        target.getServer().execute(() -> {
+            try {
+                var map = (com.example.pregen.mixin.ChunkMapAccessor) target.getChunkSource().chunkMap;
+                for (long packed : positions) {
+                    if (map.pregen$getVisibleChunk(packed) != null || map.pregen$getUpdatingChunk(packed) != null) continue;
+                    invoker.callUpdateChunkStatus(new ChunkPos(ChunkPos.getX(packed), ChunkPos.getZ(packed)));
+                }
+                // Runs after the removals above (they are queued at the highest priority).
+                engine.waitForPendingTasks(gridMinChunkX, gridMinChunkZ)
+                        .whenComplete((ignored, failure) -> released.complete(null));
+                engine.tryScheduleUpdate();
+            } catch (Throwable failure) {
+                released.completeExceptionally(failure);
+                throw failure;
+            }
+        });
+        return released;
+    }
+
+    /**
+     * Clears internal references to allow JVM garbage collector to reclaim heap immediately.
+     * Returns when the grid's light is out of the light engine (see releaseLightData).
+     */
+    public CompletableFuture<Void> dispose() {
+        cancelHead();
+        activeGrids.remove(this);
+        if (currentGrid == this) {
+            currentGrid = null;
+        }
+        CompletableFuture<Void> lightReleased = CompletableFuture.completedFuture(null);
+        // A grid dropped before its lighting holds no light of its own, and the light engine may be
+        // lighting the previous batch meanwhile, which shares edge chunks with it.
+        if (chunks != null && lightStarted) {
+            lightReleased = releaseLightData();
+        }
+        fallbackChunks.clear();
+        holders = null;
+        if (chunks != null) {
+            for (int gx = 0; gx < gridChunksX; gx++) {
+                for (int gz = 0; gz < gridChunksZ; gz++) {
+                    chunks[gx][gz] = null;
+                }
+            }
+            chunks = null;
+        }
+        return lightReleased;
+    }
+}

@@ -1,0 +1,43 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.example.pregen.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "MinecraftServerAccessor",
+    "ServerLevelAccessor",
+    "PersistentEntitySectionManagerAccessor",
+    "EntityStorageAccessor",
+    "SimpleRegionStorageAccessor",
+    "WorldGenRegionMixin",
+    "LevelLightEngineMixin",
+    "WorldGenRegionChunkCacheMixin",
+    "StructureTemplatePaletteMixin",
+    "StrongholdStructureMixin",
+    "StructurePieceSelectorMixin",
+    "EndCityStructureMixin",
+    "NetherFortressStructureMixin",
+    "TemplateStructurePieceMixin",
+    "ClimateParameterListMixin",
+    "BiomeManagerAccessor",
+    "ThreadedLevelLightEngineInvoker",
+    "ChunkStorageAccessor",
+    "ChunkMapAccessor",
+    "IOWorkerAccessor",
+    "PendingStoreAccessor",
+    "RegionFileStorageAccessor",
+    "RegionFileInvoker",
+    "ProtoChunkMixin",
+    "ChunkStepMixin",
+    "ServerChunkCacheMixin",
+    "ServerLevelMixin",
+    "BlockMixin",
+    "MatchingBlocksPredicateMixin",
+    "MinecraftServerMixin",
+    "ChunkGeneratorMixin",
+    "NoiseBasedChunkGeneratorMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

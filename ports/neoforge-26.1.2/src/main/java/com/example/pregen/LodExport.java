@@ -86,8 +86,8 @@ final class LodExport {
         LayerLightEventListener blockLight = level.getLightEngine().getLayerListener(LightLayer.BLOCK);
         LayerLightEventListener skyLight = level.getLightEngine().getLayerListener(LightLayer.SKY);
         for (ChunkPos pos : saved) {
-            if (heldByServer.contains(pos.pack())) continue;
-            ProtoChunk chunk = grid.getChunk(pos.x(), pos.z());
+            if (heldByServer.contains(Mc.pack(pos))) continue;
+            ProtoChunk chunk = grid.getChunk(Mc.x(pos), Mc.z(pos));
             if (chunk == null) continue;
             if (toVoxy) {
                 if (waitFor(voxy::queued, VOXY_QUEUE_LIMIT, "Voxy") && voxy.ingest(level, chunk, blockLight, skyLight)) {
@@ -219,8 +219,8 @@ final class LodExport {
                     LevelChunkSection section = sections[index];
                     if (section.hasOnlyAir()) continue;
                     int sectionY = chunk.getSectionYFromSectionIndex(index);
-                    SectionPos at = SectionPos.of(pos.x(), sectionY, pos.z());
-                    rawIngest.invoke(null, world, section, pos.x(), sectionY, pos.z(),
+                    SectionPos at = SectionPos.of(Mc.x(pos), sectionY, Mc.z(pos));
+                    rawIngest.invoke(null, world, section, Mc.x(pos), sectionY, Mc.z(pos),
                             blockLight.getDataLayerData(at), skyLight.getDataLayerData(at));
                 }
                 return true;

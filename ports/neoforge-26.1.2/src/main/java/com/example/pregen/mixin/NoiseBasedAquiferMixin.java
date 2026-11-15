@@ -125,6 +125,11 @@ public abstract class NoiseBasedAquiferMixin implements AquiferAirProof {
         return true;
     }
 
+    @Override
+    public boolean pregen$fluidByYOnly() {
+        return pregen$pickerReadsOnlyY();
+    }
+
     /** Every call above skipSamplingAboveY clears the flag as Minecraft's does; nothing to correct. */
     @Override
     public void pregen$endFill() {

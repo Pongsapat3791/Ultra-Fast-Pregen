@@ -2,7 +2,11 @@ package com.example.pregen.terrain;
 
 import com.example.pregen.mixin.Ap2Accessor;
 import com.example.pregen.mixin.BeardifierAccessor;
+import com.example.pregen.mixin.BlendDensityAccessor;
+import com.example.pregen.mixin.Cache2DMarker;
+import com.example.pregen.mixin.CacheOnceMarker;
 import com.example.pregen.mixin.ClampAccessor;
+import com.example.pregen.mixin.FlatCacheAccessor;
 import com.example.pregen.mixin.MappedAccessor;
 import com.example.pregen.mixin.MulOrAddAccessor;
 import com.example.pregen.mixin.NoiseInterpolatorAccessor;
@@ -21,6 +25,7 @@ import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.TerrainAdjustment;
 import net.minecraft.world.level.levelgen.structure.pools.JigsawJunction;
+import net.minecraft.world.level.levelgen.synth.BlendedNoise;
 
 /**
  * Interval bounds of a NoiseChunk's per-block density over one interpolation cell, computed from
@@ -39,6 +44,15 @@ public final class DensityBounds {
     public static final double DECISION_MARGIN = 1.0e-6;
     /** Chunks compiled with structure pieces or junctions nearby; for diagnostics. */
     public static final java.util.concurrent.atomic.LongAdder STRUCTURE_CHUNKS = new java.util.concurrent.atomic.LongAdder();
+
+    /**
+     * The blended (base 3D) noise lies within this: each octave is a weighted mean of gradient dot products
+     * of at most two coordinates within one cell (magnitude at most 2, plus the y smear's 1e-7 step), and
+     * the octaves' weights add up to less than one.
+     */
+    private static final double BLENDED_NOISE_RANGE = 2.01;
+    /** Stands for any value in a probe of which interpolated function decides a cell (see nonPositiveWhenAtMost). */
+    private static final double PROBE_RANGE = 1.0e30;
 
     private static final KeyDispatchDataCodec<?> ADD;
     private static final KeyDispatchDataCodec<?> MUL;
@@ -93,6 +107,8 @@ public final class DensityBounds {
         int maxY;
         int minZ;
         int maxZ;
+        /** Counts the evaluations of a point compilation, whose shared parts are evaluated once in each. */
+        int pass;
     }
 
     private abstract static class Node {
@@ -100,6 +116,11 @@ public final class DensityBounds {
         double hi;
 
         abstract void eval(Cell cell);
+
+        /** Whether the bounds are the same for every cell and point (no height, no column, no corner in them). */
+        boolean constant() {
+            return false;
+        }
 
         final void unknown() {
             lo = Double.NEGATIVE_INFINITY;
@@ -129,10 +150,89 @@ public final class DensityBounds {
 
         @Override
         void eval(Cell cell) {}
+
+        @Override
+        boolean constant() {
+            return true;
+        }
+    }
+
+    /** A function several others read (one Minecraft caches per position): evaluated once per pass. */
+    private static final class Shared extends Node {
+        private final Node function;
+        private int pass = -1;
+
+        Shared(Node function) {
+            this.function = function;
+        }
+
+        @Override
+        void eval(Cell cell) {
+            if (pass == cell.pass) return;
+            function.eval(cell);
+            lo = function.lo;
+            hi = function.hi;
+            pass = cell.pass;
+        }
+
+        @Override
+        boolean constant() {
+            return function.constant();
+        }
+    }
+
+    /** A block of the world, for the functions evaluated exactly at a point (see compileAtPoint). */
+    private static final class Point implements DensityFunction.FunctionContext {
+        int x;
+        int y;
+        int z;
+
+        @Override
+        public int blockX() {
+            return x;
+        }
+
+        @Override
+        public int blockY() {
+            return y;
+        }
+
+        @Override
+        public int blockZ() {
+            return z;
+        }
+    }
+
+    /** What a compilation collects: the point of a point compilation, and the interpolated functions met. */
+    private static final class Build {
+        Point point;
+        final List<Interpolated> interpolated = new ArrayList<>();
+        /** The shared functions of a point compilation, by the function itself. */
+        final java.util.Map<DensityFunction, Node> shared = new java.util.IdentityHashMap<>();
+        final Cell scratch = new Cell();
+    }
+
+    /** A function the chunk keeps per column (a flat or 2D cache): its own value at the point. */
+    private static final class Exact extends Node {
+        private final DensityFunction function;
+        private final Point point;
+
+        Exact(DensityFunction function, Point point) {
+            this.function = function;
+            this.point = point;
+        }
+
+        @Override
+        void eval(Cell cell) {
+            double value = function.compute(point);
+            settle(value, value);
+        }
     }
 
     private static final class Interpolated extends Node {
         private final NoiseInterpolatorAccessor interpolator;
+        /** Set while a probe gives this node its bounds (see nonPositiveWhenAtMost). */
+        boolean forced;
 
         Interpolated(NoiseChunk.NoiseInterpolator interpolator) {
             this.interpolator = (NoiseInterpolatorAccessor) (Object) interpolator;
@@ -140,6 +240,7 @@ public final class DensityBounds {
 
         @Override
         void eval(Cell cell) {
+            if (forced) return;
             double[][] slice0 = interpolator.pregen$getSlice0();
             double[][] slice1 = interpolator.pregen$getSlice1();
             int y = cell.cellY;
@@ -192,6 +293,11 @@ public final class DensityBounds {
                 default -> settle(Math.max(a, c), Math.max(b, d));
             }
         }
+
+        @Override
+        boolean constant() {
+            return first.constant() && second.constant();
+        }
     }
 
     private static final class Mapped extends Node {
@@ -238,6 +344,11 @@ public final class DensityBounds {
                 settle(transform(op, a), transform(op, b));
             }
         }
+
+        @Override
+        boolean constant() {
+            return input.constant();
+        }
     }
 
     private static final class Clamp extends Node {
@@ -255,6 +366,11 @@ public final class DensityBounds {
         void eval(Cell cell) {
             input.eval(cell);
             settle(Mth.clamp(input.lo, min, max), Mth.clamp(input.hi, min, max));
+        }
+
+        @Override
+        boolean constant() {
+            return input.constant();
         }
     }
 
@@ -289,6 +405,11 @@ public final class DensityBounds {
                 outOfRange.eval(cell);
                 settle(Math.min(inRange.lo, outOfRange.lo), Math.max(inRange.hi, outOfRange.hi));
             }
+        }
+
+        @Override
+        boolean constant() {
+            return input.constant() && inRange.constant() && outOfRange.constant();
         }
     }
 
@@ -345,14 +466,14 @@ public final class DensityBounds {
         static Node of(Beardifier beardifier) {
             BeardifierAccessor accessor = (BeardifierAccessor) beardifier;
             List<Integer> boxes = new ArrayList<>();
-            for (Beardifier.Rigid rigid : accessor.pregen$getPieces()) {
+            for (Beardifier.Rigid rigid : CellBeards.pieces(accessor)) {
                 if (rigid.terrainAdjustment() == TerrainAdjustment.NONE) continue;
                 BoundingBox box = rigid.box();
                 int ground = box.minY() + rigid.groundLevelDelta();
                 add(boxes, box.minX(), box.maxX(), Math.min(ground, box.minY()), Math.max(ground, box.maxY()),
                         box.minZ(), box.maxZ());
             }
-            for (JigsawJunction junction : accessor.pregen$getJunctions()) {
+            for (JigsawJunction junction : CellBeards.junctions(accessor)) {
                 add(boxes, junction.getSourceX(), junction.getSourceX(), junction.getSourceGroundY(),
                         junction.getSourceGroundY(), junction.getSourceZ(), junction.getSourceZ());
             }
@@ -371,17 +492,91 @@ public final class DensityBounds {
     }
 
     private final Node root;
+    private final List<Interpolated> interpolated;
+    /** The point of a point compilation, else null. */
+    private final Point point;
     private final Cell cell = new Cell();
     private double lo;
     private double hi;
 
-    private DensityBounds(Node root) {
+    private DensityBounds(Node root, Build from) {
         this.root = root;
+        this.interpolated = from.interpolated;
+        this.point = from.point;
     }
 
     /** Bounds of {@code density} as evaluated per block inside the given NoiseChunk. */
     public static DensityBounds compile(DensityFunction density, Blender blender) {
-        return new DensityBounds(build(density, blender, 0));
+        Build into = new Build();
+        return new DensityBounds(build(density, blender, 0, into), into);
+    }
+
+    /**
+     * Bounds of a function inside an interpolated one (what NoiseChunk computes at the cell corners) at single
+     * blocks, without its noises: the chunk's per-column caches are read exactly, the y gradients are exact,
+     * the blended noise counts with its range and every other noise with its declared one. See upperAt.
+     */
+    public static DensityBounds compileAtPoint(DensityFunction function) {
+        Build into = new Build();
+        into.point = new Point();
+        return new DensityBounds(build(function, null, 0, into), into);
+    }
+
+    /**
+     * The upper bound of a function compiled by compileAtPoint over the blocks of column (x, z) from minY
+     * to maxY; infinite when unknown. What is read exactly there depends on the column alone, and a y
+     * gradient counts with its whole range between the two heights, so the bound holds at each of them.
+     */
+    public double upperOver(int x, int z, int minY, int maxY) {
+        point.x = x;
+        point.y = minY;
+        point.z = z;
+        cell.cellY = 0;
+        cell.cellZ = 0;
+        cell.minX = x;
+        cell.maxX = x;
+        cell.minY = minY;
+        cell.maxY = maxY;
+        cell.minZ = z;
+        cell.maxZ = z;
+        cell.pass++;
+        root.eval(cell);
+        return root.hi;
+    }
+
+    /**
+     * Whether any cell between the two heights is non-positive throughout (allNonPositive) as soon as the
+     * given interpolated function is at most {@code value} at the cell's corners, whatever the other
+     * interpolated functions give. Interval bounds only narrow with narrower inputs, so a cell evaluated
+     * with real corners that meet the condition is then non-positive too.
+     */
+    public boolean nonPositiveWhenAtMost(NoiseChunk.NoiseInterpolator function, double value, int minY, int maxY) {
+        boolean found = false;
+        for (Interpolated node : interpolated) {
+            node.forced = true;
+            node.lo = -PROBE_RANGE;
+            if ((Object) node.interpolator == function) {
+                node.hi = value;
+                found = true;
+            } else {
+                node.hi = PROBE_RANGE;
+            }
+        }
+        try {
+            if (!found) return false;
+            cell.cellY = 0;
+            cell.cellZ = 0;
+            cell.minX = 0;
+            cell.maxX = 0;
+            cell.minY = minY;
+            cell.maxY = maxY;
+            cell.minZ = 0;
+            cell.maxZ = 0;
+            root.eval(cell);
+            return root.hi < -DECISION_MARGIN;
+        } finally {
+            for (Interpolated node : interpolated) node.forced = false;
+        }
     }
 
     /** False when no cell can ever be decided, e.g. a foreign function at the root. */
@@ -389,11 +584,43 @@ public final class DensityBounds {
         return !(root instanceof Fixed fixed) || fixed.lo <= fixed.hi && !Double.isInfinite(fixed.lo);
     }
 
-    private static Node build(DensityFunction f, Blender blender, int depth) {
+    /**
+     * The node of a function. In a point compilation, a part that is the same everywhere (noises and
+     * constants only) is worked out here, once, and stands as its bounds.
+     */
+    private static Node build(DensityFunction f, Blender blender, int depth, Build into) {
+        Node node = buildNode(f, blender, depth, into);
+        if (into.point == null || node instanceof Fixed || !node.constant()) return node;
+        node.eval(into.scratch);
+        return new Fixed(node.lo, node.hi);
+    }
+
+    private static Node buildNode(DensityFunction f, Blender blender, int depth, Build into) {
         if (depth > 64) return generic(f);
         Class<?> type = f.getClass();
+        if (into.point != null) {
+            // At a point: no interpolation; what the chunk caches per column is cheap and exact there.
+            if (f instanceof FlatCacheAccessor || f instanceof Cache2DMarker) return new Exact(f, into.point);
+            if (f instanceof CacheOnceMarker && f instanceof DensityFunctions.MarkerOrMarked once) {
+                Node shared = into.shared.get(f);
+                if (shared == null) {
+                    shared = new Shared(build(once.wrapped(), blender, depth + 1, into));
+                    into.shared.put(f, shared);
+                }
+                return shared;
+            }
+            if (f instanceof BlendedNoise) return new Fixed(-BLENDED_NOISE_RANGE, BLENDED_NOISE_RANGE);
+            // Only chunks that blend no older chunks in are compiled this way: blend_density gives its input unchanged.
+            // Before 26.2 it is a function of its own that stays in the chunk's copy; from 26.2 the chunk drops it.
+            if (!com.example.pregen.MinecraftVersion.MINECRAFT_26_2 && f instanceof BlendDensityAccessor blend) {
+                return build(blend.pregen$getInput(), blender, depth + 1, into);
+            }
+            if (f instanceof NoiseChunk.NoiseInterpolator) return generic(f);
+        }
         if (f instanceof NoiseChunk.NoiseInterpolator interpolator) {
-            return new Interpolated(interpolator);
+            Interpolated node = new Interpolated(interpolator);
+            into.interpolated.add(node);
+            return node;
         }
         if (type == CONSTANT) {
             return new Fixed(f.minValue(), f.maxValue());
@@ -402,15 +629,15 @@ public final class DensityBounds {
             Ap2Accessor ap2 = (Ap2Accessor) f;
             int op = opOf(f.codec());
             if (op < 0) return generic(f);
-            return new Binary(op, build(ap2.pregen$getArgument1(), blender, depth + 1),
-                    build(ap2.pregen$getArgument2(), blender, depth + 1));
+            return new Binary(op, build(ap2.pregen$getArgument1(), blender, depth + 1, into),
+                    build(ap2.pregen$getArgument2(), blender, depth + 1, into));
         }
         if (type == MUL_OR_ADD) {
             MulOrAddAccessor mulOrAdd = (MulOrAddAccessor) f;
             int op = opOf(f.codec());
             if (op != Binary.ADD_OP && op != Binary.MUL_OP) return generic(f);
             double argument = mulOrAdd.pregen$getArgument();
-            return new Binary(op, build(mulOrAdd.pregen$getInput(), blender, depth + 1), new Fixed(argument, argument));
+            return new Binary(op, build(mulOrAdd.pregen$getInput(), blender, depth + 1, into), new Fixed(argument, argument));
         }
         if (type == MAPPED) {
             KeyDispatchDataCodec<?> codec = f.codec();
@@ -418,17 +645,17 @@ public final class DensityBounds {
                     : codec == HALF_NEGATIVE ? Mapped.HALF_NEGATIVE_OP : codec == QUARTER_NEGATIVE ? Mapped.QUARTER_NEGATIVE_OP
                     : codec == SQUEEZE ? Mapped.SQUEEZE_OP : -1;
             if (op < 0) return generic(f);
-            return new Mapped(op, build(((MappedAccessor) f).pregen$getInput(), blender, depth + 1));
+            return new Mapped(op, build(((MappedAccessor) f).pregen$getInput(), blender, depth + 1, into));
         }
         if (type == CLAMP) {
-            return new Clamp(build(((ClampAccessor) f).pregen$getInput(), blender, depth + 1), f.minValue(), f.maxValue());
+            return new Clamp(build(((ClampAccessor) f).pregen$getInput(), blender, depth + 1, into), f.minValue(), f.maxValue());
         }
         if (type == RANGE_CHOICE) {
             RangeChoiceAccessor choice = (RangeChoiceAccessor) f;
-            return new RangeChoice(build(choice.pregen$getInput(), blender, depth + 1),
+            return new RangeChoice(build(choice.pregen$getInput(), blender, depth + 1, into),
                     choice.pregen$getMinInclusive(), choice.pregen$getMaxExclusive(),
-                    build(choice.pregen$getWhenInRange(), blender, depth + 1),
-                    build(choice.pregen$getWhenOutOfRange(), blender, depth + 1));
+                    build(choice.pregen$getWhenInRange(), blender, depth + 1, into),
+                    build(choice.pregen$getWhenOutOfRange(), blender, depth + 1, into));
         }
         if (type == Y_GRADIENT) {
             return new YGradient((YClampedGradientAccessor) f);

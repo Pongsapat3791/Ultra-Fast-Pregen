@@ -18,16 +18,12 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.util.ProblemReporter;
-import net.minecraft.world.entity.EntitySpawnReason;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.chunk.ImposterProtoChunk;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.ProtoChunk;
-import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.ticks.LevelChunkTicks;
 import net.minecraft.world.ticks.ProtoChunkTicks;
@@ -141,7 +137,7 @@ final class LoadedChunkRegeneration {
             if (held instanceof LevelChunk) {
                 level.setBlock(pos, write.after(), Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE);
             } else {
-                held.setBlockState(pos, write.after(), 0);
+                McBlocks.set(held, pos, write.after());
                 if (!write.after().getFluidState().isEmpty()) MinecraftVersion.markPosForPostProcessing(held, pos.immutable());
             }
             held.removeBlockEntity(pos);
@@ -183,7 +179,7 @@ final class LoadedChunkRegeneration {
         ServerChunkCache chunks = level.getChunkSource();
         for (int dz = -1; dz <= 1; dz++) {
             for (int dx = -1; dx <= 1; dx++) {
-                if ((dx != 0 || dz != 0) && chunks.getChunkNow(pos.x() + dx, pos.z() + dz) == null) return false;
+                if ((dx != 0 || dz != 0) && chunks.getChunkNow(Mc.x(pos) + dx, Mc.z(pos) + dz) == null) return false;
             }
         }
         return true;
@@ -239,10 +235,7 @@ final class LoadedChunkRegeneration {
             // InMemoryChunkGrid#encodeForSaving), so they go to the world's entity storage now.
             ((ProtoChunk) held).getEntities().clear();
             if (!generated.getEntities().isEmpty()) {
-                try (ProblemReporter.ScopedCollector reporter = new ProblemReporter.ScopedCollector(held.problemPath(), PreGenMod.LOGGER)) {
-                    level.addWorldGenChunkEntities(EntityType.loadEntitiesRecursive(
-                            TagValueInput.create(reporter, level.registryAccess(), generated.getEntities()), level, EntitySpawnReason.LOAD));
-                }
+                Mc.addGeneratedEntities(level, held, generated.getEntities());
             }
             ((ProtoChunk) held).setLightEngine(level.getChunkSource().getLightEngine());
             // The server may still have generation steps queued for this chunk; they must not

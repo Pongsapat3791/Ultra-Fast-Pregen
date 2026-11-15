@@ -39,7 +39,6 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.RegistryOps;
 import net.minecraft.resources.ResourceKey;
-import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
@@ -101,13 +100,13 @@ final class PregenWorldsImpl implements PregenWorlds {
     @Override
     public List<String> dimensions() {
         List<String> ids = new ArrayList<>();
-        for (ServerLevel level : PregenRuns.levels(server())) ids.add(level.dimension().identifier().toString());
+        for (ServerLevel level : PregenRuns.levels(server())) ids.add(Mc.id(level.dimension()));
         return ids;
     }
 
     @Override
     public Path dimensionFolder(String dimension) {
-        ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(dimension));
+        ResourceKey<Level> key = Mc.dimension(dimension);
         return DimensionType.getStorageFolder(key, worldFolder()).toAbsolutePath().normalize();
     }
 
@@ -117,21 +116,21 @@ final class PregenWorldsImpl implements PregenWorlds {
         Map<String, DimensionFacts> dimensions = new TreeMap<>();
         RegistryOps<JsonElement> ops = RegistryOps.create(JsonOps.INSTANCE, server.registryAccess());
         for (ServerLevel level : PregenRuns.levels(server)) {
-            String id = level.dimension().identifier().toString();
+            String id = Mc.id(level.dimension());
             if (separate.contains(id)) continue;
             ChunkGenerator generator = level.getChunkSource().getGenerator();
             String settings = ChunkGenerator.CODEC.encodeStart(ops, generator).result()
                     .map(JsonElement::toString).orElse("not encodable: " + generator.getClass().getName());
             dimensions.put(id, new DimensionFacts(sha256(settings), probe(level)));
         }
-        return new ServerFacts(SharedConstants.getCurrentVersion().name(), SharedConstants.getCurrentVersion().dataVersion().version(),
+        return new ServerFacts(Mc.versionName(), Mc.dataVersion(),
                 server.overworld().getSeed(), PreGenMod.loader, new TreeMap<>(PreGenMod.mods),
                 new ArrayList<>(server.getPackRepository().getSelectedIds()), dimensions);
     }
 
     @Override
     public int dataVersion() {
-        return SharedConstants.getCurrentVersion().dataVersion().version();
+        return Mc.dataVersion();
     }
 
     /** The terrain height and biome the generator gives at 64 places spread over 32,000 blocks. */
@@ -149,7 +148,7 @@ final class PregenWorldsImpl implements PregenWorlds {
                     Holder<Biome> biome = generator.getBiomeSource().getNoiseBiome(QuartPos.fromBlock(x), QuartPos.fromBlock(y),
                             QuartPos.fromBlock(z), random.sampler());
                     out.append(x).append(',').append(z).append('=').append(height).append(' ')
-                            .append(biome.unwrapKey().map(key -> key.identifier().toString()).orElse("?")).append(';');
+                            .append(biome.unwrapKey().map(key -> Mc.id(key)).orElse("?")).append(';');
                 }
             }
         } catch (RuntimeException failure) {
@@ -181,15 +180,15 @@ final class PregenWorldsImpl implements PregenWorlds {
     public String openSeparateWorld(String like, String id) {
         return onServer(() -> {
             MinecraftServer server = server();
-            ResourceKey<Level> key = ResourceKey.create(Registries.DIMENSION, Identifier.parse(id));
+            ResourceKey<Level> key = Mc.dimension(id);
             if (server.getLevel(key) != null) throw new IllegalStateException("The world " + id + " is open.");
             ServerLevel target = level(like);
             MinecraftServerAccessor access = (MinecraftServerAccessor) server;
             WorldData data = server.getWorldData();
             LevelStem stem = new LevelStem(target.dimensionTypeRegistration(), target.getChunkSource().getGenerator());
-            ServerLevel level = new ServerLevel(server, access.pregen$getExecutor(), access.pregen$getStorageSource(),
+            ServerLevel level = Mc.openLevel(server, access.pregen$getExecutor(), access.pregen$getStorageSource(),
                     new DerivedLevelData(data, data.overworldData()), key, stem, data.isDebugWorld(),
-                    BiomeManager.obfuscateSeed(server.overworld().getSeed()), List.of(), false);
+                    BiomeManager.obfuscateSeed(server.overworld().getSeed()));
             access.pregen$getLevels().put(key, level);
             separate.add(id);
             PreGenMod.LOGGER.info("[PreGen] Opened the separate world {} for {}", id, like);
@@ -247,7 +246,7 @@ final class PregenWorldsImpl implements PregenWorlds {
         Object manager = ((ServerLevelAccessor) level).pregen$getEntityManager();
         EntityPersistentStorage<?> storage = ((PersistentEntitySectionManagerAccessor) manager).pregen$getPermanentStorage();
         if (!(storage instanceof EntityStorage entities)) {
-            throw new IOException("Another mod replaced the entities storage of " + level.dimension().identifier() + ".");
+            throw new IOException("Another mod replaced the entities storage of " + Mc.id(level.dimension()) + ".");
         }
         Object regions = ((EntityStorageAccessor) (Object) entities).pregen$getSimpleRegionStorage();
         return new WorldChunkIO(((SimpleRegionStorageAccessor) regions).pregen$getWorker());
@@ -271,7 +270,7 @@ final class PregenWorldsImpl implements PregenWorlds {
     /** From PreGenCommand.register. */
     void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         commands.forEach((name, handler) -> dispatcher.register(Commands.literal(name)
-                .requires(source -> Commands.hasPermission(Commands.LEVEL_GAMEMASTERS).test(source) || PreGenCommand.isSingleplayerOwner(source))
+                .requires(source -> Mc.gamemaster(source) || PreGenCommand.isSingleplayerOwner(source))
                 .executes(context -> run(handler, "", context.getSource()))
                 .then(Commands.argument("arguments", StringArgumentType.greedyString())
                         .executes(context -> run(handler, StringArgumentType.getString(context, "arguments"), context.getSource())))));
@@ -294,7 +293,7 @@ final class PregenWorldsImpl implements PregenWorlds {
 
         @Override
         public boolean hasPermission(int level) {
-            return Commands.hasPermission(level >= 4 ? Commands.LEVEL_OWNERS : Commands.LEVEL_GAMEMASTERS).test(source)
+            return (level >= 4 ? Mc.owner(source) : Mc.gamemaster(source))
                     || PreGenCommand.isSingleplayerOwner(source);
         }
 

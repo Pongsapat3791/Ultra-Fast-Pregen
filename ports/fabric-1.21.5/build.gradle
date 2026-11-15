@@ -1,0 +1,92 @@
+plugins {
+	// Minecraft 1.21.x runs on Fabric's intermediary names: Loom remaps the mod to them.
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+}
+
+version = project.version
+group = project.group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+loom {
+	mods {
+		"ultrafastpregen" {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+	it.options.encoding = 'UTF-8'
+	it.options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+// The sources are the 26.x family's (ports/neoforge-26.1.2). What older versions spell differently comes in layers,
+// one per group of versions (the NeoForge trees hold them, both loaders share them), then Fabric's entry point
+// (ports/fabric-1.21.11). A file of a later layer replaces the file of the same path before it. Link and Manager
+// are in shared/.
+def family = file('../neoforge-26.1.2/src/main')
+def layers = [new File(family, 'java'), file('../neoforge-1.21.11/src/main/java'), file('../neoforge-1.21.10/src/main/java'), file('../neoforge-1.21.8/src/main/java'), file('../neoforge-1.21.5/src/main/java'),
+              file('../fabric-1.21.11/src/main/java'), file('src/main/java')]
+// Inside terrain generation (the beardifier, palettes, the flat caches) Minecraft 1.21.2 to 1.21.8 are
+// still as 1.21.1 is: those files come from the 1.21.1 family (ports/neoforge-1.21.1), these and no others.
+def older = file('../neoforge-1.21.1/src/main/java')
+def fromOlder = ['com/example/pregen/mixin/PalettedDataMixin.java', 'com/example/pregen/mixin/BeardifierMixin.java',
+                 'com/example/pregen/mixin/BeardifierAccessor.java',
+                 'com/example/pregen/mixin/FlatCacheAccessor.java',
+                 'com/example/pregen/terrain/CellBeards.java']
+sourceSets.main {
+	java {
+		layers.each { srcDir it }
+		srcDir older
+		srcDir '../../shared/java'
+		exclude { element ->
+			if (element.directory) return false
+			def path = element.relativePath.pathString
+			def from = element.file.toPath()
+			if (from.startsWith(older.toPath())) return !fromOlder.contains(path) || new File(layers.last(), path).isFile()
+			def index = layers.findIndexOf { from.startsWith(it.toPath()) }
+			if (index < 0) return false
+			if (index == 0 && path.startsWith('com/example/pregen/neoforge/')) return true
+			if (index < layers.size() - 1 && fromOlder.contains(path)) return true
+			return layers.drop(index + 1).any { new File(it, path).isFile() }
+		}
+	}
+	resources {
+		srcDir new File(family, 'resources')
+		srcDir '../../shared/resources'
+		exclude 'META-INF/neoforge.mods.toml'
+	}
+}
+
+jar {
+	from("LICENSE") {
+		rename { "${it}_ultrafastpregen" }
+	}
+	manifest {
+		// java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+		attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+	}
+}

@@ -143,17 +143,35 @@ public final class WorldgenCompat {
             "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceBlockStateRule",
             "com.ishland.c2me.opts.allocs.mixin.surfacebuilder.MixinMaterialRulesSequenceMaterialRule",
             "com.ishland.c2me.opts.natives_math.mixin.MixinBiomeAccess");
-    /** The methods the surface shortcuts stand in for, of the classes surfaceShortcutsAllowed reads. */
-    private static final Set<String> SURFACE_CONTEXT_METHODS = Set.of("<init>", "updateY");
-    private static final Set<String> SURFACE_STEP_METHODS = Set.of("buildSurface");
-    private static final Set<String> BIOME_LOOKUP_METHODS = Set.of("getBiome");
-    private static final Set<String> NOISE_BIOME_METHODS = Set.of("getNoiseBiome", "getBiomeManager");
+    /**
+     * The methods the surface shortcuts stand in for, of the classes surfaceShortcutsAllowed reads,
+     * with their names in Fabric's intermediary mappings (the builds run on them).
+     */
+    private static final Set<String> SURFACE_CONTEXT_METHODS = Set.of("<init>", "updateY", "method_39073");
+    private static final Set<String> SURFACE_STEP_METHODS = Set.of("buildSurface", "method_39106");
+    private static final Set<String> BIOME_LOOKUP_METHODS = Set.of("getBiome", "method_22393");
+    private static final Set<String> NOISE_BIOME_METHODS = Set.of("getNoiseBiome", "getBiomeManager", "method_16359", "method_22385");
     /** The condition SurfaceRules.isBiome builds, a local class. */
     private static final List<String> BIOME_CONDITION_CLASSES = List.of(
-            "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition");
+            "net.minecraft.world.level.levelgen.SurfaceRules$BiomeConditionSource$1BiomeCondition",
+            "net.minecraft.class_6686$class_6689$class_6690");
     private static volatile Boolean surfaceShortcutsAllowed;
-    /** DensityFunction#mapAll, which NoiseChunkWrap's memo stands in for on the classes it hooks. */
-    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapAll");
+    /**
+     * What the surface shortcut below the ground (DeepSurface) reads or hooks of the rules' context and the
+     * step, with the intermediary names too.
+     */
+    private static final Set<String> DEEP_SURFACE_CONTEXT_METHODS = Set.of("updateXZ", "getMinSurfaceLevel", "method_39072", "method_39551");
+    private static final Set<String> DEEP_SURFACE_STEP_METHODS = Set.of("getSurfaceDepth", "method_39552");
+    /** The condition SurfaceRules.verticalGradient builds, a local class. */
+    private static final List<String> GRADIENT_CONDITION_CLASSES = List.of(
+            "net.minecraft.world.level.levelgen.SurfaceRules$VerticalGradientConditionSource$1VerticalGradientCondition",
+            "net.minecraft.class_6686$class_6775$class_6776");
+    private static volatile Boolean deepSurfaceAllowed;
+    private static volatile Boolean paletteGrowthAllowed;
+    private static volatile Boolean oreHeightsAllowed;
+    private static volatile Boolean blockBitsAllowed;
+    /** DensityFunction#mapAll (and the spline coordinate's), with its intermediary names, which NoiseChunkWrap's memo stands in for on the classes it hooks. */
+    private static final Set<String> ROUTER_MAPPING_METHODS = Set.of("mapAll", "method_40469", "method_41530");
     private static volatile Boolean noiseChunkWrapAllowed;
     /** Minecraft's light engine, which GridLight runs on its own and hands to the server's. */
     private static final List<Class<?>> LIGHT_ENGINE_CLASSES = List.of(
@@ -403,6 +421,110 @@ public final class WorldgenCompat {
     }
 
     /**
+     * OreHeights stands in for the height lookups at the start of OreFeature#place and counts on the
+     * terrain heightmap standing still while features are placed, so another mod's change to the ore
+     * feature or to the heightmap turns it off.
+     */
+    public static boolean oreHeightsAllowed() {
+        Boolean allowed = oreHeightsAllowed;
+        if (allowed == null) {
+            Set<String> foreign = new TreeSet<>();
+            foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.levelgen.feature.OreFeature.class, Set.of()));
+            foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.levelgen.Heightmap.class, Set.of()));
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Ore height shortcut disabled: other mods modify the ore feature or heightmaps {}", foreign);
+            }
+            oreHeightsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * PaletteGrowth stands in for the copy of a one-value container into its first palette, so
+     * another mod's change to the classes of that copy turns it off.
+     */
+    public static boolean paletteGrowthAllowed() {
+        Boolean allowed = paletteGrowthAllowed;
+        if (allowed == null) {
+            Set<String> foreign = new TreeSet<>();
+            // By class, not by name: the names differ between mappings. The container's data record is not public.
+            Class<?> data = com.example.pregen.terrain.BlockBits.dataClass();
+            if (data == null) foreign.add("unknown (the container's data)");
+            else foreign.addAll(foreignMixinConfigs(data, Set.of()));
+            for (Class<?> target : List.of(net.minecraft.world.level.chunk.SingleValuePalette.class,
+                    net.minecraft.world.level.chunk.LinearPalette.class, net.minecraft.util.SimpleBitStorage.class,
+                    net.minecraft.util.ZeroBitStorage.class)) {
+                foreign.addAll(foreignMixinConfigs(target, Set.of()));
+            }
+            allowed = foreign.isEmpty();
+            if (!allowed) {
+                PreGenMod.LOGGER.info("[PreGen] Palette growth shortcut disabled: other mods modify block containers {}", foreign);
+            }
+            paletteGrowthAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * BlockBits stands in for runs of LevelChunkSection#setBlockState, writing a container's 4-bit
+     * storage itself, so another mod's change to the section, the container or the classes
+     * paletteGrowthAllowed reads turns it off (Lithium, for one, counts a section's blocks its own way).
+     */
+    public static boolean blockBitsAllowed() {
+        Boolean allowed = blockBitsAllowed;
+        if (allowed == null) {
+            allowed = paletteGrowthAllowed();
+            if (allowed) {
+                Set<String> foreign = new TreeSet<>();
+                foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.chunk.LevelChunkSection.class, Set.of()));
+                foreign.addAll(foreignMixinConfigs(net.minecraft.world.level.chunk.PalettedContainer.class, Set.of()));
+                allowed = foreign.isEmpty();
+                if (!allowed) {
+                    PreGenMod.LOGGER.info("[PreGen] Writing runs of blocks at once disabled: other mods modify chunk sections {}", foreign);
+                }
+            }
+            blockBitsAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
+     * The surface shortcut below the ground (DeepSurface) stands in for the rules' height tests and
+     * reads the level of their preliminary-surface test from the rules' context. So besides what
+     * turns the other surface shortcuts off, another mod's change to those turns it off.
+     */
+    public static boolean deepSurfaceAllowed() {
+        Boolean allowed = deepSurfaceAllowed;
+        if (allowed == null) {
+            allowed = surfaceShortcutsAllowed();
+            if (allowed) {
+                List<String> details = new ArrayList<>();
+                Set<String> foreign = new TreeSet<>();
+                foreign.addAll(changingMixinConfigs(SurfaceRulePruning.contextClass(), DEEP_SURFACE_CONTEXT_METHODS, details,
+                        SURFACE_EQUIVALENT_MIXINS));
+                foreign.addAll(changingMixinConfigs(SurfaceSystem.class, DEEP_SURFACE_STEP_METHODS, details,
+                        SURFACE_EQUIVALENT_MIXINS));
+                for (String name : GRADIENT_CONDITION_CLASSES) {
+                    try {
+                        foreign.addAll(changingMixinConfigs(Class.forName(name, false, SurfaceRules.class.getClassLoader()),
+                                null, details, SURFACE_EQUIVALENT_MIXINS));
+                    } catch (ClassNotFoundException | LinkageError ignored) {
+                        // Named so in other mappings only.
+                    }
+                }
+                allowed = foreign.isEmpty();
+                if (!allowed) {
+                    PreGenMod.LOGGER.info("[PreGen] Surface shortcut below the ground disabled: other mods modify the surface"
+                            + " rules' context or height tests {}: {}", foreign, details);
+                }
+            }
+            deepSurfaceAllowed = allowed;
+        }
+        return allowed;
+    }
+
+    /**
      * Mixin configs of other mods that change feature placement itself: ChunkGenerator's
      * applyBiomeDecoration or WorldgenRandom's feature seed. Minecraft runs features one chunk at
      * a time per generator, and such mixins may rely on it; BCLib, for one, counts features in a
@@ -416,8 +538,7 @@ public final class WorldgenCompat {
             Set<String> configs = new TreeSet<>();
             for (Class<?> target : List.of(ChunkGenerator.class, WorldgenRandom.class)) {
                 try {
-                    ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
-                    for (Object registered : (Set<?>) registeredMixins().get(info)) {
+                    for (Object registered : (Set<?>) registeredMixins().get(classInfo(target))) {
                         IMixinInfo mixin = (IMixinInfo) registered;
                         String config = mixin.getConfig().getName();
                         if (OWN_MIXIN_CONFIG.equals(config) || PARALLEL_SAFE_FEATURE_MIXINS.contains(mixin.getClassName())
@@ -704,7 +825,7 @@ public final class WorldgenCompat {
     private static Set<String> originalMethods(Class<?> target) {
         Set<String> methods = new HashSet<>();
         boolean own = true;
-        for (ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/')); info != null; info = info.getSuperClass()) {
+        for (ClassInfo info = classInfo(target); info != null; info = info.getSuperClass()) {
             for (ClassInfo.Method method : info.getMethods()) {
                 if (own && method.isInjected()) continue;
                 methods.add(method.getName() + method.getDesc());
@@ -759,10 +880,20 @@ public final class WorldgenCompat {
         return known.isEmpty() ? null : known;
     }
 
+    /**
+     * Mixin's record of the class. Mixin 0.17, which Fabric Loader and NeoForge 26 use, looks in its cache twice and answers null
+     * when another thread adds the class between the two, as workers reaching one of these checks together do: the class then
+     * counted as unknown, which turned a fast path off at random. Asking again finds it.
+     */
+    private static ClassInfo classInfo(Class<?> target) {
+        String name = target.getName().replace('.', '/');
+        ClassInfo info = ClassInfo.forName(name);
+        return info != null ? info : ClassInfo.forName(name);
+    }
+
     static List<IMixinInfo> mixinsTargeting(Class<?> target) throws ReflectiveOperationException {
-        ClassInfo info = ClassInfo.forName(target.getName().replace('.', '/'));
         List<IMixinInfo> mixins = new ArrayList<>();
-        for (Object mixin : (Set<?>) registeredMixins().get(info)) mixins.add((IMixinInfo) mixin);
+        for (Object mixin : (Set<?>) registeredMixins().get(classInfo(target))) mixins.add((IMixinInfo) mixin);
         return mixins;
     }
 

@@ -19,7 +19,8 @@
 		]
 	},
 	"mixins": [
-		"pregen.mixins.json"
+		"pregen.mixins.json",
+		"pregen.fabric.mixins.json"
 	],
 	"depends": {
 		"fabricloader": ">=0.14.0",

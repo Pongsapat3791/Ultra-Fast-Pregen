@@ -18,8 +18,9 @@ it how their own world generation changes interact with its fast paths.
 ## What is in it
 
 The API is the package `io.github.pongsapat3791.ultrafastpregen.api`, inside every Ultra Fast Pregen jar from
-version 15 on: the mods (Fabric 1.20 to 1.20.6, Forge 1.20 to 1.20.4, Fabric and NeoForge 1.21 and 1.21.1, NeoForge and
-Fabric 26.1 to 26.2; before 15.1 each built for one of those versions) and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and Sponge 26.2).
+version 15 on: the mods (from version 16, every Minecraft version from 1.20 to 26.3 on Fabric, NeoForge and Forge;
+the README lists the jars) and the plugins (the Bukkit plugin for CraftBukkit, Spigot, Paper and Folia 26.2, and
+Sponge 26.2, at version 15.1).
 It uses plain Java types only: dimension ids as strings, block coordinates, and chunk positions packed into
 longs. No Minecraft class appears in it, so the same code compiles against any of the jars and runs on every
 Minecraft version, loader and server Ultra Fast Pregen is built for.
@@ -465,5 +466,9 @@ UltraFastPregenApi.get().addListener(new PregenListener() {
   the server has started again (`resume_after_restart` in the config); listeners get `onStart` for it like for any run.
 - **Stability:** `UltraFastPregenApi.VERSION` only grows. Methods are added in later versions, never changed or
   removed; check `apiVersion()` before calling a method a newer version added.
+- **Version 16:** the API is the same as in 15.1 (API version 2). A run started through it always generates whole
+  chunks, whatever the server's `depth` setting says (that setting is for runs started by command). While the mod is
+  switched off (`/pregen ufp off`), `start` and `resume` are refused with "Ultra Fast Pregen is off. Turn it on with
+  /pregen ufp on.".
 - **Source:** the API is in `src/main/java/io/github/pongsapat3791/ultrafastpregen/api/` of every build in the
   repository, with Javadoc on every class and method.

@@ -9,6 +9,9 @@ public interface AquiferAirProof {
      */
     boolean pregen$airAtNonPositiveDensity(int minX, int minY, int minZ, int width, int height);
 
+    /** Whether the answer above depends on the box's heights alone, so it holds for every such box of a chunk at those heights. */
+    boolean pregen$fluidByYOnly();
+
     /**
      * Called when the noise fill is done. Carvers then reuse this aquifer, and below their lava
      * level they read the fluid-update flag left by the previous computeSubstance call (which

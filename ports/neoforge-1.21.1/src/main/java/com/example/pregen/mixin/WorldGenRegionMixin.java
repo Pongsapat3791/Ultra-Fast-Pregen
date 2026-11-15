@@ -4,6 +4,7 @@ import com.example.pregen.InMemoryChunkGrid;
 import com.example.pregen.WorldgenCompat;
 import com.example.pregen.terrain.BiomeChunkSource;
 import com.example.pregen.terrain.FeatureBiomes;
+import com.example.pregen.terrain.OreHeights;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.level.ServerLevel;
@@ -29,12 +30,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(WorldGenRegion.class)
-public abstract class WorldGenRegionMixin implements BiomeChunkSource {
+public abstract class WorldGenRegionMixin implements BiomeChunkSource, OreHeights.Region {
 
     @Shadow @Final private ServerLevel level;
     @Shadow @Final private StaticCache2D<GenerationChunkHolder> cache;
     @Shadow @Final @Mutable private BiomeManager biomeManager;
     @Shadow @Final private ChunkStep generatingStep;
+
+    /** The terrain heights ore attempts ask about, in a features step of this mod's batches (see OreHeights). */
+    @Unique private OreHeights pregen$oreHeights;
 
     @Shadow public abstract boolean hasChunk(int x, int z);
 
@@ -92,6 +96,19 @@ public abstract class WorldGenRegionMixin implements BiomeChunkSource {
             BiomeManagerAccessor access = (BiomeManagerAccessor) biomeManager;
             biomeManager = new FeatureBiomes(access.pregen$getNoiseBiomeSource(), access.pregen$getBiomeZoomSeed());
         }
+    }
+
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void pregen$oreHeights(CallbackInfo ci) {
+        if (OreHeights.enabled && generatingStep.targetStatus() == ChunkStatus.FEATURES && pregen$grid() != null
+                && WorldgenCompat.oreHeightsAllowed()) {
+            pregen$oreHeights = new OreHeights((WorldGenRegion) (Object) this);
+        }
+    }
+
+    @Override
+    public OreHeights pregen$oreHeights() {
+        return pregen$oreHeights;
     }
 
     /** The chunk whose biomes the region's getNoiseBiome reads for its cells, found as LevelReader's does. */

@@ -117,6 +117,12 @@ public abstract class NoiseBasedAquiferMixin implements AquiferAirProof {
         return true;
     }
 
+    /** The answer above reads the aquifer centers around the box, so it holds for that box only. */
+    @Override
+    public boolean pregen$fluidByYOnly() {
+        return false;
+    }
+
     @Override
     public void pregen$endFill() {
         if (!pregen$optimized || !pregen$filling) return;

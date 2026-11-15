@@ -1,6 +1,7 @@
 package com.example.pregen.mixin;
 
 import com.example.pregen.WorldgenCompat;
+import com.example.pregen.terrain.DeepSurface;
 import com.example.pregen.terrain.SurfaceBiomes;
 import com.example.pregen.terrain.TerrainGenerationContext;
 import net.minecraft.core.Registry;
@@ -30,6 +31,7 @@ public abstract class SurfaceSystem261Mixin {
                                      CallbackInfo ci) {
         if (SurfaceBiomes.enabled && TerrainGenerationContext.isActive() && WorldgenCompat.surfaceShortcutsAllowed()) {
             SurfaceBiomes.beginSurface(biomeManager, chunk);
+            DeepSurface.begin(ruleSource);
         }
     }
 
@@ -38,6 +40,9 @@ public abstract class SurfaceSystem261Mixin {
                                    boolean useLegacyRandomSource, WorldGenerationContext generationContext,
                                    ChunkAccess chunk, NoiseChunk noiseChunk, SurfaceRules.RuleSource ruleSource,
                                    CallbackInfo ci) {
-        if (TerrainGenerationContext.isActive()) SurfaceBiomes.endSurface();
+        if (TerrainGenerationContext.isActive()) {
+            SurfaceBiomes.endSurface();
+            DeepSurface.end();
+        }
     }
 }

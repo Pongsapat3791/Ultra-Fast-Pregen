@@ -21,7 +21,7 @@ import net.minecraft.world.level.Level;
  *   Example: /pregen start 20
  *   Batch size (default 1000 x 1000 blocks) and threads (default: every core) come from
  *   config/ultrafastpregen.conf. "profile" saves a JFR recording of the run to the server directory.
- * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|resume_after_restart|lod_export] [value]
+ * - /pregen set [batch_size|threads|parallel_features|skip_existing_chunks|resume_after_restart|lod_export|depth] [value]
  *   writes one setting into that file (without a value: shows the settings)
  * - /pregen start               the area chosen with /pregen radius (or /pregen worldborder)
  * - /pregen radius <blocks>      radius of the next start's area; /pregen shape square|circle its shape
@@ -32,6 +32,7 @@ import net.minecraft.world.level.Level;
  * - /pregen reset              forget which chunks Ultra Fast Pregen generated in the selected world
  * - /pregen stop
  * - /pregen status
+ * - /pregen ufp|ufplink|ufpmanager [on|off]   the mod's parts: Ultra Fast Pregen itself, its Link, its Manager (see Parts)
  */
 public class PreGenCommand {
     // Settings for the next /pregen start; a running task keeps the values it started with.
@@ -42,8 +43,7 @@ public class PreGenCommand {
     private static volatile int radius = 0;
     private static volatile ChunkBatchPlan.Shape shape = ChunkBatchPlan.Shape.SQUARE;
 
-    private static final java.util.function.Predicate<CommandSourceStack> GAMEMASTERS =
-            Commands.hasPermission(Commands.LEVEL_GAMEMASTERS);
+    private static final java.util.function.Predicate<CommandSourceStack> GAMEMASTERS = Mc::gamemaster;
 
     /**
      * The singleplayer world's owner: there an op level exists only with cheats on, and without one
@@ -52,7 +52,7 @@ public class PreGenCommand {
      */
     static boolean isSingleplayerOwner(CommandSourceStack source) {
         net.minecraft.server.level.ServerPlayer player = source.getPlayer();
-        return player != null && source.getServer().isSingleplayerOwner(player.nameAndId());
+        return player != null && Mc.singleplayerOwner(source.getServer(), player);
     }
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher, CommandBuildContext buildContext, Commands.CommandSelection selection) {
@@ -113,6 +113,9 @@ public class PreGenCommand {
             .then(Commands.literal("status")
                 .executes(ctx -> statusPreGen(ctx.getSource()))
             )
+            .then(part(Parts.Part.UFP))
+            .then(part(Parts.Part.LINK))
+            .then(part(Parts.Part.MANAGER))
             .then(Commands.literal("set")
                 .executes(ctx -> showConfig(ctx.getSource()))
                 .then(Commands.literal("batch_size")
@@ -155,6 +158,12 @@ public class PreGenCommand {
                                 Boolean.toString(BoolArgumentType.getBool(ctx, "resume"))))
                     )
                 )
+                .then(Commands.literal("depth")
+                    .executes(ctx -> showConfig(ctx.getSource()))
+                    .then(Commands.literal("full").executes(ctx -> setConfig(ctx.getSource(), "depth", "full")))
+                    .then(Commands.literal("features").executes(ctx -> setConfig(ctx.getSource(), "depth", "features")))
+                    .then(Commands.literal("terrain").executes(ctx -> setConfig(ctx.getSource(), "depth", "terrain")))
+                )
                 .then(Commands.literal("lod_export")
                     .executes(ctx -> showConfig(ctx.getSource()))
                     .then(Commands.argument("send", BoolArgumentType.bool())
@@ -164,6 +173,33 @@ public class PreGenCommand {
                 )
             )
         );
+    }
+
+    /** /pregen <part>: its state; /pregen <part> on|off: turns it, which takes operator level 4 (or the singleplayer world's owner). */
+    private static com.mojang.brigadier.builder.LiteralArgumentBuilder<CommandSourceStack> part(Parts.Part part) {
+        return Commands.literal(part.key)
+                .executes(ctx -> showParts(ctx.getSource()))
+                .then(Commands.literal("on").executes(ctx -> setPart(ctx.getSource(), part, true)))
+                .then(Commands.literal("off").executes(ctx -> setPart(ctx.getSource(), part, false)));
+    }
+
+    private static int showParts(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.literal("§7[PreGen] " + Parts.describe()), false);
+        return 1;
+    }
+
+    private static int setPart(CommandSourceStack source, Parts.Part part, boolean on) {
+        if (!Mc.owner(source) && !isSingleplayerOwner(source)) {
+            source.sendFailure(Component.literal("§c[PreGen] Turning a part of the mod on or off needs operator level 4."));
+            return 0;
+        }
+        Parts.Outcome outcome = Parts.set(part, on);
+        if (!outcome.done()) {
+            source.sendFailure(Component.literal("§c[PreGen] " + outcome.message()));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("§a[PreGen] " + outcome.message()), true);
+        return 1;
     }
 
     /** Writes one setting into the config file (the command arguments validate the value). */
@@ -186,9 +222,10 @@ public class PreGenCommand {
         PreGenConfig config = PreGenConfig.load();
         String threads = config.threadsFromCpuCount ? "max (" + config.threads + ")" : Integer.toString(config.threads);
         source.sendSuccess(() -> Component.literal(String.format(
-                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | resume_after_restart=%b | lod_export=%b §7(change with /pregen set <key> <value>; config/%s)",
+                "§a[PreGen] batch_size=%d | threads=%s | parallel_features=%s | skip_existing_chunks=%b | resume_after_restart=%b | lod_export=%b | depth=%s §7(change with /pregen set <key> <value>; config/%s)",
                 config.batchSizeBlocks, threads, config.alwaysParallelFeatures ? "always" : "auto",
-                config.skipExistingChunks, config.resumeAfterRestart, config.lodExport, PreGenConfig.FILE_NAME)), false);
+                config.skipExistingChunks, config.resumeAfterRestart, config.lodExport,
+                config.depth.name().toLowerCase(java.util.Locale.ROOT), PreGenConfig.FILE_NAME)), false);
         return 1;
     }
 
@@ -247,7 +284,7 @@ public class PreGenCommand {
     private static int fromSpawn(CommandSourceStack source) {
         ServerLevel level = selectedLevel(source);
         if (level == null) return 0;
-        net.minecraft.core.BlockPos spawn = level.getRespawnData().pos();
+        net.minecraft.core.BlockPos spawn = Mc.spawn(level);
         centerX = spawn.getX();
         centerZ = spawn.getZ();
         source.sendSuccess(() -> Component.literal(String.format(
@@ -260,7 +297,7 @@ public class PreGenCommand {
         ResourceKey<Level> worldKey = selectedWorld;
         ServerLevel level = worldKey != null ? source.getServer().getLevel(worldKey) : source.getLevel();
         if (level == null) {
-            source.sendFailure(Component.literal("§c[PreGen] World " + worldKey.identifier()
+            source.sendFailure(Component.literal("§c[PreGen] World " + Mc.id(worldKey)
                     + " is not loaded. Choose another with /pregen world <dimension>."));
         }
         return level;
@@ -294,9 +331,9 @@ public class PreGenCommand {
             try {
                 boolean deleted = PreGenSaveFile.delete(level);
                 source.sendSuccess(() -> Component.literal(deleted
-                        ? "§a[PreGen] Forgot Ultra Fast Pregen's progress in " + level.dimension().identifier()
+                        ? "§a[PreGen] Forgot Ultra Fast Pregen's progress in " + Mc.id(level.dimension())
                             + "; chunks that exist on disk are still kept while skip_existing_chunks=true."
-                        : "§7[PreGen] " + level.dimension().identifier() + " has no Ultra Fast Pregen save file."), true);
+                        : "§7[PreGen] " + Mc.id(level.dimension()) + " has no Ultra Fast Pregen save file."), true);
                 return 1;
             } catch (IOException failure) {
                 source.sendFailure(Component.literal("§c[PreGen] Could not delete the save file: " + failure.getMessage()));
@@ -308,7 +345,7 @@ public class PreGenCommand {
     private static int setWorld(CommandSourceStack source, ServerLevel level) {
         selectedWorld = level.dimension();
         source.sendSuccess(() -> Component.literal("§a[PreGen] Next /pregen start generates in §f"
-                + level.dimension().identifier() + "§a" + runningNote()), true);
+                + Mc.id(level.dimension()) + "§a" + runningNote()), true);
         return 1;
     }
 
@@ -337,7 +374,7 @@ public class PreGenCommand {
                 : "a " + (shape == ChunkBatchPlan.Shape.CIRCLE ? "circle" : "square") + " of the size given to /pregen start";
         return String.format("§7[PreGen] Next start: world §f%s§7, center §f[%d, %d]§7, §f%s§7. "
                         + "Change with /pregen world, center, radius, shape, worldborder or spawn.",
-                worldKey != null ? worldKey.identifier().toString() : "your current world", centerX, centerZ, area);
+                worldKey != null ? Mc.id(worldKey) : "your current world", centerX, centerZ, area);
     }
 
     private static int stopPreGen(CommandSourceStack source) {

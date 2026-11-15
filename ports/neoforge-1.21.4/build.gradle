@@ -1,0 +1,96 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version "${moddev_version}"
+}
+
+version = project.version
+group = project.group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+neoForge {
+    enable {
+        version = project.neo_version
+        // Only compiled classes are needed; skips decompiling and recompiling Minecraft.
+        disableRecompilation = true
+    }
+
+    mods {
+        ultrafastpregen {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+tasks.named('processResources') {
+    def props = [version: project.version, neo_version_range: project.neo_version_range,
+                 minecraft_version_range: project.minecraft_version_range]
+    inputs.properties props
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand props
+    }
+}
+
+// The sources are the 26.x family's (ports/neoforge-26.1.2). What older versions spell differently comes in layers:
+// 1.21.11's (ports/neoforge-1.21.11), 1.21.9 and 1.21.10's (ports/neoforge-1.21.10), 1.21.6 to 1.21.8's
+// (ports/neoforge-1.21.8), 1.21.5's (ports/neoforge-1.21.5), then what 1.21.2 to 1.21.4 have differently again, here. A file of a later layer replaces the
+// file of the same path before it.
+def family = file('../neoforge-26.1.2/src/main')
+def layers = [new File(family, 'java'), file('../neoforge-1.21.11/src/main/java'), file('../neoforge-1.21.10/src/main/java'),
+              file('../neoforge-1.21.8/src/main/java'), file('../neoforge-1.21.5/src/main/java'), file('src/main/java')]
+// Inside terrain generation (the beardifier, palettes, the flat caches) Minecraft 1.21.2 to 1.21.8 are
+// still as 1.21.1 is: those files come from the 1.21.1 family (ports/neoforge-1.21.1), these and no others.
+def older = file('../neoforge-1.21.1/src/main/java')
+def fromOlder = ['com/example/pregen/mixin/PalettedDataMixin.java', 'com/example/pregen/mixin/BeardifierMixin.java',
+                 'com/example/pregen/mixin/BeardifierAccessor.java',
+                 'com/example/pregen/mixin/FlatCacheAccessor.java',
+                 'com/example/pregen/terrain/CellBeards.java']
+sourceSets.main {
+    java {
+        layers.each { srcDir it }
+        srcDir older
+        // Link and Manager, parts of the mod on every loader and version (see shared/).
+        srcDir '../../shared/java'
+        exclude { element ->
+            if (element.directory) return false
+            def path = element.relativePath.pathString
+            def from = element.file.toPath()
+            if (from.startsWith(older.toPath())) return !fromOlder.contains(path) || new File(layers.last(), path).isFile()
+            def index = layers.findIndexOf { from.startsWith(it.toPath()) }
+            if (index < 0) return false
+            if (index < layers.size() - 1 && fromOlder.contains(path)) return true
+            return layers.drop(index + 1).any { new File(it, path).isFile() }
+        }
+    }
+    resources {
+        srcDir new File(family, 'resources')
+        srcDir '../../shared/resources'
+        exclude { element ->
+            !element.directory && element.file.toPath().startsWith(family.toPath()) &&
+                new File(file('src/main/resources'), element.relativePath.pathString).isFile()
+        }
+    }
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_ultrafastpregen" }
+    }
+    manifest {
+        // java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+        attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+    }
+}
+
+// Forge takes the same classes (see the script).
+apply from: "../../shared/forge/forge-jar.gradle"

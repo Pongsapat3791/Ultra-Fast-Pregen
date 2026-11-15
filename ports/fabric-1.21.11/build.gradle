@@ -1,0 +1,82 @@
+plugins {
+	// Minecraft 1.21.11 still runs on Fabric's intermediary names: Loom remaps the mod to them.
+	id 'net.fabricmc.fabric-loom-remap' version "${loom_version}"
+}
+
+version = project.version
+group = project.group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+loom {
+	mods {
+		"ultrafastpregen" {
+			sourceSet sourceSets.main
+		}
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	mappings loom.officialMojangMappings()
+	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+}
+
+processResources {
+	def version = project.version
+	inputs.property "version", version
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 21
+	it.options.encoding = 'UTF-8'
+	it.options.compilerArgs += ['-Xmaxerrs', '5000']
+}
+
+java {
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
+}
+
+// The sources are the 26.x family's (ports/neoforge-26.1.2): Minecraft 1.21.11 is its direct ancestor. What 1.21.11
+// spells differently is in ports/neoforge-1.21.11 (both loaders share it); this tree adds what is Fabric's own. A
+// file further down this list replaces the file of the same path above it. Link and Manager are in shared/.
+def family = file('../neoforge-26.1.2/src/main')
+def version1 = file('../neoforge-1.21.11/src/main/java')
+def own = file('src/main/java')
+sourceSets.main {
+	java {
+		srcDir new File(family, 'java')
+		srcDir version1
+		srcDir '../../shared/java'
+		exclude { element ->
+			if (element.directory) return false
+			def path = element.relativePath.pathString
+			def from = element.file.toPath()
+			if (from.startsWith(family.toPath())) {
+				return path.startsWith('com/example/pregen/neoforge/') || new File(version1, path).isFile() || new File(own, path).isFile()
+			}
+			return from.startsWith(version1.toPath()) && new File(own, path).isFile()
+		}
+	}
+	resources {
+		srcDir new File(family, 'resources')
+		srcDir '../../shared/resources'
+		exclude 'META-INF/neoforge.mods.toml'
+	}
+}
+
+jar {
+	from("LICENSE") {
+		rename { "${it}_ultrafastpregen" }
+	}
+	manifest {
+		// java -jar <this jar> merge|check ...: Link's tool that adds a generated world's chunks to another world.
+		attributes('Main-Class': 'io.github.pongsapat3791.ultrafastpregen.link.tool.MergeTool')
+	}
+}

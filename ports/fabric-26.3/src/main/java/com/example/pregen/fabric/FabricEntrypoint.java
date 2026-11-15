@@ -1,0 +1,47 @@
+package com.example.pregen.fabric;
+
+import com.example.pregen.PreGenMod;
+import java.util.Map;
+import java.util.TreeMap;
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
+import net.fabricmc.loader.api.ModContainer;
+import net.fabricmc.loader.api.metadata.CustomValue;
+
+/** Fabric entry point; the Forge build leaves this package out. */
+public class FabricEntrypoint implements ModInitializer {
+    @Override
+    public void onInitialize() {
+        FabricLoader loader = FabricLoader.getInstance();
+        String version = loader.getModContainer(PreGenMod.MOD_ID)
+                .map(mod -> mod.getMetadata().getVersion().getFriendlyString()).orElse("unknown");
+        PreGenMod.init(loader.getConfigDir(), version);
+        Map<String, String> mods = new TreeMap<>();
+        for (ModContainer mod : loader.getAllMods()) {
+            readCompatibility(mod);
+            // Mods bundled inside another mod's jar come with it; the outer mod names them.
+            if (mod.getContainingMod().isEmpty()) mods.put(mod.getMetadata().getId(), mod.getMetadata().getVersion().getFriendlyString());
+        }
+        PreGenMod.platform("fabric", mods);
+    }
+
+    /**
+     * Compatibility another mod declares in its fabric.mod.json:
+     * "custom": {"ultrafastpregen": {"compatible_mixins": ["..."], "minecraft_terrain": "reason"}}
+     */
+    private static void readCompatibility(ModContainer mod) {
+        CustomValue declared = mod.getMetadata().getCustomValue(PreGenMod.MOD_ID);
+        if (declared == null || declared.getType() != CustomValue.CvType.OBJECT) return;
+        String modId = mod.getMetadata().getId();
+        CustomValue mixins = declared.getAsObject().get("compatible_mixins");
+        if (mixins != null && mixins.getType() == CustomValue.CvType.ARRAY) {
+            for (CustomValue mixin : mixins.getAsArray()) {
+                if (mixin.getType() == CustomValue.CvType.STRING) PreGenMod.declareCompatibleMixin(mixin.getAsString(), modId);
+            }
+        }
+        CustomValue terrain = declared.getAsObject().get("minecraft_terrain");
+        if (terrain != null && terrain.getType() == CustomValue.CvType.STRING) {
+            PreGenMod.requireMinecraftTerrain(modId, terrain.getAsString());
+        }
+    }
+}

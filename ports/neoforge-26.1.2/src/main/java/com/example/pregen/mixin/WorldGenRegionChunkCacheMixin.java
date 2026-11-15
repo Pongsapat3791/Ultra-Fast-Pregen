@@ -1,5 +1,6 @@
 package com.example.pregen.mixin;
 
+import com.example.pregen.Mc;
 import com.example.pregen.InMemoryChunkGrid;
 import com.example.pregen.RegionChunkCache;
 import net.minecraft.server.level.GenerationChunkHolder;
@@ -80,8 +81,8 @@ public abstract class WorldGenRegionChunkCacheMixin {
         if (chunks == null) {
             ChunkPos center = this.getCenter();
             InMemoryChunkGrid grid = InMemoryChunkGrid.owning(this.level, this.cache, center);
-            chunks = grid != null && grid.isInsideGrid(center.x(), center.z())
-                    ? RegionChunkCache.around(center.x(), center.z()) : RegionChunkCache.NONE;
+            chunks = grid != null && grid.isInsideGrid(Mc.x(center), Mc.z(center))
+                    ? RegionChunkCache.around(Mc.x(center), Mc.z(center)) : RegionChunkCache.NONE;
             this.pregen$chunks = chunks;
         }
         return chunks;

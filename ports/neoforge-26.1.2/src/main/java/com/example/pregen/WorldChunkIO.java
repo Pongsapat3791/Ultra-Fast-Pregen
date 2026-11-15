@@ -135,9 +135,19 @@ final class WorldChunkIO {
     }
 
     private record VanillaStorage(IOWorkerAccessor worker) implements StorageThread {
+        /** IOWorker#submitTask leaves its future open when a task throws, and the exception crashes the server. */
         @Override
         public <T> CompletableFuture<T> submit(Supplier<T> task) {
-            return worker.pregen$submitTask(task);
+            CompletableFuture<T> result = new CompletableFuture<>();
+            worker.pregen$submitTask(() -> {
+                try {
+                    result.complete(task.get());
+                } catch (Throwable failure) {
+                    result.completeExceptionally(failure);
+                }
+                return null;
+            });
+            return result;
         }
 
         @Override
@@ -188,22 +198,36 @@ final class WorldChunkIO {
      * status is read, and a missing region file is not created. One IO-thread task per region,
      * so the server's own chunk loads and saves run in between.
      */
-    /** Per region (see isStored): chunks fully generated, and chunks stored in any status. */
-    record StoredChunks(Map<Long, long[]> full, Map<Long, long[]> present) {
-        static final StoredChunks NONE = new StoredChunks(Map.of(), Map.of());
+    /**
+     * Per region (see isStored): chunks fully generated, chunks stored in any status, and chunks stored
+     * with their features placed (status features or later).
+     */
+    record StoredChunks(Map<Long, long[]> full, Map<Long, long[]> present, Map<Long, long[]> featured) {
+        static final StoredChunks NONE = new StoredChunks(Map.of(), Map.of(), Map.of());
     }
 
     CompletableFuture<StoredChunks> findStoredInRegions(LongCollection regionKeys) {
+        return findStoredInRegions(regionKeys, null);
+    }
+
+    /**
+     * completeFrom: the status from which a stored chunk counts as generated, for a run that stops there
+     * (see DynamicBatchPreGen#setDepth); null for fully generated chunks only.
+     */
+    CompletableFuture<StoredChunks> findStoredInRegions(LongCollection regionKeys,
+                                                        net.minecraft.world.level.chunk.status.ChunkStatus completeFrom) {
         Map<Long, long[]> full = new HashMap<>();
         Map<Long, long[]> present = new HashMap<>();
+        Map<Long, long[]> featured = new HashMap<>();
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (long regionKey : regionKeys) {
             chain = chain.thenCompose(ignored -> thread.<Void>submit(() -> {
                 try {
-                    long[][] bits = collectStoredInRegion(regionKey);
+                    long[][] bits = collectStoredInRegion(regionKey, completeFrom);
                     if (bits != null) {
                         full.put(regionKey, bits[0]);
                         present.put(regionKey, bits[1]);
+                        featured.put(regionKey, bits[2]);
                     }
                     return null;
                 } catch (IOException | RuntimeException failure) {
@@ -211,15 +235,16 @@ final class WorldChunkIO {
                 }
             }));
         }
-        return chain.thenApply(ignored -> new StoredChunks(full, present));
+        return chain.thenApply(ignored -> new StoredChunks(full, present, featured));
     }
 
     /** A stored chunk's data (including a queued save), read on the IO thread. */
     CompletableFuture<java.util.Optional<CompoundTag>> load(long chunk) {
-        return worker.loadAsync(ChunkPos.unpack(chunk));
+        return worker.loadAsync(Mc.unpack(chunk));
     }
 
-    private long[][] collectStoredInRegion(long regionKey) throws IOException {
+    private long[][] collectStoredInRegion(long regionKey, net.minecraft.world.level.chunk.status.ChunkStatus completeFrom)
+            throws IOException {
         RegionFileStorageAccessor storage = thread.storage();
         int regionX = ChunkPos.getX(regionKey);
         int regionZ = ChunkPos.getZ(regionKey);
@@ -227,6 +252,7 @@ final class WorldChunkIO {
         RegionFile region = fileExists ? storage.pregen$getRegionFile(new ChunkPos(regionX << 5, regionZ << 5)) : null;
         long[] fullBits = new long[16];
         long[] presentBits = new long[16];
+        long[] featuredBits = new long[16];
         boolean any = false;
         for (int x = 0; x < 32; x++) {
             for (int z = 0; z < 32; z++) {
@@ -237,19 +263,39 @@ final class WorldChunkIO {
                 int index = x * 32 + z;
                 presentBits[index >>> 6] |= 1L << index;
                 any = true;
-                boolean full = queued != null ? queued.isFullyGenerated() : isFullyGenerated(region, pos);
+                boolean full;
+                boolean featured;
+                if (queued != null) {
+                    // For a run that stops early, a chunk the server is saving is the server's: left alone.
+                    featured = queued.isFullyGenerated();
+                    full = completeFrom != null || featured;
+                } else {
+                    // Unreadable or without a status counts as generated.
+                    String status = statusOf(region, pos);
+                    boolean generated = status == null || isFullStatus(status);
+                    net.minecraft.world.level.chunk.status.ChunkStatus reached = generated ? null : net.minecraft.world.level.chunk.status.ChunkStatus.byName(status);
+                    full = generated || completeFrom != null && reached.isOrAfter(completeFrom);
+                    featured = generated || reached.isOrAfter(net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES);
+                }
                 if (full) fullBits[index >>> 6] |= 1L << index;
+                if (featured) featuredBits[index >>> 6] |= 1L << index;
             }
         }
-        return any ? new long[][]{fullBits, presentBits} : null;
+        return any ? new long[][]{fullBits, presentBits, featuredBits} : null;
+    }
+
+    /** A stored status from features on (a chunk whose own features have run). */
+    private static boolean featuresPlaced(String status) {
+        return status != null && net.minecraft.world.level.chunk.status.ChunkStatus.byName(status)
+                .isOrAfter(net.minecraft.world.level.chunk.status.ChunkStatus.FEATURES);
     }
 
     /** A queued chunk save's status; a missing or unknown status counts as generated. */
     static boolean isFullyGenerated(CompoundTag data) {
         if (data == null) return false;
-        if (data.contains("Status")) return isFullStatus(data.getStringOr("Status", ""));
-        CompoundTag level = data.getCompoundOrEmpty("Level");
-        return !level.contains("Status") || isFullStatus(level.getStringOr("Status", ""));
+        if (data.contains("Status")) return isFullStatus(McNbt.string(data, "Status", ""));
+        CompoundTag level = McNbt.compound(data, "Level");
+        return !level.contains("Status") || isFullStatus(McNbt.string(level, "Status", ""));
     }
 
     /**
@@ -258,6 +304,17 @@ final class WorldChunkIO {
      */
     static boolean isFullyGenerated(RegionFile region, ChunkPos pos) {
         return isFullyGenerated(() -> region.getChunkDataInputStream(pos));
+    }
+
+    /** A stored chunk's status as it is written, or null when it has none or cannot be read. */
+    private static String statusOf(RegionFile region, ChunkPos pos) {
+        ChunkStream chunk = () -> region.getChunkDataInputStream(pos);
+        try {
+            String status = readStatus(chunk, new FieldSelector(StringTag.TYPE, "Status"), false);
+            return status != null ? status : readStatus(chunk, new FieldSelector("Level", StringTag.TYPE, "Status"), true);
+        } catch (IOException | RuntimeException failure) {
+            return null;
+        }
     }
 
     /** The same for a chunk's uncompressed NBT. */
@@ -285,8 +342,8 @@ final class WorldChunkIO {
             CollectFields fields = new CollectFields(selector);
             NbtIo.parse(in, fields, NbtAccounter.unlimitedHeap());
             if (!(fields.getResult() instanceof CompoundTag tag)) return null;
-            CompoundTag holder = nested ? tag.getCompoundOrEmpty("Level") : tag;
-            return holder.contains("Status") ? holder.getStringOr("Status", "") : null;
+            CompoundTag holder = nested ? McNbt.compound(tag, "Level") : tag;
+            return holder.contains("Status") ? McNbt.string(holder, "Status", "") : null;
         }
     }
 
@@ -299,7 +356,7 @@ final class WorldChunkIO {
     static boolean isStored(Map<Long, long[]> stored, long chunk) {
         int x = ChunkPos.getX(chunk);
         int z = ChunkPos.getZ(chunk);
-        long[] bits = stored.get(ChunkPos.pack(x >> 5, z >> 5));
+        long[] bits = stored.get(Mc.pack(x >> 5, z >> 5));
         int index = (x & 31) * 32 + (z & 31);
         return bits != null && (bits[index >>> 6] & 1L << index) != 0;
     }
@@ -345,13 +402,13 @@ final class WorldChunkIO {
         Map<Long, Boolean> regionExists = new HashMap<>();
         LongSet stored = new LongOpenHashSet();
         for (long packed : positions) {
-            ChunkPos pos = ChunkPos.unpack(packed);
+            ChunkPos pos = Mc.unpack(packed);
             if (thread.queued(pos) != null) {
                 stored.add(packed);
                 continue;
             }
             // Avoid getRegionFile here: it creates missing region files.
-            boolean exists = regionExists.computeIfAbsent(ChunkPos.pack(pos.getRegionX(), pos.getRegionZ()),
+            boolean exists = regionExists.computeIfAbsent(Mc.pack(pos.getRegionX(), pos.getRegionZ()),
                     key -> Files.exists(folder.resolve("r." + pos.getRegionX() + "." + pos.getRegionZ() + ".mca")));
             if (exists && storage.pregen$getRegionFile(pos).hasChunk(pos)) stored.add(packed);
         }
@@ -377,9 +434,30 @@ final class WorldChunkIO {
      * is left alone: the server's version is newer. Completes with the number of chunks changed.
      */
     CompletableFuture<Integer> mergeIntoSaved(Map<Long, List<SeamWrites.Write>> writes) {
+        return mergeIntoSaved(writes, Map.of(), 0);
+    }
+
+    /**
+     * As above, and light: for each chunk given, per block the brighter of its stored light and this stays (the
+     * light a batch's lighting left in a chunk outside the area, see InMemoryChunkGrid#getOutsideLight).
+     */
+    CompletableFuture<Integer> mergeIntoSaved(Map<Long, List<SeamWrites.Write>> writes, Map<Long, GridLight.ChunkLight> light,
+                                              int bottomLightSection) {
+        return mergeIntoSaved(writes, light, Map.of(), bottomLightSection);
+    }
+
+    /**
+     * As above, and relit: chunks whose stored light is replaced by this (worked out again among all their neighbors,
+     * see InMemoryChunkGrid#setSeamRelight); such a chunk is stored lit, also when writes were merged into it.
+     */
+    CompletableFuture<Integer> mergeIntoSaved(Map<Long, List<SeamWrites.Write>> writes, Map<Long, GridLight.ChunkLight> light,
+                                              Map<Long, GridLight.ChunkLight> relit, int bottomLightSection) {
         Map<Long, List<Long>> byRegion = new LinkedHashMap<>();
-        for (long chunk : writes.keySet()) {
-            byRegion.computeIfAbsent(ChunkPos.pack(ChunkPos.getX(chunk) >> 5, ChunkPos.getZ(chunk) >> 5),
+        java.util.Set<Long> all = new java.util.LinkedHashSet<>(writes.keySet());
+        all.addAll(light.keySet());
+        all.addAll(relit.keySet());
+        for (long chunk : all) {
+            byRegion.computeIfAbsent(Mc.pack(ChunkPos.getX(chunk) >> 5, ChunkPos.getZ(chunk) >> 5),
                     key -> new ArrayList<>()).add(chunk);
         }
         int[] merged = new int[1];
@@ -387,7 +465,7 @@ final class WorldChunkIO {
         for (Map.Entry<Long, List<Long>> region : byRegion.entrySet()) {
             chain = chain.thenCompose(ignored -> thread.<Void>submit(() -> {
                 try {
-                    merged[0] += mergeRegion(region.getKey(), region.getValue(), writes);
+                    merged[0] += mergeRegion(region.getKey(), region.getValue(), writes, light, relit, bottomLightSection);
                     return null;
                 } catch (IOException | RuntimeException failure) {
                     throw failure instanceof IOException io ? new java.io.UncheckedIOException(io) : (RuntimeException) failure;
@@ -397,20 +475,34 @@ final class WorldChunkIO {
         return chain.thenApply(ignored -> merged[0]);
     }
 
-    private int mergeRegion(long regionKey, List<Long> chunks, Map<Long, List<SeamWrites.Write>> writes) throws IOException {
+    private int mergeRegion(long regionKey, List<Long> chunks, Map<Long, List<SeamWrites.Write>> writes,
+                            Map<Long, GridLight.ChunkLight> light, Map<Long, GridLight.ChunkLight> relit,
+                            int bottomLightSection) throws IOException {
         RegionFileStorageAccessor storage = thread.storage();
         int merged = 0;
         try {
             RegionFile region = fastHandle(storage, regionKey);
             for (long packed : chunks) {
-                ChunkPos pos = ChunkPos.unpack(packed);
+                ChunkPos pos = Mc.unpack(packed);
                 if (thread.queued(pos) != null) continue;
                 CompoundTag tag;
                 try (DataInputStream in = region.getChunkDataInputStream(pos)) {
                     if (in == null) continue;
                     tag = NbtIo.read(in);
                 }
-                if (!SeamWrites.applyToSaved(tag, writes.get(packed))) continue;
+                boolean lit = McNbt.boolOr(tag, "isLightOn", false);
+                List<SeamWrites.Write> chunkWrites = writes.get(packed);
+                boolean changed = chunkWrites != null && SeamWrites.applyToSaved(tag, chunkWrites);
+                GridLight.ChunkLight reached = light.get(packed);
+                if (reached != null) changed |= SeamWrites.putLight(tag, reached.block(), reached.sky(), bottomLightSection, true, lit);
+                GridLight.ChunkLight again = relit.get(packed);
+                // Only a fully generated chunk: one the server took back part-generated meanwhile lights itself.
+                if (again != null && isFullyGenerated(tag)) {
+                    SeamWrites.putLight(tag, again.block(), again.sky(), bottomLightSection, false, true);
+                    tag.putBoolean("isLightOn", true);
+                    changed = true;
+                }
+                if (!changed) continue;
                 RegionFileVersion version = RegionFileVersion.VERSION_DEFLATE;
                 FramedChunkBuffer framed = new FramedChunkBuffer(version.getId());
                 try (DataOutputStream stream = new DataOutputStream(version.wrap(framed))) {
@@ -432,10 +524,22 @@ final class WorldChunkIO {
         return write(chunks, false);
     }
 
+    /**
+     * Border copies: chunks saved at carvers with what other chunks' features placed in them. Never over a stored
+     * chunk whose own features have run (it would lose them), nor over a fully generated one.
+     */
+    PendingWrite writeBorder(List<EncodedChunk> chunks) {
+        return write(chunks, false, true);
+    }
+
     PendingWrite write(List<EncodedChunk> chunks, boolean overwrite) {
+        return write(chunks, overwrite, false);
+    }
+
+    private PendingWrite write(List<EncodedChunk> chunks, boolean overwrite, boolean keepFeatured) {
         Map<Long, List<EncodedChunk>> byRegion = new LinkedHashMap<>();
         for (EncodedChunk chunk : chunks) {
-            long region = ChunkPos.pack(chunk.pos().getRegionX(), chunk.pos().getRegionZ());
+            long region = Mc.pack(chunk.pos().getRegionX(), chunk.pos().getRegionZ());
             byRegion.computeIfAbsent(region, key -> new ArrayList<>()).add(chunk);
         }
         WriteResult result = new WriteResult(chunks.size(), byRegion.size());
@@ -447,7 +551,7 @@ final class WorldChunkIO {
                 boolean lastOfRegion = start + writeBatch >= regionChunks.size();
                 chain = chain.thenCompose(ignored -> thread.<WriteResult>submit(() -> {
                     try {
-                        writeBatch(region.getKey(), batch, lastOfRegion, result, overwrite);
+                        writeBatch(region.getKey(), batch, lastOfRegion, result, overwrite, keepFeatured);
                         return result;
                     } catch (IOException | RuntimeException failure) {
                         throw failure instanceof IOException io ? new java.io.UncheckedIOException(io) : (RuntimeException) failure;
@@ -467,7 +571,7 @@ final class WorldChunkIO {
      * closed, which forces it to disk once, and the server reopens the file with its own setting.
      */
     private void writeBatch(long regionKey, List<EncodedChunk> chunks, boolean lastOfRegion, WriteResult result,
-                            boolean overwrite) throws IOException {
+                            boolean overwrite, boolean keepFeatured) throws IOException {
         long started = System.nanoTime();
         RegionFileStorageAccessor storage = thread.storage();
         int written = 0;
@@ -481,7 +585,8 @@ final class WorldChunkIO {
                     // player's); the server's saves of part-way generated chunks are replaced.
                     boolean keep = queued != null
                             ? queued.isFullyGenerated()
-                            : region.hasChunk(chunk.pos()) && isFullyGenerated(region, chunk.pos());
+                            : region.hasChunk(chunk.pos()) && (isFullyGenerated(region, chunk.pos())
+                                    || keepFeatured && featuresPlaced(statusOf(region, chunk.pos())));
                     if (keep) {
                         skipped++;
                         continue;
@@ -521,7 +626,8 @@ final class WorldChunkIO {
         Path folder = storage.pregen$getFolder();
         Files.createDirectories(folder);
         Path file = folder.resolve("r." + ChunkPos.getX(regionKey) + "." + ChunkPos.getZ(regionKey) + ".mca");
-        ours = new RegionFile(((RegionFileStorage) (Object) storage).info(), file, folder, false);
+        // Deflate as every frame written here: a chunk too large for the file goes outside it under the file's compression id.
+        ours = new RegionFile(((RegionFileStorage) (Object) storage).info(), file, folder, RegionFileVersion.VERSION_DEFLATE, false);
         cache.putAndMoveToFirst(regionKey, ours);
         fastHandles.put(regionKey, ours);
         return ours;
@@ -540,8 +646,8 @@ final class WorldChunkIO {
             throws IOException {
         Map<Long, List<PregenWorlds.ChunkWrite>> byRegion = new LinkedHashMap<>();
         for (PregenWorlds.ChunkWrite chunk : chunks) {
-            ChunkPos pos = ChunkPos.unpack(chunk.chunk());
-            byRegion.computeIfAbsent(ChunkPos.pack(pos.getRegionX(), pos.getRegionZ()), key -> new ArrayList<>()).add(chunk);
+            ChunkPos pos = Mc.unpack(chunk.chunk());
+            byRegion.computeIfAbsent(Mc.pack(pos.getRegionX(), pos.getRegionZ()), key -> new ArrayList<>()).add(chunk);
         }
         return dryRun ? findWritable(byRegion, rule) : writeRegions(byRegion, rule);
     }
@@ -598,7 +704,7 @@ final class WorldChunkIO {
         try {
             RegionFile region = fastHandle(storage, regionKey);
             for (PregenWorlds.ChunkWrite chunk : chunks) {
-                ChunkPos pos = ChunkPos.unpack(chunk.chunk());
+                ChunkPos pos = Mc.unpack(chunk.chunk());
                 if (thread.queued(pos) != null) {
                     // The server is saving this chunk: its save would follow ours, so it stays.
                     counts[1]++;

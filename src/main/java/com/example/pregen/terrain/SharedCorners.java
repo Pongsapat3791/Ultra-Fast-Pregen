@@ -1,5 +1,6 @@
 package com.example.pregen.terrain;
 
+import java.util.Arrays;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -46,7 +47,7 @@ public final class SharedCorners {
         if (enabled && minecraftsOwn(state.router())) OPEN.put(state, new SharedCorners());
     }
 
-    private static boolean minecraftsOwn(NoiseRouter router) {
+    static boolean minecraftsOwn(NoiseRouter router) {
         boolean[] own = {true};
         router.mapAll(function -> {
             if (!function.getClass().getName().startsWith("net.minecraft.")) own[0] = false;
@@ -65,21 +66,29 @@ public final class SharedCorners {
     }
 
     /**
-     * Fills {@code column} with the values of interpolated function {@code index} (of
-     * {@code functions}) at the corner column (x, z), which {@code sharers} chunks have: from the
-     * chunk that computed it first, or by {@code compute}.
+     * Fills the lowest {@code count} values of {@code column} with those of interpolated function
+     * {@code index} (of {@code functions}) at the corner column (x, z), which {@code sharers} chunks
+     * have: from a chunk that computed at least as many, or by {@code compute} (which leaves the
+     * rest unset, see SkyColumns). The longest column computed is the one kept.
      */
-    public void fill(int x, int z, int index, int functions, int sharers, double[] column, Runnable compute) {
+    public void fill(int x, int z, int index, int functions, int sharers, double[] column, int count, Runnable compute) {
         long key = (long) x << 32 | z & 0xFFFFFFFFL;
         Column entry = columns.get(key);
         double[] known = entry != null && entry.values.length() == functions ? entry.values.get(index) : null;
-        if (known != null && known.length == column.length) {
-            System.arraycopy(known, 0, column, 0, column.length);
+        if (known != null && known.length >= count && known.length <= column.length) {
+            System.arraycopy(known, 0, column, 0, known.length);
+            if (known.length < column.length) Arrays.fill(column, known.length, column.length, Double.NaN);
             COPIED.increment();
         } else {
             compute.run();
             if (entry == null) entry = columns.computeIfAbsent(key, ignored -> new Column(functions, sharers));
-            if (entry.values.length() == functions) entry.values.compareAndSet(index, null, column.clone());
+            if (entry.values.length() == functions) {
+                double[] computed = Arrays.copyOf(column, count);
+                while (true) {
+                    double[] kept = entry.values.get(index);
+                    if (kept != null && kept.length >= count || entry.values.compareAndSet(index, kept, computed)) break;
+                }
+            }
         }
         // After a chunk's last function here, one chunk fewer will read the column.
         if (index == functions - 1 && entry.readers.decrementAndGet() == 0) columns.remove(key, entry);

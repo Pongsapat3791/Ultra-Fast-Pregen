@@ -52,7 +52,7 @@ public final class PregenRuns {
     public static void onServerTick(MinecraftServer ticking) {
         if (checkedForResume == ticking) return;
         try {
-            if (PreGenConfig.load().resumeAfterRestart) resumeAfterRestart(ticking);
+            if (Parts.ufpOn() && PreGenConfig.load().resumeAfterRestart) resumeAfterRestart(ticking);
         } catch (RuntimeException failure) {
             PreGenMod.LOGGER.warn("[PreGen] Could not check for a run to continue after the restart", failure);
         } finally {
@@ -83,7 +83,7 @@ public final class PregenRuns {
             }
             if (record.seedChanged() || !record.hasLastRun() || record.lastCompleted() || record.lastStopped()) continue;
             String area = String.format("%s centered on [%d, %d] in %s", areaText(record.lastSizeBlocks(), record.lastShape()),
-                    record.lastCenterX(), record.lastCenterZ(), level.dimension().identifier());
+                    record.lastCenterX(), record.lastCenterZ(), Mc.id(level.dimension()));
             if (record.autoResumes() >= MAX_AUTO_RESUMES) {
                 String message = "Not continuing the run (" + area + ") after this restart: the last " + MAX_AUTO_RESUMES
                         + " restarts continued it without saving a batch. /pregen resume continues it by hand.";
@@ -97,7 +97,7 @@ public final class PregenRuns {
                 PreGenMod.LOGGER.warn("[PreGen] Could not write the save file {}", record.file(), failure);
             }
             Result started = start(level, record.lastSizeBlocks(), record.lastShape(), record.lastCenterX(),
-                    record.lastCenterZ(), false, 0, false, true);
+                    record.lastCenterZ(), false, 0, false, true, true);
             String message = started.started()
                     ? "Continuing the run cut short by the last server stop (" + area + "); /pregen stop stops it."
                     : "Could not continue the run (" + area + "): " + started.message();
@@ -192,7 +192,7 @@ public final class PregenRuns {
     /** The loaded dimension with that id ("minecraft:overworld"), or null. */
     static ServerLevel level(MinecraftServer server, String dimension) {
         for (ServerLevel level : levels(server)) {
-            if (level.dimension().identifier().toString().equals(dimension)) return level;
+            if (Mc.id(level.dimension()).equals(dimension)) return level;
         }
         return null;
     }
@@ -214,18 +214,22 @@ public final class PregenRuns {
      */
     static synchronized Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
                                      boolean profile) {
-        return start(level, sizeBlocks, shape, x, z, profile, 0, false);
+        return start(level, sizeBlocks, shape, x, z, profile, 0, false, false, true);
     }
 
     /** batchSize: the request's, or 0 for the config's; keepExisting: keep chunks whatever the config says. */
     static synchronized Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
                                      boolean profile, int batchSize, boolean keepExisting) {
-        return start(level, sizeBlocks, shape, x, z, profile, batchSize, keepExisting, false);
+        return start(level, sizeBlocks, shape, x, z, profile, batchSize, keepExisting, false, false);
     }
 
     /** continuing: a run that goes on from its save file, so what that has for the area stays also when regenerating. */
+    /** configDepth: the config's depth (a run started by command); another mod's request always runs to full depth. */
     private static Result start(ServerLevel level, int sizeBlocks, ChunkBatchPlan.Shape shape, int x, int z,
-                                boolean profile, int batchSize, boolean keepExisting, boolean continuing) {
+                                boolean profile, int batchSize, boolean keepExisting, boolean continuing, boolean configDepth) {
+        if (!Parts.ufpOn()) {
+            return Result.refused(PreGenMod.NAME + " is off. Turn it on with /pregen ufp on.");
+        }
         if (isRunning()) {
             return Result.refused("A pre-generation task is already currently running!");
         }
@@ -249,6 +253,7 @@ public final class PregenRuns {
         long freeHeap = PreGenConfig.freeHeapBytes();
         int wanted = batchSize > 0 ? batchSize : config.batchSizeBlocks;
         boolean skipExisting = keepExisting || config.skipExistingChunks;
+        PreGenConfig.Depth depth = configDepth ? config.depth : PreGenConfig.Depth.FULL;
         int batch = PreGenConfig.fitBatchToHeap(wanted, freeHeap);
         if (batch != wanted) {
             PreGenMod.LOGGER.warn(String.format(
@@ -257,10 +262,12 @@ public final class PregenRuns {
         }
         // Players see the boss bar; the settings go to the server log and console.
         PreGenMod.LOGGER.info(String.format(
-            "[PreGen] Starting generation for %s in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s (change in config/%s)",
-            areaText(sizeBlocks, shape), level.dimension().identifier(), x, z, batch, batch,
+            "[PreGen] Starting generation for %s in %s centered on [%d, %d] | Batch: %d x %d blocks | Threads: %d%s | Existing chunks: %s%s (change in config/%s)",
+            areaText(sizeBlocks, shape), Mc.id(level.dimension()), x, z, batch, batch,
             config.threads, config.threadsFromCpuCount ? " (max)" : "",
-            skipExisting ? "kept" : "overwritten", PreGenConfig.FILE_NAME));
+            skipExisting || depth != PreGenConfig.Depth.FULL ? "kept" : "overwritten",
+            depth == PreGenConfig.Depth.FULL ? "" : " | Depth: " + depth.name().toLowerCase(java.util.Locale.ROOT)
+                    + " (Minecraft finishes each chunk when it is first loaded)", PreGenConfig.FILE_NAME));
 
         // The engine logs each event; players follow the run on the boss bar, not in chat.
         fillRotationTables();
@@ -272,6 +279,7 @@ public final class PregenRuns {
         task.setSkipExistingChunks(skipExisting);
         task.setRegenerateRecorded(!skipExisting && !continuing);
         task.setLodExport(config.lodExport);
+        task.setDepth(depth);
         if (!PreGenConfig.overlapFits(batch, freeHeap)) task.setOverlapBatches(false);
         if (profile) task.enableProfiling();
         activeTask = task;
@@ -291,11 +299,11 @@ public final class PregenRuns {
             return Result.refused("Could not read the save file: " + failure.getMessage());
         }
         if (record.seedChanged() || !record.hasLastRun()) {
-            return Result.note("No earlier Ultra Fast Pregen run is recorded in " + level.dimension().identifier()
+            return Result.note("No earlier Ultra Fast Pregen run is recorded in " + Mc.id(level.dimension())
                     + ". Start one with /pregen start <world_k>.");
         }
         Result started = start(level, record.lastSizeBlocks(), record.lastShape(), record.lastCenterX(),
-                record.lastCenterZ(), false, 0, false, true);
+                record.lastCenterZ(), false, 0, false, true, true);
         if (started.started() && record.lastCompleted()) {
             return new Result(true, String.format("The last run (%s centered on [%d, %d]) already completed; every finished tile is skipped.",
                     areaText(record.lastSizeBlocks(), record.lastShape()), record.lastCenterX(), record.lastCenterZ()),

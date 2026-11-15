@@ -148,6 +148,9 @@ public final class PartialExistingBatchCheck {
             if (only.contains("circle")) checkCircle(level, io, tasks);
             if (only.contains("restart")) checkAutoResume(server, level, tasks);
             if (only.contains("parity")) checkFastFillParity(server, level);
+            if (only.contains("edge")) checkEdgeLight(server, level, io, tasks);
+            if (only.contains("extend")) checkExtendLater(level, io, tasks);
+            if (only.contains("mushroom")) checkFeatureLight(level, io, tasks);
             return;
         }
         ChunkBatchPlan.Tile tile = new ChunkBatchPlan.Tile(10_000, 10_000, 2, 2);
@@ -245,6 +248,429 @@ public final class PartialExistingBatchCheck {
         checkExistingNeighbors(server, level, io, tasks);
         checkOtherDimensions(server, tasks);
         checkLightParity(level, io, tasks);
+        checkExtendLater(level, io, tasks);
+        checkEdgeLight(server, level, io, tasks);
+        checkFeatureLight(level, io, tasks);
+    }
+
+    /**
+     * Brown mushrooms on plain ground need raw brightness below 13 where a feature places them. Minecraft's chunk
+     * reads low light there (what flowed in from lit neighbors); a batch's chunk read 15 and never got one. With
+     * features reading no sky light an area has them; with the switch off it has fewer (the control).
+     */
+    private static void checkFeatureLight(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        long on = 0;
+        long off = 0;
+        int tried = 0;
+        // Not every place has ground for them: the first of three that does.
+        for (int center : new int[]{1_600_000, 1_650_000, 1_700_000}) {
+            tried++;
+            ChunkBatchPlan plan = new ChunkBatchPlan(512, 512, center, center);
+            InMemoryChunkGrid.darkFeatures = false;
+            try {
+                off = brownMushrooms(level, io, tasks, plan, center);
+            } finally {
+                InMemoryChunkGrid.darkFeatures = true;
+            }
+            erase(io, plan, 2);
+            on = brownMushrooms(level, io, tasks, plan, center);
+            System.out.println("FEATURE_LIGHT brown mushrooms in 32x32 chunks at " + center + ": " + on + ", with features reading sky light 15: " + off);
+            if (on > off) break;
+        }
+        require(on > off, "Features must find the light dim enough for brown mushrooms: " + on + " placed, " + off + " with the switch off");
+        System.out.println("FEATURE_LIGHT_CHECK PASS brown_mushrooms=" + on + " without=" + off + " places_tried=" + tried);
+    }
+
+    private static long brownMushrooms(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks, ChunkBatchPlan plan,
+                                       int center) throws Exception {
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen task = DynamicBatchPreGen.square(level, 512, 512, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(task);
+        }
+        task.setReleaseMemoryEachBatch(false);
+        task.start();
+        require("Completed".equals(task.getCurrentStageName()), "The run must complete: " + task.getCurrentStageName());
+        io.synchronize(true).get(60, TimeUnit.SECONDS);
+        BlockState mushroom = net.minecraft.world.level.block.Blocks.BROWN_MUSHROOM.defaultBlockState();
+        long count = 0;
+        for (BlockState[] chunk : readArea(io, plan, 0).values()) {
+            for (BlockState state : chunk) {
+                if (state == mushroom) count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * A small area from a whole run, which leaves the ring of chunks around it with their features placed, and a
+     * larger area around it later, keeping existing chunks. The ring chunks then lie in the larger area: they must
+     * be finished as they are, with what the small area's features placed in them. Against one grid whose features
+     * run the small area and its ring first: near the small area's edge the result must differ far less than with
+     * the ring chunks generated again (-Dfastpregen.continueFeatured=false, the control), and the chunks of the
+     * small area and its ring must hold the reference's blocks.
+     */
+    private static void checkExtendLater(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks) throws Exception {
+        int center = 1_500_000;
+        ChunkBatchPlan plan = new ChunkBatchPlan(1000, 1000, center, center);
+        int minX = (center >> 4) - 8;
+        int minZ = (center >> 4) - 8;
+        // The small area and its ring: the chunks whose features the first run places.
+        Map<Long, BlockState[]> reference = memoryBlocks(level, plan, (x, z) ->
+                x >= minX - 1 && x < minX + 17 && z >= minZ - 1 && z < minZ + 17 ? 0 : 1);
+        Map<Long, BlockState[]> broken;
+        DynamicBatchPreGen.continueFeatured = false;
+        try {
+            broken = smallRunThenAround(level, io, tasks, plan, center, 0);
+        } finally {
+            DynamicBatchPreGen.continueFeatured = true;
+        }
+        erase(io, plan, 2);
+        Map<Long, BlockState[]> fixed = smallRunThenAround(level, io, tasks, plan, center, 68);
+        double[] fixedEdge = edgeProfile(reference, fixed, minX, minZ);
+        double[] brokenEdge = edgeProfile(reference, broken, minX, minZ);
+        long ringDiff = 0;
+        long ringBrokenDiff = 0;
+        for (int x = minX - 1; x < minX + 17; x++) {
+            for (int z = minZ - 1; z < minZ + 17; z++) {
+                boolean ring = x < minX || x >= minX + 16 || z < minZ || z >= minZ + 16;
+                if (!ring) continue;
+                BlockState[] expected = reference.get(ChunkPos.asLong(x, z));
+                BlockState[] actual = fixed.get(ChunkPos.asLong(x, z));
+                BlockState[] without = broken.get(ChunkPos.asLong(x, z));
+                for (int i = 0; i < expected.length; i++) {
+                    if (expected[i] != actual[i]) ringDiff++;
+                    if (expected[i] != without[i]) ringBrokenDiff++;
+                }
+            }
+        }
+        System.out.printf(java.util.Locale.ROOT,
+                "EXTEND_LATER_PROFILE near_edge(blocks): fixed=%.0f broken=%.0f | away: fixed=%.0f broken=%.0f | ring chunks: fixed=%d broken=%d%n",
+                fixedEdge[0], brokenEdge[0], fixedEdge[1], brokenEdge[1], ringDiff, ringBrokenDiff);
+        require(brokenEdge[0] > 4 * Math.max(1.0, fixedEdge[0]), "Generating the ring again must lose what the small area placed in it (the control): "
+                + brokenEdge[0] + " against " + fixedEdge[0]);
+        require(ringDiff * 4 < ringBrokenDiff, "The ring chunks must be finished as they were: " + ringDiff + " blocks differ, "
+                + ringBrokenDiff + " when generated again");
+        System.out.printf(java.util.Locale.ROOT, "EXTEND_LATER_CHECK PASS edge_diff_blocks fixed=%.0f broken=%.0f ring_diff fixed=%d broken=%d%n",
+                fixedEdge[0], brokenEdge[0], ringDiff, ringBrokenDiff);
+    }
+
+    /** A whole run of the 16x16 chunks around the center (its ring saved with it), then the whole plan around it keeping existing chunks. */
+    private static Map<Long, BlockState[]> smallRunThenAround(ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks,
+                                                              ChunkBatchPlan plan, int center, int continuedAtLeast) throws Exception {
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen first = DynamicBatchPreGen.square(level, 256, 256, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(first);
+        }
+        first.setReleaseMemoryEachBatch(false);
+        first.start();
+        require("Completed".equals(first.getCurrentStageName()), "The small run must complete");
+        io.synchronize(true).get(60, TimeUnit.SECONDS);
+        int ringX = (center >> 4) + 8;
+        CompoundTag ring = io.loadAsync(new ChunkPos(ringX, center >> 4)).get(10, TimeUnit.SECONDS).orElseThrow(
+                () -> new AssertionError("The ring around the small area must be saved"));
+        require("minecraft:initialize_light".equals(ring.getString("Status")),
+                "The ring is saved with its features placed, at status initialize_light: " + ring.getString("Status"));
+        // Kept as chunks of the world, not as this mod's own earlier run.
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen around = new DynamicBatchPreGen(level, 1, 1000, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(around);
+        }
+        around.setSkipExistingChunks(true);
+        around.setReleaseMemoryEachBatch(false);
+        around.start();
+        require("Completed".equals(around.getCurrentStageName()), "The larger run must complete");
+        require(((AtomicInteger) field(around, "keptExistingChunks")).get() == 256, "The small area's chunks must be kept: "
+                + ((AtomicInteger) field(around, "keptExistingChunks")).get());
+        long continued = ((SeamWrites) field(around, "seams")).continued();
+        require(continued >= continuedAtLeast, "The ring chunks must be finished as they are: " + continued + " of 68");
+        io.synchronize(true).get(60, TimeUnit.SECONDS);
+        return readArea(io, plan, 0);
+    }
+
+    private static final String[] EDGE_LIGHT_CLASSES = {"outside ring 2+", "outside ring 1", "outside ring 1, at a seam",
+            "area row 0 (outermost)", "area row 0, at a seam", "area row 1", "seam row 0, earlier tile", "seam row 0, later tile",
+            "seam row 1", "rest of the area"};
+    /** The classes the edge rule covers: the chunks at the area's edge away from the batch seams. */
+    private static final int[] EDGE_LIGHT_EDGE = {1, 3, 5};
+    /** The classes at a batch seam, the places where a seam meets the edge included. */
+    private static final int[] EDGE_LIGHT_SEAMS = {2, 4, 6, 7, 8};
+
+    /**
+     * Light as the server stores it after it loaded a generated area and generated the chunks around it
+     * itself, against Minecraft's light engine lighting the stored blocks from nothing. Counted by where a
+     * chunk lies: outside the area (the server's own chunks), the area's outer rows, the rows at a batch
+     * seam, the rest. A box the server generated alone is the control: it shows what the method reads on
+     * Minecraft's own chunks.
+     */
+    private static void checkEdgeLight(MinecraftServer server, ServerLevel level, IOWorker io,
+                                       List<DynamicBatchPreGen> tasks) throws Exception {
+        int controlMin = (Integer.getInteger("pregen.edgeLight.control", 1_300_000)) >> 4;
+        long[][] control = storedLightAgainstBlocks(server, level, io, controlMin, controlMin, controlMin + 13, controlMin + 13,
+                (x, z) -> 9, "control", controlMin, controlMin);
+        printEdgeLight("control (the server alone)", control);
+        require(control[9][1] == 0, "Minecraft's own chunks must read as lit right (the method)");
+
+        // Without the ring and the seam relight (as up to the first builds of 16), then with both.
+        long[][] without;
+        DynamicBatchPreGen.edgeRing = false;
+        DynamicBatchPreGen.seamRelight = false;
+        try {
+            without = edgeLightRun(server, level, io, tasks, Integer.getInteger("pregen.edgeLight.center", 1_200_000), "ring off");
+        } finally {
+            DynamicBatchPreGen.edgeRing = true;
+            DynamicBatchPreGen.seamRelight = true;
+        }
+        long[][] with = edgeLightRun(server, level, io, tasks, Integer.getInteger("pregen.edgeLight.center2", 1_250_000), "ring on");
+        long offDiffering = 0;
+        long onDiffering = 0;
+        for (int kind : EDGE_LIGHT_EDGE) {
+            offDiffering += without[kind][1];
+            onDiffering += with[kind][1];
+        }
+        System.out.println("EDGE_LIGHT_SUMMARY chunks at the edge (away from seams) with wrong light: ring off " + offDiffering
+                + ", ring on " + onDiffering);
+        require(offDiffering > 0, "Without the ring the edge must show wrong light (the control)");
+        require(onDiffering == 0, "With the ring every chunk at the area's edge, inside and outside, must be lit as Minecraft lights it: "
+                + onDiffering + " differ");
+        long seamsOff = 0;
+        long seamsOn = 0;
+        for (int kind : EDGE_LIGHT_SEAMS) {
+            seamsOff += without[kind][1];
+            seamsOn += with[kind][1];
+        }
+        long restOn = with[0][1] + with[9][1];
+        System.out.println("EDGE_LIGHT_SUMMARY chunks at a batch seam with wrong light: relight off " + seamsOff + ", relight on " + seamsOn
+                + "; elsewhere with relight on " + restOn);
+        require(seamsOff > 0, "Without the seam relight the batch seams must show wrong light (the control)");
+        require(seamsOn == 0 && restOn == 0, "With the seam relight every chunk must be lit as Minecraft lights it: " + seamsOn
+                + " at seams and " + restOn + " elsewhere differ");
+        System.out.println("EDGE_LIGHT_CHECK PASS edge_chunks_wrong off=" + offDiffering + " on=" + onDiffering
+                + " seam_chunks_wrong off=" + seamsOff + " on=" + seamsOn);
+    }
+
+    private static long[][] edgeLightRun(MinecraftServer server, ServerLevel level, IOWorker io, List<DynamicBatchPreGen> tasks,
+                                         int center, String label) throws Exception {
+        int size = Integer.getInteger("pregen.edgeLight.size", 512);
+        int batch = Integer.getInteger("pregen.edgeLight.batch", 256);
+        ChunkBatchPlan plan = new ChunkBatchPlan(size, batch, center, center);
+        PreGenSaveFile.delete(level);
+        DynamicBatchPreGen task = DynamicBatchPreGen.square(level, size, batch, 4, center, center, message -> {});
+        synchronized (tasks) {
+            tasks.add(task);
+        }
+        task.setReleaseMemoryEachBatch(false);
+        task.start();
+        require("Completed".equals(task.getCurrentStageName()), "Edge light run must complete: " + task.getCurrentStageName());
+        io.synchronize(true).get(60, TimeUnit.SECONDS);
+        int minX = plan.tile(0, 0).minChunkX();
+        int minZ = plan.tile(0, 0).minChunkZ();
+        int maxX = minX + plan.chunksX() - 1;
+        int maxZ = minZ + plan.chunksZ() - 1;
+        int seamX = plan.tilesPerAxis() > 1 ? plan.tile(1, 0).minChunkX() : Integer.MAX_VALUE / 2;
+        int seamZ = plan.tilesPerAxis() > 1 ? plan.tile(0, 1).minChunkZ() : Integer.MAX_VALUE / 2;
+        int notLit = 0;
+        java.util.Map<String, Integer> ring = new java.util.TreeMap<>();
+        java.util.Map<String, Integer> ring2 = new java.util.TreeMap<>();
+        int ringWithLight = 0;
+        for (int x = minX - 2; x <= maxX + 2; x++) {
+            for (int z = minZ - 2; z <= maxZ + 2; z++) {
+                var tag = io.loadAsync(new ChunkPos(x, z)).get(10, TimeUnit.SECONDS);
+                int out = Math.max(Math.max(minX - x, x - maxX), Math.max(minZ - z, z - maxZ));
+                if (out <= 0) {
+                    if (!tag.orElseThrow().getBoolean("isLightOn")) notLit++;
+                    continue;
+                }
+                (out == 1 ? ring : ring2).merge(tag.map(chunk -> chunk.getString("Status")).orElse("missing"), 1, Integer::sum);
+                if (out == 1 && tag.isPresent()) {
+                    var sections = tag.get().getList("sections", net.minecraft.nbt.Tag.TAG_COMPOUND);
+                    boolean light = false;
+                    for (int i = 0; i < sections.size(); i++) {
+                        light |= sections.getCompound(i).contains("BlockLight") || sections.getCompound(i).contains("SkyLight");
+                    }
+                    if (light) ringWithLight++;
+                }
+            }
+        }
+        System.out.println("EDGE_LIGHT " + label + ": area " + plan.chunksX() + "x" + plan.chunksZ() + " chunks, " + plan.totalBatches()
+                + " batches; stored with isLightOn false: " + notLit + "; ring 1 as stored: " + ring + " (" + ringWithLight
+                + " with light), ring 2: " + ring2);
+        java.util.function.IntBinaryOperator where = (x, z) -> {
+            int sx = x >= seamX ? x - seamX : seamX - 1 - x;
+            int sz = z >= seamZ ? z - seamZ : seamZ - 1 - z;
+            int seam = Math.min(sx, sz);
+            int out = Math.max(Math.max(minX - x, x - maxX), Math.max(minZ - z, z - maxZ));
+            if (out >= 2) return 0;
+            if (out == 1) return seam <= 1 ? 2 : 1;
+            int in = Math.min(Math.min(x - minX, maxX - x), Math.min(z - minZ, maxZ - z));
+            if (in == 0) return seam <= 1 ? 4 : 3;
+            if (in == 1 && seam > 1) return 5;
+            boolean later = sx <= sz ? x >= seamX : z >= seamZ;
+            if (seam == 0) return later ? 7 : 6;
+            return seam == 1 ? 8 : 9;
+        };
+        int margin = 4;
+        long[][] counts = storedLightAgainstBlocks(server, level, io, minX - margin, minZ - margin, maxX + margin, maxZ + margin,
+                where, label, minX, minZ);
+        printEdgeLight(label + ": generated area, then the server around it", counts);
+        return counts;
+    }
+
+    private static void printEdgeLight(String label, long[][] counts) {
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i][0] == 0) continue;
+            System.out.printf(java.util.Locale.ROOT,
+                    "EDGE_LIGHT %s | %-26s chunks=%d with_differences=%d | sky brighter=%d darker=%d | block brighter=%d darker=%d%n",
+                    label, EDGE_LIGHT_CLASSES[i], counts[i][0], counts[i][1], counts[i][2], counts[i][3], counts[i][4], counts[i][5]);
+        }
+    }
+
+    /**
+     * The server loads every chunk of the box (generating what is missing) and saves; then, for every chunk
+     * of the box but its outermost ring, the stored light is compared with Minecraft's light engine lighting
+     * the stored blocks of the box. Per class of chunk: chunks, chunks with a difference, blocks whose stored
+     * sky light is brighter and darker, the same for block light.
+     */
+    private static long[][] storedLightAgainstBlocks(MinecraftServer server, ServerLevel level, IOWorker io,
+                                                     int x0, int z0, int x1, int z1,
+                                                     java.util.function.IntBinaryOperator where, String label,
+                                                     int originX, int originZ) throws Exception {
+        for (int z = z0; z <= z1; z++) {
+            int row = z;
+            server.submit(() -> {
+                for (int x = x0; x <= x1; x++) level.getChunk(x, row);
+                return null;
+            }).get(900, TimeUnit.SECONDS);
+        }
+        server.submit(() -> {
+            level.getChunkSource().save(true);
+            return null;
+        }).get(900, TimeUnit.SECONDS);
+        io.synchronize(true).get(300, TimeUnit.SECONDS);
+
+        int minSection = level.getMinSection();
+        int sectionCount = level.getSectionsCount();
+        Map<Long, net.minecraft.world.level.chunk.ProtoChunk> chunks = new java.util.HashMap<>();
+        Map<Long, CompoundTag> stored = new java.util.HashMap<>();
+        for (int x = x0; x <= x1; x++) {
+            for (int z = z0; z <= z1; z++) {
+                ChunkPos pos = new ChunkPos(x, z);
+                CompoundTag tag = io.loadAsync(pos).get(30, TimeUnit.SECONDS).orElseThrow();
+                SeamWrites.Final blocks = SeamWrites.finalFromStored(tag, minSection, sectionCount);
+                require(blocks != null, "A chunk the server loaded must be stored fully generated: " + pos + " "
+                        + tag.getString("Status"));
+                require(tag.getBoolean("isLightOn"), "A chunk the server loaded must be stored lit: " + pos);
+                var chunk = new net.minecraft.world.level.chunk.ProtoChunk(pos, net.minecraft.world.level.chunk.UpgradeData.EMPTY,
+                        level, level.registryAccess().registryOrThrow(net.minecraft.core.registries.Registries.BIOME), null);
+                for (int i = 0; i < sectionCount; i++) {
+                    chunk.getSections()[i] = new net.minecraft.world.level.chunk.LevelChunkSection(blocks.states()[i],
+                            chunk.getSections()[i].getBiomes());
+                }
+                chunk.initializeLightSources();
+                chunks.put(pos.toLong(), chunk);
+                stored.put(pos.toLong(), tag);
+            }
+        }
+        net.minecraft.world.level.chunk.LightChunkGetter blocksOnly = new net.minecraft.world.level.chunk.LightChunkGetter() {
+            @Override
+            public net.minecraft.world.level.chunk.LightChunk getChunkForLighting(int x, int z) {
+                return chunks.get(ChunkPos.asLong(x, z));
+            }
+
+            @Override
+            public net.minecraft.world.level.BlockGetter getLevel() {
+                return level;
+            }
+        };
+        boolean sky = level.dimensionType().hasSkyLight();
+        var vanilla = new net.minecraft.world.level.lighting.LevelLightEngine(blocksOnly, true, sky);
+        var saved = new net.minecraft.world.level.lighting.LevelLightEngine(blocksOnly, true, sky);
+        for (var chunk : chunks.values()) {
+            ChunkPos pos = chunk.getPos();
+            for (int i = 0; i < sectionCount; i++) {
+                if (chunk.getSections()[i].hasOnlyAir()) continue;
+                vanilla.updateSectionStatus(net.minecraft.core.SectionPos.of(pos, minSection + i), false);
+                saved.updateSectionStatus(net.minecraft.core.SectionPos.of(pos, minSection + i), false);
+            }
+            vanilla.setLightEnabled(pos, false);
+            vanilla.retainData(pos, false);
+            var sections = stored.get(pos.toLong()).getList("sections", net.minecraft.nbt.Tag.TAG_COMPOUND);
+            boolean retained = false;
+            for (int i = 0; i < sections.size(); i++) {
+                CompoundTag section = sections.getCompound(i);
+                var sectionPos = net.minecraft.core.SectionPos.of(pos, section.getByte("Y"));
+                boolean blockLight = section.contains("BlockLight");
+                boolean skyLight = sky && section.contains("SkyLight");
+                if ((blockLight || skyLight) && !retained) {
+                    saved.retainData(pos, true);
+                    retained = true;
+                }
+                if (blockLight) saved.queueSectionData(net.minecraft.world.level.LightLayer.BLOCK, sectionPos,
+                        new net.minecraft.world.level.chunk.DataLayer(section.getByteArray("BlockLight")));
+                if (skyLight) saved.queueSectionData(net.minecraft.world.level.LightLayer.SKY, sectionPos,
+                        new net.minecraft.world.level.chunk.DataLayer(section.getByteArray("SkyLight")));
+            }
+            saved.setLightEnabled(pos, true);
+            saved.retainData(pos, false);
+        }
+        for (var chunk : chunks.values()) vanilla.propagateLightSources(chunk.getPos());
+        while (vanilla.hasLightWork()) vanilla.runLightUpdates();
+        while (saved.hasLightWork()) saved.runLightUpdates();
+
+        long[][] counts = new long[EDGE_LIGHT_CLASSES.length][6];
+        List<String> examples = new ArrayList<>();
+        // Where the differing chunks at the edge lie, relative to the area's first chunk.
+        List<String> places = new ArrayList<>();
+        var layers = new net.minecraft.world.level.LightLayer[]{net.minecraft.world.level.LightLayer.SKY,
+                net.minecraft.world.level.LightLayer.BLOCK};
+        BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
+        int bottom = vanilla.getMinLightSection();
+        int top = vanilla.getMaxLightSection();
+        for (int cx = x0 + 1; cx < x1; cx++) {
+            for (int cz = z0 + 1; cz < z1; cz++) {
+                int kind = where.applyAsInt(cx, cz);
+                long[] count = counts[kind];
+                count[0]++;
+                boolean differs = false;
+                ChunkPos pos = new ChunkPos(cx, cz);
+                for (int sectionY = bottom; sectionY < top; sectionY++) {
+                    var sectionPos = net.minecraft.core.SectionPos.of(pos, sectionY);
+                    for (int layer = 0; layer < 2; layer++) {
+                        if (layer == 0 && !sky) continue;
+                        var expectedData = vanilla.getLayerListener(layers[layer]).getDataLayerData(sectionPos);
+                        var actualData = saved.getLayerListener(layers[layer]).getDataLayerData(sectionPos);
+                        if (expectedData != null && actualData != null
+                                && java.util.Arrays.equals(expectedData.getData(), actualData.getData())) continue;
+                        if (sectionY < minSection || sectionY >= minSection + sectionCount) continue;
+                        for (int y = 0; y < 16; y++) {
+                            for (int z = 0; z < 16; z++) {
+                                for (int x = 0; x < 16; x++) {
+                                    at.set(cx * 16 + x, sectionY * 16 + y, cz * 16 + z);
+                                    int expected = vanilla.getLayerListener(layers[layer]).getLightValue(at);
+                                    int actual = saved.getLayerListener(layers[layer]).getLightValue(at);
+                                    if (expected == actual) continue;
+                                    differs = true;
+                                    count[2 + layer * 2 + (actual > expected ? 0 : 1)]++;
+                                    if (examples.size() < 12) {
+                                        examples.add(EDGE_LIGHT_CLASSES[kind] + " " + layers[layer] + "@" + at.toShortString() + "=" + actual
+                                                + " (Minecraft " + expected + ")");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if (differs) {
+                    count[1]++;
+                    if (places.size() < 100) places.add(kind + "@" + (cx - originX) + "," + (cz - originZ));
+                }
+            }
+        }
+        System.out.println("EDGE_LIGHT_EXAMPLES " + label + " " + examples);
+        System.out.println("EDGE_LIGHT_PLACES " + label + " (class@chunk from the area's first) " + places);
+        return counts;
     }
 
     /**
@@ -449,7 +875,7 @@ public final class PartialExistingBatchCheck {
         uninterrupted.start();
         require("Completed".equals(uninterrupted.getCurrentStageName()), "The uninterrupted run must complete");
         Map<Long, BlockState[]> reference = readArea(io, plan, 0);
-        erase(io, plan, 1);
+        erase(io, plan, 2);
 
         PreGenSaveFile.delete(level);
         java.util.concurrent.atomic.AtomicReference<DynamicBatchPreGen> first = new java.util.concurrent.atomic.AtomicReference<>();
@@ -491,7 +917,7 @@ public final class PartialExistingBatchCheck {
         normal.start();
         require("Completed".equals(normal.getCurrentStageName()), "The undisturbed run must complete");
         Map<Long, BlockState[]> reference = readArea(io, plan, 0);
-        erase(io, plan, 1);
+        erase(io, plan, 2);
 
         PreGenSaveFile.delete(level);
         java.util.concurrent.atomic.AtomicBoolean announced = new java.util.concurrent.atomic.AtomicBoolean();
@@ -551,7 +977,7 @@ public final class PartialExistingBatchCheck {
 
         StringBuilder result = new StringBuilder();
         for (boolean overlap : new boolean[]{true, false}) {
-            erase(io, plan, 1);
+            erase(io, plan, 2);
             PreGenSaveFile.delete(level);
             java.util.concurrent.atomic.AtomicBoolean announced = new java.util.concurrent.atomic.AtomicBoolean();
             java.util.concurrent.atomic.AtomicBoolean misattributed = new java.util.concurrent.atomic.AtomicBoolean();
@@ -884,7 +1310,7 @@ public final class PartialExistingBatchCheck {
         } finally {
             SeamWrites.joinStoredChunks = true;
         }
-        erase(io, plan, 1);
+        erase(io, plan, 2);
         Map<Long, BlockState[]> fixed = smallThenAround(level, io, tasks, plan, small, center);
         double[] fixedEdge = edgeProfile(reference, fixed, minX, minZ);
         double[] brokenEdge = edgeProfile(reference, broken, minX, minZ);
@@ -898,7 +1324,13 @@ public final class PartialExistingBatchCheck {
         int outsideZ = plan.tile(0, 0).minChunkZ() + 30;
         CompoundTag border = io.loadAsync(new ChunkPos(outsideX, outsideZ)).get(10, TimeUnit.SECONDS).orElseThrow(
                 () -> new AssertionError("A border chunk with neighbor writes must be saved part-generated"));
-        require("minecraft:carvers".equals(border.getString("Status")), "Border chunks are saved at status carvers: " + border.getString("Status"));
+        // The ring around the area has its features placed, as Minecraft leaves the neighbors of a finished chunk;
+        // what lies around the ring is saved at carvers where the ring's features reached it.
+        require("minecraft:initialize_light".equals(border.getString("Status")),
+                "The ring around the area is saved at status initialize_light: " + border.getString("Status"));
+        CompoundTag beyond = io.loadAsync(new ChunkPos(outsideX - 1, outsideZ)).get(10, TimeUnit.SECONDS).orElse(null);
+        require(beyond == null || "minecraft:carvers".equals(beyond.getString("Status")),
+                "Chunks around the ring are saved at status carvers: " + (beyond == null ? "" : beyond.getString("Status")));
         server.submit(() -> {
             require(level.getChunk(outsideX, outsideZ) != null, "The server must finish a part-generated border chunk");
             return null;
@@ -1648,6 +2080,7 @@ public final class PartialExistingBatchCheck {
         int total = first.getTotalWorldChunks();
         require("Completed".equals(first.getCurrentStageName()), "First run must complete: " + first.getCurrentStageName());
         require(((AtomicInteger) field(first, "writtenChunks")).get() == total, "First run must write every chunk");
+        checkBlockEntityData(io, centerX, centerZ, 1000);
 
         PreGenSaveFile record = PreGenSaveFile.load(level);
         require(record.doneChunks() == total, "Save file must record every saved chunk: " + record.doneChunks());
@@ -1991,6 +2424,40 @@ public final class PartialExistingBatchCheck {
         CompoundTag copy = chunk.copy();
         for (String key : new String[]{"LastUpdate", "InhabitedTime", "block_ticks", "fluid_ticks"}) copy.remove(key);
         return copy;
+    }
+
+    /**
+     * What generation fills into a block entity after placing it must be in the saved chunk: a monster spawner's mob, a
+     * chest's loot table. On Minecraft 1.20 to 1.21.1 the proto chunk keeps the placeholder beside such a block entity,
+     * and until 15.1 the save promoted that placeholder over it: spawners without a mob, chests without loot. Read as
+     * text, which every Minecraft version writes the same way.
+     */
+    private static void checkBlockEntityData(IOWorker io, int centerX, int centerZ, int sizeBlocks) throws Exception {
+        int spawners = 0;
+        int spawnersWithMob = 0;
+        int chests = 0;
+        int chestsWithLoot = 0;
+        for (int x = (centerX - sizeBlocks / 2) >> 4; x <= (centerX + sizeBlocks / 2 - 1) >> 4; x++) {
+            for (int z = (centerZ - sizeBlocks / 2) >> 4; z <= (centerZ + sizeBlocks / 2 - 1) >> 4; z++) {
+                CompoundTag chunk = io.loadAsync(new ChunkPos(x, z)).get(30, TimeUnit.SECONDS).orElse(null);
+                if (chunk == null || !(chunk.get("block_entities") instanceof java.util.List<?> stored)) continue;
+                for (Object blockEntity : stored) {
+                    String text = String.valueOf(blockEntity);
+                    if (text.contains("id:\"minecraft:mob_spawner\"")) {
+                        spawners++;
+                        if (text.contains("SpawnData:{") && text.contains("entity:{id:\"")) spawnersWithMob++;
+                    } else if (text.contains("id:\"minecraft:chest\"")) {
+                        chests++;
+                        if (text.contains("LootTable:\"")) chestsWithLoot++;
+                    }
+                }
+            }
+        }
+        require(spawners >= 10 && chests >= 10, "The area must hold monster spawners and chests for this check: " + spawners + ", " + chests);
+        require(spawnersWithMob == spawners, "Every generated monster spawner must be saved with its mob: " + spawnersWithMob + " of " + spawners);
+        // Not every chest: a trial chamber of Minecraft 1.21 holds chests with no loot table of its own.
+        require(chestsWithLoot * 2 >= chests, "Generated chests must be saved with their loot tables: " + chestsWithLoot + " of " + chests);
+        System.out.println("BLOCK_ENTITY_DATA_CHECK PASS spawners_with_mob=" + spawners + " chests=" + chests + " chests_with_loot_table=" + chestsWithLoot);
     }
 
     private static void require(boolean condition, String message) {
