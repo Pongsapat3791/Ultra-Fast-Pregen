@@ -11,7 +11,7 @@ Mods for Fabric, NeoForge and Forge, every Minecraft version from 1.20 to 26.3. 
 
 | Minecraft | Java | Fabric | NeoForge | Forge |
 |---|---|---|---|---|
-| 1.20 to 1.20.4 | 17+ | `fabric-1.20.x` | 1.20.1: `forge-1.20-1.20.4`; 1.20.2 to 1.20.4: `neoforge-1.20.2-1.20.4` | `forge-1.20-1.20.4` |
+| 1.20 to 1.20.4 | 17+ | `fabric-1.20.x` | 1.20.1: `neoforge-1.20.1`; 1.20.2 to 1.20.4: `neoforge-1.20.2-1.20.4` | `forge-1.20-1.20.4` |
 | 1.20.5, 1.20.6 | 21+ | `fabric-1.20.x` | `neoforge-1.20.5-1.20.6` | 1.20.6: `forge-1.20.6` |
 | 1.21, 1.21.1 | 21+ | `fabric-1.21-1.21.1` | `neoforge-1.21-1.21.1` | `forge-1.21-1.21.1` |
 | 1.21.2 to 1.21.4 | 21+ | `fabric-1.21.2-1.21.4` | `neoforge-1.21.2-1.21.4` | 1.21.3, 1.21.4: `forge-1.21.3-1.21.4` |

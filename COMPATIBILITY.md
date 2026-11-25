@@ -853,7 +853,7 @@ saved empty (824 and 483).
 The released files, which have the corrections of the edge and the Manager's Health tab, were started the same way:
 each of the 29 on a server it names, the same 30 servers, a short pregen on the fast paths. All 30 ran; no hook of the
 mod was left uncalled, the handler that gives features their light is in Minecraft's light engine on every one, and
-no server logged a warning or an error of the mod.
+no server logged a warning or an error of the mod. `ultrafastpregen-neoforge-1.20.1-16.jar`, added afterwards, is the Forge 1.20 to 1.20.4 jar with only the Minecraft range of its `mods.toml` changed to 1.20.1, every class the same; it was started the same way on NeoForge 1.20.1 (47.1.106) with the same result.
 
 ### With other mods
 
@@ -1480,6 +1480,7 @@ the two All the Mods packs.
 | `ultrafastpregen-forge-1.21.9-1.21.10-16.jar` | `1131f75e980d24f503dcb6f1af93974b5477824a` |
 | `ultrafastpregen-forge-26.1-26.2-16.jar` | `6824e2c503ade8bb1dc70ceeda24f445e99be62b` |
 | `ultrafastpregen-forge-26.3-16.jar` | `92d2f489eeb971c9cfc27ccd54510b2517990e51` |
+| `ultrafastpregen-neoforge-1.20.1-16.jar` | `080bc85ed8487b828c48d53a0c1bfc89ed30f9fb` |
 | `ultrafastpregen-neoforge-1.20.2-1.20.4-16.jar` | `e22d70ad712e2ba87bc26d810325f90e243d5988` |
 | `ultrafastpregen-neoforge-1.20.5-1.20.6-16.jar` | `67c892749c29437981defed19490dfb1331a23c8` |
 | `ultrafastpregen-neoforge-1.21-1.21.1-16.jar` | `40c8942af23340a33b7264e41f10e1ab676e153d` |

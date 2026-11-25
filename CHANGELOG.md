@@ -17,7 +17,8 @@ at 15.1.
 | `ultrafastpregen-fabric-1.21.11-16.jar` | 1.21.11 |
 | `ultrafastpregen-fabric-26.1-26.2-16.jar` | 26.1 to 26.2 |
 | `ultrafastpregen-fabric-26.3-16.jar` | 26.3 |
-| `ultrafastpregen-neoforge-1.20.2-1.20.4-16.jar` | 1.20.2 to 1.20.4 (NeoForge for 1.20.1 takes the Forge jar) |
+| `ultrafastpregen-neoforge-1.20.1-16.jar` | 1.20.1 (the Forge 1.20 to 1.20.4 jar as a file of its own; either works) |
+| `ultrafastpregen-neoforge-1.20.2-1.20.4-16.jar` | 1.20.2 to 1.20.4 |
 | `ultrafastpregen-neoforge-1.20.5-1.20.6-16.jar` | 1.20.5 and 1.20.6 |
 | `ultrafastpregen-neoforge-1.21-1.21.1-16.jar` | 1.21 and 1.21.1 |
 | `ultrafastpregen-neoforge-1.21.2-1.21.4-16.jar` | 1.21.2 to 1.21.4 |
